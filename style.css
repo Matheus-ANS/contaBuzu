@@ -2558,6 +2558,16 @@ table td:last-child {
     box-shadow: 0 14px 30px -4px rgba(16, 185, 129, 0.5);
 }
 
+.btn-iniciar-contagem-verde:disabled,
+.btn-iniciar-contagem-verde.is-disabled {
+    background: #94a3b8 !important;
+    color: #f8fafc !important;
+    cursor: not-allowed !important;
+    transform: none !important;
+    box-shadow: none !important;
+    opacity: 0.65 !important;
+}
+
 /* Estilos da Paginação do Histórico de Contagens Anteriores */
 .history-pagination-wrapper {
     display: flex;
@@ -2981,6 +2991,26 @@ button, .chip-btn, .tab-btn, .btn, .pg-btn, a {
 
 .btn-corr-pct:active {
     transform: scale(0.97);
+}
+
+/* Modal de Seleção de Veículos - Divisão Lateral */
+.modal-veiculo-split {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+@media (max-width: 768px) {
+    .modal-veiculo-split {
+        flex-direction: column !important;
+    }
+    .modal-veiculo-lateral {
+        width: 100% !important;
+        max-height: 190px !important;
+        border-left: none !important;
+        border-top: 2px solid #e2e8f0 !important;
+    }
 }
 
 

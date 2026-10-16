@@ -26,8 +26,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $erro = 'Por favor, preencha todos os campos.';
     } else {
         try {
-            // Consulta usuário na tabela usuarios do banco contaBuzu (incluindo o status ativo)
-            $stmt = $pdo->prepare("SELECT idusuarios, nome, login, senha, email, acesso, ativo FROM usuarios WHERE login = ? LIMIT 1");
+            // Consulta usuário na tabela usuarios do banco contaBuzu (incluindo o status ativo e cargo)
+            $stmt = $pdo->prepare("SELECT idusuarios, nome, login, senha, email, acesso, cargo, ativo FROM usuarios WHERE login = ? LIMIT 1");
             $stmt->execute([$loginInput]);
             $user = $stmt->fetch();
 
@@ -44,7 +44,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_SESSION['login']      = $user['login'];
                         $_SESSION['nome']       = $user['nome'];
                         $_SESSION['email']      = $user['email'];
-                        $_SESSION['acesso']     = $user['acesso'];
+                        $_SESSION['acesso']     = (int)$user['acesso'];
+                        $_SESSION['cargo']      = isset($user['cargo']) ? $user['cargo'] : '';
                         $_SESSION['ativo']      = (int)$user['ativo'];
 
                         header('Location: index.php?login=success');

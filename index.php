@@ -15,7 +15,7 @@ $usuarioId = (int)$_SESSION['usuario_id'];
 
 // Sincroniza privilégios do usuário diretamente com o banco de dados e valida status ativo
 try {
-    $stmtUserCheck = $pdo->prepare("SELECT acesso, nome, login, ativo FROM usuarios WHERE idusuarios = ? LIMIT 1");
+    $stmtUserCheck = $pdo->prepare("SELECT acesso, cargo, nome, login, ativo FROM usuarios WHERE idusuarios = ? LIMIT 1");
     $stmtUserCheck->execute([$usuarioId]);
     $userData = $stmtUserCheck->fetch();
     if ($userData) {
@@ -26,6 +26,7 @@ try {
             exit;
         }
         $_SESSION['acesso'] = (int)$userData['acesso'];
+        $_SESSION['cargo']  = isset($userData['cargo']) ? $userData['cargo'] : '';
         $_SESSION['nome']   = $userData['nome'];
         $_SESSION['login']  = $userData['login'];
         $_SESSION['ativo']  = (int)$userData['ativo'];
@@ -42,7 +43,12 @@ try {
 $loggedNome   = isset($_SESSION['nome']) ? $_SESSION['nome'] : 'Usuário';
 $loggedLogin  = isset($_SESSION['login']) ? $_SESSION['login'] : '';
 $loggedAcesso = isset($_SESSION['acesso']) ? (int)$_SESSION['acesso'] : 0;
-$isAdmin      = ($loggedAcesso === 1);
+$loggedCargo  = isset($_SESSION['cargo']) ? trim((string)$_SESSION['cargo']) : '';
+
+// Definição de permissões e papéis
+$isAdmin   = ($loggedAcesso === 1) || (strcasecmp($loggedCargo, 'administrador') === 0) || (strcasecmp($loggedCargo, 'admin') === 0);
+$isGerente = ($loggedAcesso === 2) || (strcasecmp($loggedCargo, 'gerente') === 0) || (strcasecmp($loggedCargo, 'supervisor') === 0);
+$canViewSolicitacoes = ($isAdmin || $isGerente);
 
 // Inicial da foto / avatar
 $nameParts = explode(' ', trim((string)$loggedNome));
@@ -57,6 +63,19 @@ if (!$initials) $initials = 'US';
 
 $mensagemSucesso = '';
 $mensagemErro = '';
+
+if (!function_exists('calcPercentualStr')) {
+    function calcPercentualStr($total) {
+        $t = (int)$total;
+        if ($t >= 100) return '120%';
+        if ($t >= 82) return '100%';
+        if ($t >= 54) return '65%';
+        if ($t >= 42) return '50%';
+        if ($t >= 30) return '35%';
+        if ($t >= 13) return '15%';
+        return '0%';
+    }
+}
 
 if (isset($_GET['login']) && $_GET['login'] === 'success') {
     $mensagemSucesso = "Bem-vindo ao sistema contaBuzu, " . htmlspecialchars($loggedNome) . "!";
@@ -287,9 +306,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         exit;
                     }
                     $mensagemErro = 'Solicitação não encontrada ou já respondida.';
-                } elseif (!$isAdmin && (int)$sol['idUsuarioDestino'] !== $usuarioId) {
+                } elseif (!$canViewSolicitacoes) {
                     if ($isAjax) {
-                        echo json_encode(['success' => false, 'message' => 'Apenas o supervisor destinatário desta solicitação ou um administrador pode respondê-la.']);
+                        echo json_encode(['success' => false, 'message' => 'Acesso negado: apenas administradores e gerentes podem responder a solicitações.']);
+                        exit;
+                    }
+                    $mensagemErro = 'Apenas administradores e gerentes podem responder a solicitações.';
+                } elseif (!$isAdmin && !$isGerente && (int)$sol['idUsuarioDestino'] !== $usuarioId) {
+                    if ($isAjax) {
+                        echo json_encode(['success' => false, 'message' => 'Apenas o supervisor/gerente destinatário desta solicitação ou um administrador pode respondê-la.']);
                         exit;
                     }
                     $mensagemErro = 'Permissão negada para responder a esta solicitação.';
@@ -368,22 +393,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // 4.0.1. Alterar Linha e Veículo da Sessão Ativa
+        // 4.0.1. Alterar Linha, Veículo e Turno da Sessão Ativa
         elseif ($action === 'alterar_linha_veiculo') {
             $idContagem = (int)$_POST['idContagem'];
             $idLinha    = !empty($_POST['idLinha']) ? (int)$_POST['idLinha'] : null;
             $idVeiculo  = !empty($_POST['idVeiculo']) ? (int)$_POST['idVeiculo'] : null;
+            $turno      = !empty($_POST['turno']) ? trim($_POST['turno']) : null;
 
             if ($idContagem > 0) {
-                $stmtCheck = $pdo->prepare("SELECT idContagem FROM contagens WHERE idContagem = ? AND idUsuario = ? AND status = 'em_andamento' LIMIT 1");
+                $stmtCheck = $pdo->prepare("SELECT idContagem, turno FROM contagens WHERE idContagem = ? AND idUsuario = ? AND status = 'em_andamento' LIMIT 1");
                 $stmtCheck->execute([$idContagem, $usuarioId]);
-                if ($stmtCheck->fetch()) {
-                    $stmtUpd = $pdo->prepare("UPDATE contagens SET idLinha = ?, idVeiculo = ? WHERE idContagem = ? AND idUsuario = ?");
-                    $stmtUpd->execute([$idLinha, $idVeiculo, $idContagem, $usuarioId]);
+                $cRow = $stmtCheck->fetch();
+                if ($cRow) {
+                    $novoTurno = ($turno !== null && $turno !== '') ? $turno : $cRow['turno'];
+                    $stmtUpd = $pdo->prepare("UPDATE contagens SET idLinha = ?, idVeiculo = ?, turno = ? WHERE idContagem = ? AND idUsuario = ?");
+                    $stmtUpd->execute([$idLinha, $idVeiculo, $novoTurno, $idContagem, $usuarioId]);
 
                     if ($isAjax) {
                         $stmtInfo = $pdo->prepare("
-                            SELECT c.idLinha, c.idVeiculo,
+                            SELECT c.idLinha, c.idVeiculo, c.turno,
                                    l.numero as linhaNumero, l.descricao as linhaDescricao,
                                    v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
                             FROM contagens c
@@ -397,18 +425,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         $nL = !empty($infoUpdated['linhaNumero']) ? $infoUpdated['linhaNumero'] . ' - ' . $infoUpdated['linhaDescricao'] : (!empty($infoUpdated['idLinha']) ? 'Linha #'.$infoUpdated['idLinha'] : 'N/A');
                         $veic = !empty($infoUpdated['veiculoPrefixo']) ? $infoUpdated['veiculoPrefixo'] : (!empty($infoUpdated['idVeiculo']) ? 'Prefixo #'.$infoUpdated['idVeiculo'] : 'N/A');
+                        $turnText = !empty($infoUpdated['turno']) ? $infoUpdated['turno'] : 'Matutino';
 
                         echo json_encode([
                             'success' => true,
-                            'message' => 'Linha e Veículo alterados com sucesso!',
+                            'message' => 'Dados da sessão alterados com sucesso!',
                             'linhaText' => $nL,
-                            'veiculoText' => $veic
+                            'veiculoText' => $veic,
+                            'turnoText' => $turnText
                         ]);
                         exit;
                     }
-                    $mensagemSucesso = "Linha e Veículo alterados com sucesso!";
+                    $mensagemSucesso = "Dados da sessão alterados com sucesso!";
                 }
             }
+        }
+
+        // 4.0.2. Alterar Turno de Sessão no Histórico
+        elseif ($action === 'alterar_turno_historico') {
+            $idContagem = (int)$_POST['idContagem'];
+            $turno = !empty($_POST['turno']) ? trim($_POST['turno']) : '';
+            $turnosValidos = array('Matutino', 'Vespertino', 'Noturno');
+
+            if ($idContagem > 0 && in_array($turno, $turnosValidos)) {
+                if ($podeVerSolicitacoes) {
+                    $stmtUpd = $pdo->prepare("UPDATE contagens SET turno = ? WHERE idContagem = ?");
+                    $stmtUpd->execute(array($turno, $idContagem));
+                } else {
+                    $stmtUpd = $pdo->prepare("UPDATE contagens SET turno = ? WHERE idContagem = ? AND idUsuario = ?");
+                    $stmtUpd->execute(array($turno, $idContagem, $usuarioId));
+                }
+
+                echo json_encode(array(
+                    'success' => true,
+                    'message' => 'Turno atualizado com sucesso!',
+                    'turno' => $turno
+                ));
+                exit;
+            }
+
+            echo json_encode(array('success' => false, 'message' => 'Turno inválido ou sessão não encontrada.'));
+            exit;
         }
 
         // 4.0. Salvar Progresso da Contagem (Mantém Sessão Ativa)
@@ -874,7 +931,6 @@ try {
 
 $mediaOcupacaoVal = ($qtdPercentContagens > 0) ? round($somaOcupacaoPercent / $qtdPercentContagens, 1) : 0;
 $mediaOcupacaoFmt = number_format($mediaOcupacaoVal, 1, ',', '.') . '%';
-
 // Buscar opções para o formulário de início de contagem
 $linhasDisponiveis = [];
 try {
@@ -906,66 +962,60 @@ try {
 // Carregar supervisores e gerentes para escolha no formulário de correção
 $supervisoresDisponiveis = [];
 try {
-    $stmtSup = $pdo->query("SELECT idusuarios, nome, login, acesso FROM usuarios WHERE COALESCE(ativo, 1) = 1 ORDER BY (acesso = 1) DESC, nome ASC");
+    $stmtSup = $pdo->query("SELECT idusuarios, nome, login, acesso, cargo FROM usuarios WHERE COALESCE(ativo, 1) = 1 AND (acesso IN (1, 2) OR LOWER(COALESCE(cargo, '')) IN ('administrador', 'admin', 'gerente', 'supervisor')) ORDER BY (acesso = 1) DESC, (acesso = 2) DESC, nome ASC");
     if ($stmtSup) $supervisoresDisponiveis = $stmtSup->fetchAll();
 } catch (\Exception $e) {}
 
-// Carregar solicitações de correção para a nova aba "Solicitações"
+// Carregar solicitações de correção para a aba "Solicitações" (apenas visível para Administrador ou Gerente)
 $solicitacoesCorrecao = [];
 $totalPendentesNotif = 0;
 $solicPendentesCount = 0;
 $solicAprovadasCount = 0;
 $solicRejeitadasCount = 0;
 
-try {
-    $sqlSolic = "
-        SELECT s.*, 
-               uSol.nome as solicitanteNome, uSol.login as solicitanteLogin,
-               uDest.nome as destinoNome, uDest.login as destinoLogin,
-               uResp.nome as respostaNome, uResp.login as respostaLogin,
-               c.idLinha, c.idVeiculo, c.idLocal, c.sentido, c.tipoContagem, c.totalPassageiros as totalContagem,
-               l.numero as linhaNumero, l.descricao as linhaDescricao,
-               v.prefixo as veiculoPrefixo,
-               loc.local as nomeLocal,
-               DATE_FORMAT(s.dataSolicitacao, '%d/%m/%Y %H:%i') as dataSolicitacaoFmt,
-               DATE_FORMAT(s.dataResposta, '%d/%m/%Y %H:%i') as dataRespostaFmt
-        FROM solicitacoes_correcao s
-        LEFT JOIN usuarios uSol ON s.idUsuarioSolicitante = uSol.idusuarios
-        LEFT JOIN usuarios uDest ON s.idUsuarioDestino = uDest.idusuarios
-        LEFT JOIN usuarios uResp ON s.idUsuarioResposta = uResp.idusuarios
-        LEFT JOIN contagens c ON s.idContagem = c.idContagem
-        LEFT JOIN linha l ON c.idLinha = l.idLinha
-        LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-        LEFT JOIN locais loc ON c.idLocal = loc.idLocal
-    ";
-
-    if (!$isAdmin) {
-        $sqlSolic .= " WHERE s.idUsuarioSolicitante = ? OR s.idUsuarioDestino = ? ";
-        $sqlSolic .= " ORDER BY s.idSolicitacao DESC ";
-        $stmtSolic = $pdo->prepare($sqlSolic);
-        $stmtSolic->execute([$usuarioId, $usuarioId]);
-    } else {
-        $sqlSolic .= " ORDER BY s.idSolicitacao DESC ";
+if ($canViewSolicitacoes) {
+    try {
+        $sqlSolic = "
+            SELECT s.*, 
+                   uSol.nome as solicitanteNome, uSol.login as solicitanteLogin,
+                   uDest.nome as destinoNome, uDest.login as destinoLogin,
+                   uResp.nome as respostaNome, uResp.login as respostaLogin,
+                   c.idLinha, c.idVeiculo, c.idLocal, c.sentido, c.tipoContagem, c.totalPassageiros as totalContagem,
+                   l.numero as linhaNumero, l.descricao as linhaDescricao,
+                   v.prefixo as veiculoPrefixo,
+                   loc.local as nomeLocal,
+                   DATE_FORMAT(s.dataSolicitacao, '%d/%m/%Y %H:%i') as dataSolicitacaoFmt,
+                   DATE_FORMAT(s.dataResposta, '%d/%m/%Y %H:%i') as dataRespostaFmt
+            FROM solicitacoes_correcao s
+            LEFT JOIN usuarios uSol ON s.idUsuarioSolicitante = uSol.idusuarios
+            LEFT JOIN usuarios uDest ON s.idUsuarioDestino = uDest.idusuarios
+            LEFT JOIN usuarios uResp ON s.idUsuarioResposta = uResp.idusuarios
+            LEFT JOIN contagens c ON s.idContagem = c.idContagem
+            LEFT JOIN linha l ON c.idLinha = l.idLinha
+            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
+            LEFT JOIN locais loc ON c.idLocal = loc.idLocal
+            ORDER BY s.idSolicitacao DESC
+        ";
         $stmtSolic = $pdo->query($sqlSolic);
-    }
 
-    if ($stmtSolic) {
-        $solicitacoesCorrecao = $stmtSolic->fetchAll();
-        foreach ($solicitacoesCorrecao as $sc) {
-            $st = strtolower($sc['status']);
-            if ($st === 'pendente') {
-                $solicPendentesCount++;
-                if ($isAdmin || (int)$sc['idUsuarioDestino'] === $usuarioId) {
-                    $totalPendentesNotif++;
+        if ($stmtSolic) {
+            $solicitacoesCorrecao = $stmtSolic->fetchAll();
+            foreach ($solicitacoesCorrecao as $sc) {
+                $st = strtolower($sc['status']);
+                if ($st === 'pendente') {
+                    $solicPendentesCount++;
+                    if ($isAdmin || $isGerente || (int)$sc['idUsuarioDestino'] === $usuarioId) {
+                        $totalPendentesNotif++;
+                    }
+                } elseif ($st === 'aprovada') {
+                    $solicAprovadasCount++;
+                } elseif ($st === 'rejeitada') {
+                    $solicRejeitadasCount++;
                 }
-            } elseif ($st === 'aprovada') {
-                $solicAprovadasCount++;
-            } elseif ($st === 'rejeitada') {
-                $solicRejeitadasCount++;
             }
         }
-    }
-} catch (\Exception $e) {}
+    } catch (\Exception $e) {}
+}
 
 ?>
 <!DOCTYPE html>
@@ -993,7 +1043,17 @@ try {
                     </div>
                     <div class="user-info">
                         <h2><?php echo htmlspecialchars($loggedNome); ?></h2>
-                        <p>@<?php echo htmlspecialchars($loggedLogin); ?> • <?php echo $isAdmin ? 'Administrador' : 'Pesquisador'; ?></p>
+                        <?php
+                            $roleLabel = 'Pesquisador';
+                            if ($isAdmin) {
+                                $roleLabel = 'Administrador';
+                            } elseif ($isGerente) {
+                                $roleLabel = 'Gerente';
+                            } elseif (!empty($loggedCargo)) {
+                                $roleLabel = htmlspecialchars($loggedCargo);
+                            }
+                        ?>
+                        <p>@<?php echo htmlspecialchars($loggedLogin); ?> • <?php echo $roleLabel; ?></p>
                     </div>
                 </div>
 
@@ -1041,12 +1101,14 @@ try {
                     </svg>
                     Dashboard <span class="tab-badge"><?php echo $totalSessoesUsuario; ?></span>
                 </button>
+                <?php if ($canViewSolicitacoes): ?>
                 <button type="button" class="tab-btn" id="btn-tab-solicitacoes" onclick="switchUserTab('tab-solicitacoes', this)">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="18" height="18">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" />
                     </svg>
                     Solicitações <?php if ($totalPendentesNotif > 0): ?><span class="tab-badge" style="background: #ef4444; color: #ffffff;"><?php echo $totalPendentesNotif; ?></span><?php else: ?><span class="tab-badge"><?php echo count($solicitacoesCorrecao); ?></span><?php endif; ?>
                 </button>
+                <?php endif; ?>
             </div>
 
             <!-- Alertas e Notificações -->
@@ -1093,7 +1155,6 @@ try {
                             <input type="hidden" name="tipoTransporte" id="input_tipoTransporte" value="stco">
                             <input type="hidden" name="tipoContagem" id="input_tipoContagem" value="percentual">
                             <input type="hidden" name="tipoOperacao" id="input_tipoOperacao" value="embarque">
-                            <input type="hidden" name="turno" value="<?php echo htmlspecialchars($turnoAtual); ?>">
                             <input type="hidden" name="sentido" id="input_sentido" value="Ida">
 
                             <div class="panel-layout-grid">
@@ -1152,8 +1213,8 @@ try {
                                                 </div>
                                             </div>
 
-                                            <!-- Turno -->
-                                            <div class="read-only-row">
+                                            <!-- Turno (Editável) -->
+                                            <div class="read-only-row" style="align-items: center;">
                                                 <div class="read-only-label">
                                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                                         <circle cx="12" cy="12" r="5"></circle>
@@ -1168,8 +1229,12 @@ try {
                                                     </svg>
                                                     <span>Turno</span>
                                                 </div>
-                                                <div class="read-only-value">
-                                                    <strong class="highlight-bold"><?php echo htmlspecialchars($turnoAtual); ?></strong>
+                                                <div class="read-only-value" style="display: flex; align-items: center; gap: 6px;">
+                                                    <select name="turno" id="select_iniciar_turno" style="background: #ffffff; border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 4px 10px; font-weight: 700; font-size: 0.88rem; color: #000000; cursor: pointer; outline: none; box-shadow: 0 1px 3px rgba(0,0,0,0.06);" title="Clique para alterar o turno desta contagem">
+                                                        <option value="Matutino" <?php echo ($turnoAtual === 'Matutino') ? 'selected' : ''; ?>>Matutino</option>
+                                                        <option value="Vespertino" <?php echo ($turnoAtual === 'Vespertino') ? 'selected' : ''; ?>>Vespertino</option>
+                                                        <option value="Noturno" <?php echo ($turnoAtual === 'Noturno') ? 'selected' : ''; ?>>Noturno</option>
+                                                    </select>
                                                 </div>
                                             </div>
                                         </div>
@@ -1187,32 +1252,139 @@ try {
                                         </div>
                                         <div class="panel-card-body">
                                             
-                                            <!-- 1. CONDIÇÃO DO TEMPO -->
-                                            <div class="form-group-custom">
-                                                <label class="form-label-custom">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path>
-                                                    </svg>
-                                                    <span>Condição do Tempo</span>
-                                                    <span class="required-star">*</span>
-                                                </label>
-                                                <div class="chips-flex-row">
-                                                    <button type="button" class="chip-btn active chip-blue" onclick="selectChip('condicaoTempo', 'bom', this, 'chip-blue')">
-                                                        ☀️ Bom
-                                                    </button>
-                                                    <button type="button" class="chip-btn" onclick="selectChip('condicaoTempo', 'nublado', this, 'chip-blue')">
-                                                        ☁️ Nublado
-                                                    </button>
-                                                    <button type="button" class="chip-btn" onclick="selectChip('condicaoTempo', 'chuva leve', this, 'chip-blue')">
-                                                        🌧️ Chuva Leve
-                                                    </button>
-                                                    <button type="button" class="chip-btn" onclick="selectChip('condicaoTempo', 'chuva densa', this, 'chip-blue')">
-                                                        ⛈️ Chuva Densa
-                                                    </button>
+                                            <!-- 1. LINHA / LOCAL -->
+                                            <div class="form-grid-2col">
+                                                <div class="form-group-custom">
+                                                    <label class="form-label-custom">
+                                                        <span>Linha</span>
+                                                        <span class="required-star">*</span>
+                                                    </label>
+                                                    <select name="idLinha" id="select_idLinha" required class="form-select-custom cb-searchable-select" data-placeholder="Digite o número ou nome da linha (ex: 0201, Barra)...">
+                                                        <option value="">-- Selecione a Linha --</option>
+                                                        <?php foreach ($linhasDisponiveis as $l): ?>
+                                                            <option value="<?php echo $l['idLinha']; ?>">
+                                                                <?php 
+                                                                    $nomeL = !empty($l['numero']) ? $l['numero'] . ' - ' . $l['descricao'] : (!empty($l['linha']) ? $l['linha'] : 'Linha #' . $l['idLinha']);
+                                                                    echo htmlspecialchars($nomeL);
+                                                                ?>
+                                                            </option>
+                                                        <?php endforeach; ?>
+                                                    </select>
+                                                </div>
+
+                                                <div class="form-group-custom">
+                                                    <label class="form-label-custom">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                                                            <circle cx="12" cy="10" r="3"></circle>
+                                                        </svg>
+                                                        <span>Local</span>
+                                                        <span class="required-star">*</span>
+                                                    </label>
+                                                    <select name="idLocal" id="select_idLocal" required class="form-select-custom cb-searchable-select" data-placeholder="Digite o nome do local ou região...">
+                                                        <option value="">-- Selecione o Local --</option>
+                                                        <?php foreach ($locaisDisponiveis as $loc): ?>
+                                                            <option value="<?php echo $loc['idLocal']; ?>">
+                                                                <?php echo htmlspecialchars($loc['local']); ?> <?php echo !empty($loc['regiao']) ? '('.htmlspecialchars($loc['regiao']).')' : ''; ?>
+                                                            </option>
+                                                        <?php endforeach; ?>
+                                                    </select>
                                                 </div>
                                             </div>
 
-                                            <!-- 2. TIPO DE TRANSPORTE -->
+                                            <!-- 2. VIAGEM / TIPO DE OPERAÇÃO -->
+                                            <div class="form-grid-2col">
+                                                <div class="form-group-custom">
+                                                    <label class="form-label-custom">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                            <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
+                                                        </svg>
+                                                        <span>Viagem</span>
+                                                        <span class="required-star">*</span>
+                                                    </label>
+                                                    <div class="chips-flex-row">
+                                                        <button type="button" id="chip-viagem-ida" class="chip-btn active chip-blue" onclick="selectChip('sentido', 'Ida', this, 'chip-blue')">
+                                                            ➡️ Ida
+                                                        </button>
+                                                        <button type="button" id="chip-viagem-volta" class="chip-btn" onclick="selectChip('sentido', 'Volta', this, 'chip-blue')">
+                                                            ⬅️ Volta
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <div class="form-group-custom">
+                                                    <label class="form-label-custom">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                            <polyline points="17 1 21 5 17 9"></polyline>
+                                                            <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                                                            <polyline points="7 23 3 19 7 15"></polyline>
+                                                            <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                                                        </svg>
+                                                        <span>Tipo de Operação</span>
+                                                        <span class="required-star">*</span>
+                                                    </label>
+                                                    <div class="chips-flex-row">
+                                                        <button type="button" id="chip-op-embarque" class="chip-btn active chip-green" onclick="selectChip('tipoOperacao', 'embarque', this, 'chip-green')">
+                                                            ↓ Embarque
+                                                        </button>
+                                                        <button type="button" id="chip-op-desembarque" class="chip-btn" onclick="selectChip('tipoOperacao', 'desembarque', this, 'chip-green')">
+                                                            ↑ Desembarque
+                                                        </button>
+                                                        <button type="button" id="chip-op-ocupacao" class="chip-btn" onclick="selectChip('tipoOperacao', 'ocupacao', this, 'chip-green')">
+                                                            👥 Ocupação
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- 3. TIPO DE CONTAGEM / CONDIÇÃO DO TEMPO -->
+                                            <div class="form-grid-2col">
+                                                <div class="form-group-custom">
+                                                    <label class="form-label-custom">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                            <line x1="19" y1="5" x2="5" y2="19"></line>
+                                                            <circle cx="6.5" cy="6.5" r="2.5"></circle>
+                                                            <circle cx="17.5" cy="17.5" r="2.5"></circle>
+                                                        </svg>
+                                                        <span>Tipo de Contagem</span>
+                                                        <span class="required-star">*</span>
+                                                    </label>
+                                                    <div class="chips-flex-row">
+                                                        <button type="button" id="chip-percentual" class="chip-btn active chip-purple" onclick="selectChip('tipoContagem', 'percentual', this, 'chip-purple')">
+                                                            % Percentual
+                                                        </button>
+                                                        <button type="button" id="chip-quantidade" class="chip-btn" onclick="selectChip('tipoContagem', 'quantidade', this, 'chip-purple')">
+                                                            👥 Quantidade
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <div class="form-group-custom">
+                                                    <label class="form-label-custom">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                            <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path>
+                                                        </svg>
+                                                        <span>Condição do Tempo</span>
+                                                        <span class="required-star">*</span>
+                                                    </label>
+                                                    <div class="chips-flex-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                                        <button type="button" class="chip-btn active chip-blue" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'bom', this, 'chip-blue')">
+                                                            ☀️ Bom
+                                                        </button>
+                                                        <button type="button" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'nublado', this, 'chip-blue')">
+                                                            ☁️ Nublado
+                                                        </button>
+                                                        <button type="button" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'chuva leve', this, 'chip-blue')">
+                                                            🌧️ Chuva Leve
+                                                        </button>
+                                                        <button type="button" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'chuva densa', this, 'chip-blue')">
+                                                            ⛈️ Chuva Densa
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- 4. TIPO DE TRANSPORTE -->
                                             <div class="form-group-custom">
                                                 <label class="form-label-custom">
                                                     <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1237,125 +1409,72 @@ try {
                                                 </div>
                                             </div>
 
-                                            <!-- LINHA E VEÍCULO (SELEÇÕES ADICIONAIS DO BANCO) -->
-                                            <div class="form-grid-2col">
-                                                <div class="form-group-custom">
-                                                    <label class="form-label-custom">
-                                                        <span>Linha</span>
-                                                        <span class="required-star">*</span>
+                                            <!-- 5. VEÍCULO -->
+                                            <div class="form-group-custom" id="veiculo-section-group">
+                                                <label class="form-label-custom">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <rect x="3" y="6" width="18" height="13" rx="2"></rect>
+                                                        <path d="M7 6V4a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v2"></path>
+                                                        <circle cx="7" cy="15" r="1"></circle>
+                                                        <circle cx="17" cy="15" r="1"></circle>
+                                                    </svg>
+                                                    <span>Veículo</span>
+                                                    <span class="required-star">*</span>
+                                                </label>
+
+                                                <!-- Caixas de seleção: Registrar / Não informado -->
+                                                <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+                                                    <label id="card-modo-registrar" onclick="selecionarModoVeiculo('registrar')" style="flex: 1; min-width: 140px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 2px solid #2563eb; background: #eff6ff; border-radius: 10px; cursor: pointer; transition: all 0.2s; user-select: none;">
+                                                        <input type="radio" name="opcaoVeiculo" id="radio_modo_registrar" value="registrar" checked style="accent-color: #2563eb; width: 18px; height: 18px; cursor: pointer;">
+                                                        <div>
+                                                            <div style="font-weight: 700; font-size: 0.9rem; color: #1e3a8a;">Registrar</div>
+                                                            <div style="font-size: 0.75rem; color: #3b82f6;">Informar prefixos dos veículos</div>
+                                                        </div>
                                                     </label>
-                                                    <select name="idLinha" id="select_idLinha" required class="form-select-custom cb-searchable-select" data-placeholder="Digite o número ou nome da linha (ex: 0201, Barra)...">
-                                                        <option value="">-- Selecione a Linha --</option>
-                                                        <?php foreach ($linhasDisponiveis as $l): ?>
-                                                            <option value="<?php echo $l['idLinha']; ?>">
-                                                                <?php 
-                                                                    $nomeL = !empty($l['numero']) ? $l['numero'] . ' - ' . $l['descricao'] : (!empty($l['linha']) ? $l['linha'] : 'Linha #' . $l['idLinha']);
-                                                                    echo htmlspecialchars($nomeL);
-                                                                ?>
-                                                            </option>
-                                                        <?php endforeach; ?>
-                                                    </select>
+
+                                                    <label id="card-modo-nao-informado" onclick="selecionarModoVeiculo('nao_informado')" style="flex: 1; min-width: 140px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 2px solid #cbd5e1; background: #ffffff; border-radius: 10px; cursor: pointer; transition: all 0.2s; user-select: none;">
+                                                        <input type="radio" name="opcaoVeiculo" id="radio_modo_nao_informado" value="nao_informado" style="accent-color: #2563eb; width: 18px; height: 18px; cursor: pointer;">
+                                                        <div>
+                                                            <div style="font-weight: 700; font-size: 0.9rem; color: #475569;">Não informado</div>
+                                                            <div style="font-size: 0.75rem; color: #94a3b8;">Continuar sem identificar veículo</div>
+                                                        </div>
+                                                    </label>
                                                 </div>
 
-                                                <div class="form-group-custom">
-                                                    <label class="form-label-custom">
-                                                        <span>Veículo</span>
-                                                        <span class="required-star">*</span>
-                                                    </label>
-                                                    <select name="idVeiculo" id="select_idVeiculo" required class="form-select-custom cb-searchable-select" data-maxlength="5" data-placeholder="Digite o prefixo do veículo (até 5 dígitos)...">
-                                                        <option value="">-- Selecione o Veículo --</option>
-                                                        <?php foreach ($veiculosDisponiveis as $v): ?>
-                                                            <option value="<?php echo $v['idVeiculo']; ?>">
-                                                                Prefixo: <?php echo htmlspecialchars($v['prefixo']); ?> <?php echo !empty($v['placa']) ? '('.htmlspecialchars($v['placa']).')' : ''; ?>
-                                                            </option>
-                                                        <?php endforeach; ?>
-                                                    </select>
-                                                </div>
-                                            </div>
-
-                                            <!-- 3. LOCAL & TIPO DE CONTAGEM -->
-                                            <div class="form-grid-2col">
-                                                <div class="form-group-custom">
-                                                    <label class="form-label-custom">
-                                                        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
-                                                            <circle cx="12" cy="10" r="3"></circle>
-                                                        </svg>
-                                                        <span>Local</span>
-                                                        <span class="required-star">*</span>
-                                                    </label>
-                                                    <select name="idLocal" id="select_idLocal" required class="form-select-custom cb-searchable-select" data-placeholder="Digite o nome do local ou região...">
-                                                        <option value="">-- Selecione o Local --</option>
-                                                        <?php foreach ($locaisDisponiveis as $loc): ?>
-                                                            <option value="<?php echo $loc['idLocal']; ?>">
-                                                                <?php echo htmlspecialchars($loc['local']); ?> <?php echo !empty($loc['regiao']) ? '('.htmlspecialchars($loc['regiao']).')' : ''; ?>
-                                                            </option>
-                                                        <?php endforeach; ?>
-                                                    </select>
-                                                </div>
-
-                                                <div class="form-group-custom">
-                                                    <label class="form-label-custom">
-                                                        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                            <line x1="19" y1="5" x2="5" y2="19"></line>
-                                                            <circle cx="6.5" cy="6.5" r="2.5"></circle>
-                                                            <circle cx="17.5" cy="17.5" r="2.5"></circle>
-                                                        </svg>
-                                                        <span>Tipo de Contagem</span>
-                                                        <span class="required-star">*</span>
-                                                    </label>
-                                                    <div class="chips-flex-row">
-                                                        <button type="button" id="chip-percentual" class="chip-btn active chip-purple" onclick="selectChip('tipoContagem', 'percentual', this, 'chip-purple')">
-                                                            % Percentual
+                                                <!-- Bloco interativo quando 'Registrar' está ativo -->
+                                                <div id="box-veiculo-registrar" style="display: block;">
+                                                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+                                                        <button type="button" onclick="openModalVeiculos()" style="display: inline-flex; align-items: center; gap: 8px; background: #2563eb; color: #ffffff; border: none; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.88rem; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.25); transition: all 0.2s;">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                                <circle cx="11" cy="11" r="8"></circle>
+                                                                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                                            </svg>
+                                                            <span>Buscar e Escolher Veículo(s)</span>
                                                         </button>
-                                                        <button type="button" id="chip-quantidade" class="chip-btn" onclick="selectChip('tipoContagem', 'quantidade', this, 'chip-purple')">
-                                                            👥 Quantidade
-                                                        </button>
+                                                        <span id="badge-contador-veiculos" style="font-size: 0.82rem; font-weight: 700; color: #64748b; background: #f1f5f9; padding: 4px 10px; border-radius: 6px;">0 selecionado(s)</span>
                                                     </div>
-                                                </div>
-                                            </div>
 
-                                            <!-- 4. VIAGEM (SENTIDO) -->
-                                            <div class="form-group-custom">
-                                                <label class="form-label-custom">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
-                                                    </svg>
-                                                    <span>Viagem</span>
-                                                    <span class="required-star">*</span>
-                                                </label>
-                                                <div class="chips-flex-row">
-                                                    <button type="button" id="chip-viagem-ida" class="chip-btn active chip-blue" onclick="selectChip('sentido', 'Ida', this, 'chip-blue')">
-                                                        ➡️ Ida
-                                                    </button>
-                                                    <button type="button" id="chip-viagem-volta" class="chip-btn" onclick="selectChip('sentido', 'Volta', this, 'chip-blue')">
-                                                        ⬅️ Volta
-                                                    </button>
-                                                </div>
-                                            </div>
+                                                    <!-- Container de badges dos veículos selecionados -->
+                                                    <div id="container-veiculos-chips" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 44px; padding: 10px 12px; background: #f8fafc; border: 1.5px dashed #cbd5e1; border-radius: 10px; align-items: center;">
+                                                        <span id="txt-sem-veiculo-hint" style="font-size: 0.82rem; color: #94a3b8; font-style: italic;">
+                                                            Nenhum veículo selecionado ainda. Clique no botão acima para escolher os veículos para a contagem.
+                                                        </span>
+                                                    </div>
 
-                                            <!-- 5. TIPO DE OPERAÇÃO -->
-                                            <div class="form-group-custom">
-                                                <label class="form-label-custom">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                        <polyline points="17 1 21 5 17 9"></polyline>
-                                                        <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
-                                                        <polyline points="7 23 3 19 7 15"></polyline>
-                                                        <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-                                                    </svg>
-                                                    <span>Tipo de Operação</span>
-                                                    <span class="required-star">*</span>
-                                                </label>
-                                                <div class="chips-flex-row">
-                                                    <button type="button" id="chip-op-embarque" class="chip-btn active chip-green" onclick="selectChip('tipoOperacao', 'embarque', this, 'chip-green')">
-                                                        ↓ Embarque
-                                                    </button>
-                                                    <button type="button" id="chip-op-desembarque" class="chip-btn" onclick="selectChip('tipoOperacao', 'desembarque', this, 'chip-green')">
-                                                        ↑ Desembarque
-                                                    </button>
-                                                    <button type="button" id="chip-op-ocupacao" class="chip-btn" onclick="selectChip('tipoOperacao', 'ocupacao', this, 'chip-green')">
-                                                        👥 Ocupação
-                                                    </button>
+                                                    <!-- Inputs ocultos para submissão -->
+                                                    <input type="hidden" name="idVeiculo" id="select_idVeiculo" value="">
+                                                    <input type="hidden" name="veiculosSelecionados" id="input_veiculosSelecionados" value="">
+                                                </div>
+
+                                                <!-- Bloco informativo quando 'Não informado' está ativo -->
+                                                <div id="box-veiculo-nao-informado" style="display: none; padding: 12px 14px; background: #f8fafc; border-radius: 10px; border: 1.5px solid #e2e8f0; color: #64748b; font-size: 0.86rem; font-weight: 600;">
+                                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #94a3b8; flex-shrink: 0;">
+                                                            <circle cx="12" cy="12" r="10"></circle>
+                                                            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+                                                        </svg>
+                                                        <span>Veículo não será informado nesta sessão de contagem.</span>
+                                                    </div>
                                                 </div>
                                             </div>
 
@@ -1366,12 +1485,14 @@ try {
 
                             <!-- BOTÃO PRINCIPAL DE INICIAR CONTAGEM -->
                             <div style="margin-top: 20px;">
-                                <button type="submit" class="btn-iniciar-contagem-verde">
+                                <button type="submit" id="btn-iniciar-contagem" class="btn-iniciar-contagem-verde" disabled>
                                     <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
                                         <path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"/>
                                     </svg>
                                     <span>Iniciar Contagem</span>
                                 </button>
+                                <div id="status-validacao-contagem" style="margin-top: 10px; padding: 10px 14px; border-radius: 10px; font-size: 0.84rem; text-align: center; background: #fff7ed; border: 1.5px solid #fed7aa; color: #c2410c; display: none; transition: all 0.2s;">
+                                </div>
                             </div>
                         </form>
 
@@ -1422,7 +1543,7 @@ try {
                                 </div>
 
                                 <div class="session-info-grid">
-                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha e Veículo">
+                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha, Veículo ou Turno">
                                         <div style="display: flex; justify-content: space-between; align-items: center;">
                                             <label style="margin:0; cursor: pointer;">Linha do Ônibus</label>
                                         </div>
@@ -1434,12 +1555,25 @@ try {
                                         </span>
                                     </div>
 
-                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha e Veículo">
+                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha, Veículo ou Turno">
                                         <div style="display: flex; justify-content: space-between; align-items: center;">
                                             <label style="margin:0; cursor: pointer;">Veículo (Prefixo)</label>
                                         </div>
                                         <span id="session-veiculo-text">
                                             <?php echo htmlspecialchars($sessaoAtiva['veiculoPrefixo'] ? $sessaoAtiva['veiculoPrefixo'] : 'Prefixo #'.$sessaoAtiva['idVeiculo']); ?>
+                                        </span>
+                                    </div>
+
+                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha, Veículo ou Turno">
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <label style="margin:0; cursor: pointer;">Turno</label>
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                                        </div>
+                                        <span id="session-turno-text" style="font-weight: 700; color: #000000;">
+                                            <?php 
+                                                $tAtiv = !empty($sessaoAtiva['turno']) ? $sessaoAtiva['turno'] : 'Matutino';
+                                                echo htmlspecialchars($tAtiv); 
+                                            ?>
                                         </span>
                                     </div>
 
@@ -2203,7 +2337,8 @@ try {
 
                 </div>
 
-                <!-- ABA 3: SOLICITAÇÕES DE CORREÇÃO (PARA SUPERVISOR / GERENTE / FISCAIS) -->
+                <?php if ($canViewSolicitacoes): ?>
+                <!-- ABA 3: SOLICITAÇÕES DE CORREÇÃO (PARA ADMINISTRADOR E GERENTE) -->
                 <div id="user-tab-solicitacoes" class="user-tab-content" style="display: none;">
                     
                     <!-- Header do Módulo de Solicitações -->
@@ -2219,9 +2354,9 @@ try {
                             </h2>
                             <p style="color: #64748b; font-size: 0.88rem; margin: 0; font-weight: 500;">
                                 <?php if ($isAdmin): ?>
-                                    Visão Gerencial: visualize e responda às solicitações de ajuste de contagem enviadas por fiscais e funcionários.
+                                    Visão do Administrador: visualize e responda às solicitações de ajuste de contagem enviadas pelos pesquisadores.
                                 <?php else: ?>
-                                    Acompanhe em tempo real suas solicitações de ajuste e consulte as respostas enviadas pelos supervisores do site.
+                                    Visão da Gerência: acompanhe e decida sobre as solicitações de ajuste de contagem sob sua supervisão.
                                 <?php endif; ?>
                             </p>
                         </div>
@@ -2349,7 +2484,7 @@ try {
                                         <?php foreach ($solicitacoesCorrecao as $sol): ?>
                                             <?php 
                                                 $stLower = strtolower($sol['status']);
-                                                $podeResponder = ($stLower === 'pendente') && ($isAdmin || (int)$sol['idUsuarioDestino'] === $usuarioId);
+                                                $podeResponder = ($stLower === 'pendente') && ($isAdmin || $isGerente || (int)$sol['idUsuarioDestino'] === $usuarioId);
                                                 $linhaTxt = !empty($sol['linhaNumero']) ? $sol['linhaNumero'] . ' - ' . $sol['linhaDescricao'] : (!empty($sol['idLinha']) ? 'Linha #' . $sol['idLinha'] : 'N/A');
                                                 $veicTxt = !empty($sol['veiculoPrefixo']) ? $sol['veiculoPrefixo'] : (!empty($sol['idVeiculo']) ? 'Prefixo #' . $sol['idVeiculo'] : 'N/A');
                                             ?>
@@ -2476,13 +2611,131 @@ try {
                     </div>
 
                 </div>
+                <?php endif; ?>
 
             </div>
 
         </div>
     </div>
 
-    <!-- MODAL DE ALTERAR LINHA E VEÍCULO DURANTE A CONTAGEM -->
+    <!-- MODAL DE SELEÇÃO MÚLTIPLA DE VEÍCULOS COM JANELA EXTERNA AO LADO -->
+    <div class="modal-overlay" id="modalSelecaoVeiculos" style="display: none; align-items: center; justify-content: center; z-index: 99999; padding: 16px;">
+        
+        <!-- Wrapper que posiciona o Modal de Registro e a Janela de Escolhidos lado a lado -->
+        <div style="display: flex; gap: 16px; align-items: flex-start; justify-content: center; max-width: 940px; width: 100%; flex-wrap: wrap;">
+
+            <!-- JANELA 1: MODAL DE REGISTRO E PESQUISA DE VEÍCULOS -->
+            <div class="modal-card" style="flex: 1; min-width: 320px; max-width: 580px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; padding: 0; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35); background: #ffffff;">
+                
+                <!-- Header do Modal de Pesquisa -->
+                <div class="modal-header" style="padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: #f8fafc; margin-bottom: 0;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div style="width: 38px; height: 38px; border-radius: 10px; background: #eff6ff; color: #2563eb; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">
+                            🚌
+                        </div>
+                        <div>
+                            <div style="font-size: 1.05rem; font-weight: 700; color: #0f172a;">Pesquisar Veículos</div>
+                            <div style="font-size: 0.8rem; color: #64748b;">Marque quantos veículos desejar para a contagem</div>
+                        </div>
+                    </div>
+                    <button type="button" onclick="closeModalVeiculos()" style="background: none; border: none; font-size: 1.6rem; color: #94a3b8; cursor: pointer; padding: 4px; line-height: 1;">&times;</button>
+                </div>
+
+                <!-- Campo de Busca em Tempo Real -->
+                <div style="padding: 14px 20px 10px; border-bottom: 1px solid #f1f5f9; background: #ffffff;">
+                    <div style="position: relative;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #94a3b8;">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                        </svg>
+                        <input type="text" id="inputBuscaVeiculoModal" placeholder="Digite o prefixo ou placa do veículo..." oninput="filtrarVeiculosModal(this.value)" style="width: 100%; padding: 10px 14px 10px 40px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.92rem; outline: none; box-sizing: border-box; transition: all 0.2s;">
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 0.8rem; color: #64748b;">
+                        <span>Selecione os veículos da frota abaixo:</span>
+                        <button type="button" onclick="desmarcarTodosVeiculosModal()" style="background: none; border: none; color: #dc2626; font-size: 0.8rem; font-weight: 600; cursor: pointer; text-decoration: underline;">Desmarcar todos</button>
+                    </div>
+                </div>
+
+                <!-- Lista Rolável de Veículos para Seleção -->
+                <div id="lista-veiculos-modal" style="padding: 12px 20px; overflow-y: auto; flex: 1; max-height: 380px; display: flex; flex-direction: column; gap: 8px; background: #ffffff;">
+                    <?php foreach ($veiculosDisponiveis as $v): ?>
+                        <?php 
+                            $pStr = htmlspecialchars($v['prefixo']);
+                            $plStr = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
+                            $buscaData = strtolower($v['prefixo'] . ' ' . $plStr);
+                        ?>
+                        <label class="item-veiculo-modal" data-id="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $pStr; ?>" data-placa="<?php echo $plStr; ?>" data-search="<?php echo htmlspecialchars($buscaData); ?>" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px; cursor: pointer; transition: all 0.15s; background: #ffffff; user-select: none;">
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <input type="checkbox" class="chk-veiculo-modal" value="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $pStr; ?>" data-placa="<?php echo $plStr; ?>" onchange="atualizarItemVeiculoVisual(this)" style="width: 19px; height: 19px; accent-color: #2563eb; cursor: pointer;">
+                                <div>
+                                    <div style="font-weight: 700; font-size: 0.92rem; color: #1e293b;">
+                                        Prefixo: <?php echo $pStr; ?>
+                                    </div>
+                                    <?php if ($plStr): ?>
+                                        <div style="font-size: 0.78rem; color: #64748b;">
+                                            Placa: <?php echo $plStr; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <span class="badge-veiculo-checked" style="display: none; font-size: 0.75rem; font-weight: 700; color: #2563eb; background: #eff6ff; padding: 3px 8px; border-radius: 6px; border: 1px solid #bfdbfe;">
+                                ✓ Selecionado
+                            </span>
+                        </label>
+                    <?php endforeach; ?>
+                    <div id="aviso-veiculos-nenhum" style="display: none; text-align: center; padding: 30px 10px; color: #94a3b8; font-size: 0.88rem;">
+                        Nenhum veículo encontrado correspondente à pesquisa.
+                    </div>
+                </div>
+
+                <!-- Rodapé do Modal Principal -->
+                <div style="padding: 14px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px; background: #f8fafc;">
+                    <button type="button" onclick="closeModalVeiculos()" style="padding: 9px 18px; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
+                        Cancelar
+                    </button>
+                    <button type="button" onclick="confirmarSelecaoVeiculosModal()" style="padding: 9px 20px; background: #2563eb; color: #ffffff; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.3); transition: all 0.2s;">
+                        Confirmar Seleção
+                    </button>
+                </div>
+            </div>
+
+            <!-- JANELA 2: JANELA EXTERNA AO LADO DO MODAL COM OS VEÍCULOS ESCOLHIDOS -->
+            <div id="janela-externa-veiculos-selecionados" style="width: 300px; max-height: 85vh; background: #ffffff; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; overflow: hidden; border: 1.5px solid #bfdbfe; flex-shrink: 0;">
+                
+                <!-- Cabeçalho da Janela Externa -->
+                <div style="padding: 16px 18px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 1.25rem;">📋</span>
+                        <div>
+                            <div style="font-weight: 800; font-size: 0.94rem; color: #1e3a8a;">Veículos Escolhidos</div>
+                            <div style="font-size: 0.74rem; color: #3b82f6;">Janela de conferência em tempo real</div>
+                        </div>
+                    </div>
+                    <span id="badge-lateral-qtd" style="background: #2563eb; color: #ffffff; padding: 3px 9px; border-radius: 9999px; font-size: 0.78rem; font-weight: 800; box-shadow: 0 1px 3px rgba(37,99,235,0.3);">0</span>
+                </div>
+
+                <!-- Lista dos Veículos Escolhidos na Janela Externa -->
+                <div id="lista-veiculos-selecionados-lateral" style="padding: 12px 14px; overflow-y: auto; flex: 1; max-height: 380px; display: flex; flex-direction: column; gap: 8px; background: #f8fafc;">
+                    <div id="vazio-lateral-hint" style="text-align: center; padding: 40px 15px; color: #94a3b8; font-size: 0.84rem;">
+                        <div style="font-size: 2.2rem; margin-bottom: 8px; opacity: 0.6;">📋</div>
+                        <strong style="color: #64748b;">Nenhum veículo escolhido</strong>
+                        <p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">
+                            Marque os veículos no modal de pesquisa ao lado para vê-los reunidos aqui fora.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Rodapé da Janela Externa -->
+                <div style="padding: 12px 16px; border-top: 1px solid #e2e8f0; background: #f1f5f9; display: flex; justify-content: space-between; align-items: center;">
+                    <button type="button" onclick="desmarcarTodosVeiculosModal()" style="background: none; border: none; color: #dc2626; font-size: 0.78rem; font-weight: 700; cursor: pointer; text-decoration: underline;">Limpar Seleção</button>
+                    <span id="txt-modal-veiculos-selecionados" style="font-size: 0.78rem; font-weight: 700; color: #2563eb;">0 escolhido(s)</span>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- MODAL DE ALTERAR LINHA, VEÍCULO E TURNO DURANTE A CONTAGEM -->
     <div class="modal-overlay" id="alterarLinhaVeiculoModal">
         <div class="modal-card">
             <div class="modal-header">
@@ -2490,7 +2743,7 @@ try {
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="22" height="22" style="color: #2563eb;">
                         <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
                     </svg>
-                    Alterar Linha e Veículo da Sessão
+                    Alterar Dados da Sessão (Linha, Veículo e Turno)
                 </div>
                 <button type="button" onclick="closeAlterarLinhaVeiculoModal()" style="background: none; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer;">&times;</button>
             </div>
@@ -2513,7 +2766,7 @@ try {
                     </select>
                 </div>
 
-                <div style="margin-bottom: 24px;">
+                <div style="margin-bottom: 16px;">
                     <label style="font-weight: 600; font-size: 0.88rem; color: #334155; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
                         <span>Veículo (Prefixo) <span style="color: #dc2626;">*</span>:</span>
                     </label>
@@ -2527,12 +2780,23 @@ try {
                     </select>
                 </div>
 
+                <div style="margin-bottom: 24px;">
+                    <label style="font-weight: 600; font-size: 0.88rem; color: #334155; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                        <span>Turno da Sessão <span style="color: #dc2626;">*</span>:</span>
+                    </label>
+                    <select id="editTurno" required class="form-select-custom" style="width: 100%; padding: 10px 14px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-weight: 700; font-size: 0.92rem; color: #000000; background: #ffffff; cursor: pointer; outline: none;">
+                        <option value="Matutino" <?php echo ($sessaoAtiva && strcasecmp($sessaoAtiva['turno'], 'Matutino') === 0) ? 'selected' : ''; ?>>Matutino</option>
+                        <option value="Vespertino" <?php echo ($sessaoAtiva && strcasecmp($sessaoAtiva['turno'], 'Vespertino') === 0) ? 'selected' : ''; ?>>Vespertino</option>
+                        <option value="Noturno" <?php echo ($sessaoAtiva && strcasecmp($sessaoAtiva['turno'], 'Noturno') === 0) ? 'selected' : ''; ?>>Noturno</option>
+                    </select>
+                </div>
+
                 <div style="display: flex; gap: 12px; justify-content: flex-end;">
                     <button type="button" onclick="closeAlterarLinhaVeiculoModal()" style="padding: 10px 18px; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 10px; font-weight: 600; cursor: pointer;">
                         Cancelar
                     </button>
                     <button type="submit" style="padding: 10px 18px; background: #2563eb; color: #ffffff; border: none; border-radius: 10px; font-weight: 700; cursor: pointer;">
-                        Salvar Alteração
+                        Salvar Alterações
                     </button>
                 </div>
             </form>
@@ -2568,8 +2832,17 @@ try {
                     <select id="corrDestino" required class="form-select-custom" style="width: 100%; padding: 11px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-family: inherit; font-size: 0.95rem; font-weight: 600; color: #1e293b; background-color: #ffffff;">
                         <option value="">-- Selecione o Supervisor / Gerente --</option>
                         <?php foreach ($supervisoresDisponiveis as $sup): ?>
+                            <?php 
+                                $supCargo = isset($sup['cargo']) && !empty($sup['cargo']) ? $sup['cargo'] : '';
+                                $supRoleTag = '';
+                                if ((int)$sup['acesso'] === 1 || strcasecmp($supCargo, 'administrador') === 0) {
+                                    $supRoleTag = '— [Administrador]';
+                                } elseif ((int)$sup['acesso'] === 2 || strcasecmp($supCargo, 'gerente') === 0) {
+                                    $supRoleTag = '— [Gerente]';
+                                }
+                            ?>
                             <option value="<?php echo $sup['idusuarios']; ?>">
-                                👤 <?php echo htmlspecialchars($sup['nome']); ?> (@<?php echo htmlspecialchars($sup['login']); ?>) <?php echo ((int)$sup['acesso'] === 1) ? '— [Supervisor/Gerente]' : ''; ?>
+                                👤 <?php echo htmlspecialchars($sup['nome']); ?> (@<?php echo htmlspecialchars($sup['login']); ?>) <?php echo $supRoleTag; ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -3117,6 +3390,8 @@ try {
             e.preventDefault();
             const idLinha = document.getElementById('editIdLinha').value;
             const idVeiculo = document.getElementById('editIdVeiculo').value;
+            const editTurno = document.getElementById('editTurno');
+            const turnoVal = editTurno ? editTurno.value : '';
 
             if (!idLinha || !idVeiculo) {
                 alert('Por favor, selecione a linha e o veículo.');
@@ -3128,6 +3403,7 @@ try {
             formData.append('idContagem', activeContagemId);
             formData.append('idLinha', idLinha);
             formData.append('idVeiculo', idVeiculo);
+            if (turnoVal) formData.append('turno', turnoVal);
             formData.append('ajax', '1');
 
             fetch('index.php', {
@@ -3140,14 +3416,16 @@ try {
                 if (data.success) {
                     const linhaEl = document.getElementById('session-linha-text');
                     const veiculoEl = document.getElementById('session-veiculo-text');
+                    const turnoEl = document.getElementById('session-turno-text');
                     if (linhaEl) linhaEl.textContent = data.linhaText;
                     if (veiculoEl) veiculoEl.textContent = data.veiculoText;
+                    if (turnoEl && data.turnoText) turnoEl.textContent = data.turnoText;
                     closeAlterarLinhaVeiculoModal();
                 } else {
-                    alert(data.message || 'Erro ao alterar linha/veículo.');
+                    alert(data.message || 'Erro ao alterar dados da sessão.');
                 }
             })
-            .catch(err => console.error('Erro ao alterar linha/veículo:', err));
+            .catch(err => console.error('Erro ao alterar dados da sessão:', err));
         }
 
         // 4. INCREMENTO VIA AJAX (+1, +5, +10 E BOTÕES PERCENTUAIS)
@@ -3553,7 +3831,15 @@ try {
                             <div class="session-info-item"><label>Veículo</label><span>${escapeHtml(veicInfo)}</span></div>
                             <div class="session-info-item"><label>Local de Parada</label><span>${escapeHtml(c.nomeLocal || 'Local')}</span></div>
                             <div class="session-info-item"><label>Sentido (Viagem)</label><span style="color: #0054A6; font-weight: 700;">${(c.sentido && c.sentido.toLowerCase() === 'volta') ? '⬅️ Volta' : '➡️ Ida'}</span></div>
-                            <div class="session-info-item"><label>Turno</label><span>${escapeHtml(c.turno || 'Matutino')}</span></div>
+                            <div class="session-info-item">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <label style="margin: 0;">Turno</label>
+                                    <button type="button" onclick="quickEditTurnoHistorico(${c.idContagem}, '${escapeHtml(c.turno || 'Matutino')}')" style="background: none; border: none; color: #000000; cursor: pointer; font-size: 0.76rem; font-weight: 700; padding: 0; text-decoration: underline;" title="Clique para editar o turno desta contagem">
+                                        Editar
+                                    </button>
+                                </div>
+                                <span id="hist-turno-val-${c.idContagem}" style="font-weight: 700; color: #000000;">${escapeHtml(c.turno || 'Matutino')}</span>
+                            </div>
                             <div class="session-info-item"><label>Início / Fim</label><span>${c.inicioFmt}<br><small style="color:#64748b;">Fim: ${c.fimFmt || 'Em andamento'}</small></span></div>
                         </div>
 
@@ -3629,6 +3915,64 @@ try {
             })
             .catch(err => {
                 document.getElementById('histModalContent').innerHTML = `<div style="text-align: center; padding: 30px; color: #dc2626;">Erro de conexão ao carregar extrato.</div>`;
+            });
+        }
+
+        function quickEditTurnoHistorico(idContagem, currentTurno) {
+            const container = document.getElementById('hist-turno-val-' + idContagem);
+            if (!container) return;
+            const cur = (currentTurno || 'Matutino').toLowerCase();
+            container.innerHTML = `
+                <div style="display: inline-flex; align-items: center; gap: 6px; margin-top: 4px;">
+                    <select id="sel-hist-turno-${idContagem}" onchange="salvarTurnoHistorico(${idContagem}, this.value)" style="padding: 4px 8px; border-radius: 8px; border: 1.5px solid #cbd5e1; font-weight: 700; font-size: 0.82rem; outline: none; background: #ffffff; color: #000000; cursor: pointer;">
+                        <option value="Matutino" ${cur === 'matutino' ? 'selected' : ''}>Matutino</option>
+                        <option value="Vespertino" ${cur === 'vespertino' ? 'selected' : ''}>Vespertino</option>
+                        <option value="Noturno" ${cur === 'noturno' ? 'selected' : ''}>Noturno</option>
+                    </select>
+                    <button type="button" onclick="cancelarEditTurnoHistorico(${idContagem}, '${escapeHtml(currentTurno)}')" style="background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 3px 6px; font-size: 0.72rem; cursor: pointer; color: #000000;" title="Cancelar">x</button>
+                </div>
+            `;
+        }
+
+        function cancelarEditTurnoHistorico(idContagem, originalTurno) {
+            const container = document.getElementById('hist-turno-val-' + idContagem);
+            if (container) container.textContent = originalTurno;
+        }
+
+        function salvarTurnoHistorico(idContagem, novoTurno) {
+            const container = document.getElementById('hist-turno-val-' + idContagem);
+            if (container) {
+                container.innerHTML = `<span style="color: #2563eb; font-size: 0.8rem;">Salvando...</span>`;
+            }
+
+            const formData = new FormData();
+            formData.append('action', 'alterar_turno_historico');
+            formData.append('idContagem', idContagem);
+            formData.append('turno', novoTurno);
+            formData.append('ajax', '1');
+
+            fetch('index.php', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    if (container) {
+                        container.innerHTML = `<span style="color: #16a34a; font-weight: 800;">✓ ${escapeHtml(novoTurno)}</span>`;
+                        setTimeout(() => {
+                            if (container) container.textContent = novoTurno;
+                        }, 1200);
+                    }
+                } else {
+                    alert(data.message || 'Erro ao alterar turno.');
+                    if (container) container.textContent = novoTurno;
+                }
+            })
+            .catch(err => {
+                alert('Erro de comunicação ao salvar o turno.');
+                if (container) container.textContent = novoTurno;
             });
         }
 
@@ -3794,7 +4138,385 @@ try {
             if (activeClass) {
                 element.classList.add(activeClass);
             }
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
         }
+
+        // ==========================================
+        // GERENCIAMENTO DA SELEÇÃO DE VEÍCULOS (FRONT-END)
+        // ==========================================
+        var veiculosSelecionadosState = [];
+
+        function selecionarModoVeiculo(modo) {
+            var radioReg = document.getElementById('radio_modo_registrar');
+            var radioNao = document.getElementById('radio_modo_nao_informado');
+            var cardReg = document.getElementById('card-modo-registrar');
+            var cardNao = document.getElementById('card-modo-nao-informado');
+            var boxReg = document.getElementById('box-veiculo-registrar');
+            var boxNao = document.getElementById('box-veiculo-nao-informado');
+
+            if (modo === 'registrar') {
+                if (radioReg) radioReg.checked = true;
+                if (radioNao) radioNao.checked = false;
+                if (cardReg) {
+                    cardReg.style.borderColor = '#2563eb';
+                    cardReg.style.background = '#eff6ff';
+                }
+                if (cardNao) {
+                    cardNao.style.borderColor = '#cbd5e1';
+                    cardNao.style.background = '#ffffff';
+                }
+                if (boxReg) boxReg.style.display = 'block';
+                if (boxNao) boxNao.style.display = 'none';
+
+                // Abre o modal para o usuário buscar e marcar os veículos
+                openModalVeiculos();
+            } else {
+                if (radioReg) radioReg.checked = false;
+                if (radioNao) radioNao.checked = true;
+                if (cardReg) {
+                    cardReg.style.borderColor = '#cbd5e1';
+                    cardReg.style.background = '#ffffff';
+                }
+                if (cardNao) {
+                    cardNao.style.borderColor = '#2563eb';
+                    cardNao.style.background = '#eff6ff';
+                }
+                if (boxReg) boxReg.style.display = 'none';
+                if (boxNao) boxNao.style.display = 'block';
+
+                // Limpa seleções ativas
+                veiculosSelecionadosState = [];
+                renderVeiculosChips();
+                atualizarInputsVeiculos();
+            }
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
+        }
+
+        function openModalVeiculos() {
+            var modal = document.getElementById('modalSelecaoVeiculos');
+            if (modal) {
+                modal.classList.add('active');
+                modal.style.display = 'flex';
+                sincronizarCheckboxesModal();
+                var inputBusca = document.getElementById('inputBuscaVeiculoModal');
+                if (inputBusca) {
+                    inputBusca.value = '';
+                    filtrarVeiculosModal('');
+                    setTimeout(function() { inputBusca.focus(); }, 120);
+                }
+            }
+        }
+
+        function closeModalVeiculos() {
+            var modal = document.getElementById('modalSelecaoVeiculos');
+            if (modal) {
+                modal.classList.remove('active');
+                modal.style.display = 'none';
+            }
+        }
+
+        function filtrarVeiculosModal(termo) {
+            termo = (termo || '').toLowerCase().trim();
+            var items = document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal');
+            var visiveis = 0;
+            items.forEach(function(item) {
+                var search = item.getAttribute('data-search') || '';
+                if (!termo || search.indexOf(termo) !== -1) {
+                    item.style.display = 'flex';
+                    visiveis++;
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+            var aviso = document.getElementById('aviso-veiculos-nenhum');
+            if (aviso) {
+                aviso.style.display = (visiveis === 0) ? 'block' : 'none';
+            }
+        }
+
+        function atualizarItemVeiculoVisual(chk) {
+            var item = chk.closest('.item-veiculo-modal');
+            if (!item) return;
+            var badge = item.querySelector('.badge-veiculo-checked');
+            if (chk.checked) {
+                item.style.borderColor = '#2563eb';
+                item.style.background = '#f0f7ff';
+                if (badge) badge.style.display = 'inline-block';
+            } else {
+                item.style.borderColor = '#e2e8f0';
+                item.style.background = '#ffffff';
+                if (badge) badge.style.display = 'none';
+            }
+            atualizarContadorModal();
+        }
+
+        function atualizarContadorModal() {
+            var checked = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal:checked');
+            var txt = document.getElementById('txt-modal-veiculos-selecionados');
+            if (txt) {
+                txt.textContent = checked.length + ' veículo(s) selecionado(s)';
+            }
+            atualizarPainelLateralSelecionados();
+        }
+
+        function atualizarPainelLateralSelecionados() {
+            var checked = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal:checked');
+            var container = document.getElementById('lista-veiculos-selecionados-lateral');
+            var badgeQtd = document.getElementById('badge-lateral-qtd');
+            if (badgeQtd) badgeQtd.textContent = checked.length;
+            if (!container) return;
+
+            if (checked.length === 0) {
+                container.innerHTML = '<div id="vazio-lateral-hint" style="text-align: center; padding: 40px 15px; color: #94a3b8; font-size: 0.84rem;">' +
+                    '<div style="font-size: 2.2rem; margin-bottom: 8px; opacity: 0.6;">📋</div>' +
+                    '<strong style="color: #64748b;">Nenhum veículo selecionado</strong>' +
+                    '<p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">Marque os veículos na lista de pesquisa ao lado para visualizá-los reunidos aqui.</p>' +
+                    '</div>';
+                return;
+            }
+
+            var html = '';
+            checked.forEach(function(chk) {
+                var id = chk.value;
+                var prefixo = chk.getAttribute('data-prefixo') || id;
+                var placa = chk.getAttribute('data-placa') || '';
+
+                html += '<div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; background: #ffffff; border: 1.5px solid #bfdbfe; border-left: 4px solid #2563eb; border-radius: 8px; box-shadow: 0 1px 3px rgba(37,99,235,0.06); transition: all 0.15s;">';
+                html += '  <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">';
+                html += '    <span style="font-size: 1.1rem; line-height: 1;">🚌</span>';
+                html += '    <div style="min-width: 0;">';
+                html += '      <div style="font-weight: 700; font-size: 0.88rem; color: #1e3a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Prefixo: ' + escapeHtml(prefixo) + '</div>';
+                if (placa) {
+                    html += '  <div style="font-size: 0.75rem; color: #64748b;">Placa: ' + escapeHtml(placa) + '</div>';
+                }
+                html += '    </div>';
+                html += '  </div>';
+                html += '  <button type="button" onclick="desmarcarVeiculoPeloId(\'' + escapeHtml(id) + '\')" title="Desmarcar este veículo" style="background: none; border: none; color: #94a3b8; font-size: 1.3rem; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: 4px; transition: color 0.15s;" onmouseover="this.style.color=\'#dc2626\'" onmouseout="this.style.color=\'#94a3b8\'">&times;</button>';
+                html += '</div>';
+            });
+
+            container.innerHTML = html;
+        }
+
+        function desmarcarVeiculoPeloId(id) {
+            var chk = document.querySelector('#lista-veiculos-modal .chk-veiculo-modal[value="' + id + '"]');
+            if (chk) {
+                chk.checked = false;
+                atualizarItemVeiculoVisual(chk);
+            }
+        }
+
+        function desmarcarTodosVeiculosModal() {
+            var chks = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal');
+            chks.forEach(function(c) {
+                c.checked = false;
+                atualizarItemVeiculoVisual(c);
+            });
+        }
+
+        function sincronizarCheckboxesModal() {
+            var chks = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal');
+            var idsSelecionados = veiculosSelecionadosState.map(function(v) { return String(v.id); });
+            chks.forEach(function(c) {
+                c.checked = (idsSelecionados.indexOf(String(c.value)) !== -1);
+                atualizarItemVeiculoVisual(c);
+            });
+            atualizarContadorModal();
+        }
+
+        function confirmarSelecaoVeiculosModal() {
+            var chks = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal:checked');
+            var novos = [];
+            chks.forEach(function(c) {
+                novos.push({
+                    id: c.value,
+                    prefixo: c.getAttribute('data-prefixo') || c.value,
+                    placa: c.getAttribute('data-placa') || ''
+                });
+            });
+            veiculosSelecionadosState = novos;
+            renderVeiculosChips();
+            atualizarInputsVeiculos();
+            closeModalVeiculos();
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
+        }
+
+        function removerVeiculoSelecionado(id) {
+            veiculosSelecionadosState = veiculosSelecionadosState.filter(function(v) {
+                return String(v.id) !== String(id);
+            });
+            renderVeiculosChips();
+            atualizarInputsVeiculos();
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
+        }
+
+        function renderVeiculosChips() {
+            var container = document.getElementById('container-veiculos-chips');
+            var badgeTotal = document.getElementById('badge-contador-veiculos');
+            if (!container) return;
+
+            if (badgeTotal) {
+                badgeTotal.textContent = veiculosSelecionadosState.length + ' selecionado(s)';
+            }
+
+            if (veiculosSelecionadosState.length === 0) {
+                container.innerHTML = '<span id="txt-sem-veiculo-hint" style="font-size: 0.82rem; color: #94a3b8; font-style: italic;">Nenhum veículo selecionado ainda. Clique no botão acima para escolher os veículos para a contagem.</span>';
+                return;
+            }
+
+            var html = '';
+            veiculosSelecionadosState.forEach(function(v) {
+                html += '<span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #eff6ff; border: 1.5px solid #bfdbfe; border-radius: 9999px; font-size: 0.84rem; font-weight: 700; color: #1d4ed8; box-shadow: 0 1px 2px rgba(37,99,235,0.1);">';
+                html += '🚌 Prefixo: ' + escapeHtml(v.prefixo);
+                if (v.placa) html += ' <span style="font-weight: 500; font-size: 0.76rem; color: #64748b;">(' + escapeHtml(v.placa) + ')</span>';
+                html += '<button type="button" onclick="removerVeiculoSelecionado(\'' + escapeHtml(v.id) + '\')" title="Remover" style="background: none; border: none; color: #94a3b8; cursor: pointer; padding: 0 0 0 4px; font-size: 1.1rem; line-height: 1; display: inline-flex; align-items: center;">&times;</button>';
+                html += '</span>';
+            });
+            container.innerHTML = html;
+        }
+
+        function atualizarInputsVeiculos() {
+            var inputId = document.getElementById('select_idVeiculo');
+            var inputMulti = document.getElementById('input_veiculosSelecionados');
+            if (veiculosSelecionadosState.length > 0) {
+                if (inputId) inputId.value = veiculosSelecionadosState[0].id;
+                if (inputMulti) {
+                    var ids = veiculosSelecionadosState.map(function(v) { return v.id; });
+                    inputMulti.value = ids.join(',');
+                }
+            } else {
+                if (inputId) inputId.value = '';
+                if (inputMulti) inputMulti.value = '';
+            }
+        }
+
+        // ==========================================
+        // VALIDAÇÃO TOTAL PARA INICIAR CONTAGEM
+        // ==========================================
+        function checarStatusFormulario() {
+            var formInit = document.getElementById('form-iniciar-contagem');
+            if (!formInit) return { valido: true };
+
+            var selLinha = document.getElementById('select_idLinha');
+            var selLocal = document.getElementById('select_idLocal');
+            var idLinha = selLinha ? selLinha.value : '';
+            var idLocal = selLocal ? selLocal.value : '';
+
+            var inputSentido = document.getElementById('input_sentido');
+            var inputTipoOp = document.getElementById('input_tipoOperacao');
+            var inputTipoCont = document.getElementById('input_tipoContagem');
+            var inputCondTempo = document.getElementById('input_condicaoTempo');
+            var inputTipoTransp = document.getElementById('input_tipoTransporte');
+
+            var sentido = inputSentido ? inputSentido.value : '';
+            var tipoOp = inputTipoOp ? inputTipoOp.value : '';
+            var tipoCont = inputTipoCont ? inputTipoCont.value : '';
+            var condTempo = inputCondTempo ? inputCondTempo.value : '';
+            var tipoTransp = inputTipoTransp ? inputTipoTransp.value : '';
+
+            var radioNaoInf = document.getElementById('radio_modo_nao_informado');
+            var isNaoInformado = radioNaoInf && radioNaoInf.checked;
+            var temVeiculoRegistrado = (typeof veiculosSelecionadosState !== 'undefined' && veiculosSelecionadosState.length > 0);
+            var veiculoValido = isNaoInformado || temVeiculoRegistrado;
+
+            var faltaLinha = !idLinha || idLinha.trim() === '';
+            var faltaLocal = !idLocal || idLocal.trim() === '';
+            var faltaVeiculo = !veiculoValido;
+            var faltaViagem = !sentido || sentido.trim() === '';
+            var faltaOperacao = !tipoOp || tipoOp.trim() === '';
+            var faltaContagem = !tipoCont || tipoCont.trim() === '';
+            var faltaTempo = !condTempo || condTempo.trim() === '';
+            var faltaTransporte = !tipoTransp || tipoTransp.trim() === '';
+
+            var valido = !faltaLinha && !faltaLocal && !faltaVeiculo &&
+                           !faltaViagem && !faltaOperacao && !faltaContagem &&
+                           !faltaTempo && !faltaTransporte;
+
+            return {
+                valido: valido,
+                faltaLinha: faltaLinha,
+                faltaLocal: faltaLocal,
+                faltaVeiculo: faltaVeiculo,
+                faltaViagem: faltaViagem,
+                faltaOperacao: faltaOperacao,
+                faltaContagem: faltaContagem,
+                faltaTempo: faltaTempo,
+                faltaTransporte: faltaTransporte,
+                isNaoInformado: isNaoInformado
+            };
+        }
+
+        function atualizarBotaoIniciar() {
+            var btn = document.getElementById('btn-iniciar-contagem');
+            var statusBox = document.getElementById('status-validacao-contagem');
+            if (!btn) return;
+
+            var status = checarStatusFormulario();
+
+            if (!status.valido) {
+                btn.disabled = true;
+                btn.classList.add('is-disabled');
+                btn.setAttribute('title', 'Complete todas as seleções obrigatórias para poder iniciar a contagem');
+
+                if (statusBox) {
+                    statusBox.style.display = 'block';
+                    statusBox.style.background = '#fff7ed';
+                    statusBox.style.borderColor = '#fed7aa';
+                    statusBox.style.color = '#c2410c';
+
+                    var pendencias = [];
+                    if (status.faltaLinha) pendencias.push('Linha');
+                    if (status.faltaLocal) pendencias.push('Local');
+                    if (status.faltaVeiculo) pendencias.push('Veículo (escolha ao menos um ou selecione "Não informado")');
+                    if (status.faltaViagem) pendencias.push('Viagem');
+                    if (status.faltaOperacao) pendencias.push('Tipo de Operação');
+                    if (status.faltaContagem) pendencias.push('Tipo de Contagem');
+                    if (status.faltaTempo) pendencias.push('Condição do Tempo');
+                    if (status.faltaTransporte) pendencias.push('Tipo de Transporte');
+
+                    statusBox.innerHTML = '<span style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;">' +
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #ea580c; flex-shrink: 0;"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>' +
+                        '<span><strong>Seleções pendentes:</strong> Escolha <u>' + pendencias.join('</u>, <u>') + '</u> para iniciar.</span>' +
+                        '</span>';
+                }
+            } else {
+                btn.disabled = false;
+                btn.classList.remove('is-disabled');
+                btn.removeAttribute('title');
+
+                if (statusBox) {
+                    statusBox.style.display = 'block';
+                    statusBox.style.background = '#f0fdf4';
+                    statusBox.style.borderColor = '#bbf7d0';
+                    statusBox.style.color = '#15803d';
+                    statusBox.innerHTML = '<span style="display: inline-flex; align-items: center; justify-content: center; gap: 8px;">' +
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #16a34a; flex-shrink: 0;"><path d="M20 6 9 17l-5-5"></path></svg>' +
+                        '<span><strong>Tudo pronto!</strong> Todas as opções foram selecionadas. Clique em Iniciar Contagem para começar.</span>' +
+                        '</span>';
+                }
+            }
+        }
+
+        // Fechar modal ao clicar fora ou com a tecla ESC
+        document.addEventListener('DOMContentLoaded', function() {
+            var modalV = document.getElementById('modalSelecaoVeiculos');
+            if (modalV) {
+                modalV.addEventListener('click', function(e) {
+                    if (e.target === modalV) {
+                        closeModalVeiculos();
+                    }
+                });
+            }
+        });
+
 
         function filterTableRows(tableId, query) {
             const table = document.getElementById(tableId);
@@ -4473,33 +5195,45 @@ try {
 
                 // Validação e persistência no submit
                 formInit.addEventListener('submit', function(e) {
-                    const searchables = formInit.querySelectorAll('.cb-searchable-select');
-                    let hasError = false;
-                    let firstErrorWrapper = null;
-
-                    searchables.forEach(function(sel) {
-                        const isReq = sel.getAttribute('data-required') === 'true' || sel.hasAttribute('required');
-                        if (isReq && (!sel.value || sel.value.trim() === '')) {
-                            hasError = true;
-                            const wrap = sel.closest('.cb-searchable-container');
-                            if (wrap) {
-                                wrap.classList.add('cb-has-error');
-                                if (!firstErrorWrapper) firstErrorWrapper = wrap;
-                            }
-                        }
-                    });
-
-                    if (hasError) {
+                    var status = checarStatusFormulario();
+                    if (!status.valido) {
                         e.preventDefault();
                         e.stopPropagation();
-                        if (firstErrorWrapper) {
-                            const inp = firstErrorWrapper.querySelector('.cb-searchable-input');
-                            if (inp) {
-                                inp.focus();
-                                const ctrl = firstErrorWrapper.querySelector('.cb-searchable-control');
-                                if (ctrl) ctrl.click();
+
+                        if (status.faltaLinha) {
+                            var selL = document.getElementById('select_idLinha');
+                            var wrapL = selL ? selL.closest('.cb-searchable-container') : null;
+                            if (wrapL) {
+                                wrapL.classList.add('cb-has-error');
+                                wrapL.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                var inpL = wrapL.querySelector('.cb-searchable-input');
+                                if (inpL) inpL.focus();
                             }
+                        } else if (status.faltaLocal) {
+                            var selLoc = document.getElementById('select_idLocal');
+                            var wrapLoc = selLoc ? selLoc.closest('.cb-searchable-container') : null;
+                            if (wrapLoc) {
+                                wrapLoc.classList.add('cb-has-error');
+                                wrapLoc.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                var inpLoc = wrapLoc.querySelector('.cb-searchable-input');
+                                if (inpLoc) inpLoc.focus();
+                            }
+                        } else if (status.faltaVeiculo) {
+                            var boxV = document.getElementById('veiculo-section-group');
+                            if (boxV) {
+                                boxV.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                boxV.style.outline = '2.5px solid #ef4444';
+                                boxV.style.outlineOffset = '4px';
+                                boxV.style.borderRadius = '12px';
+                                setTimeout(function() {
+                                    boxV.style.outline = '';
+                                    boxV.style.outlineOffset = '';
+                                }, 3000);
+                            }
+                            openModalVeiculos();
                         }
+
+                        atualizarBotaoIniciar();
                         return false;
                     }
 
@@ -4508,10 +5242,19 @@ try {
                     if (formInit.elements['idLocal']) localStorage.setItem('cb_last_idLocal', formInit.elements['idLocal'].value);
                     if (formInit.elements['tipoOperacao']) localStorage.setItem('cb_last_tipoOperacao', formInit.elements['tipoOperacao'].value);
                 });
+
+                formInit.addEventListener('change', function() {
+                    atualizarBotaoIniciar();
+                });
             }
 
             // Inicializar todos os selects pesquisáveis na página
             document.querySelectorAll('.cb-searchable-select').forEach(initSearchableSelect);
+
+            // Validação inicial do formulário para bloquear/liberar o botão
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
 
             // Inicializar a paginação da tabela de histórico de contagens
             renderHistoryPage();
@@ -4519,7 +5262,12 @@ try {
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.get('tab') === 'solicitacoes') {
                 const solicBtn = document.getElementById('btn-tab-solicitacoes');
-                if (solicBtn) switchUserTab('tab-solicitacoes', solicBtn);
+                if (solicBtn) {
+                    switchUserTab('tab-solicitacoes', solicBtn);
+                } else {
+                    const contBtn = document.getElementById('btn-tab-contador');
+                    if (contBtn) switchUserTab('tab-contador', contBtn);
+                }
             } else if (urlParams.has('data_inicio') || urlParams.has('data_fim') || urlParams.has('hora_inicio') || urlParams.has('hora_fim') || urlParams.has('idEmpresa') || urlParams.has('idLinha') || urlParams.has('idVeiculo') || urlParams.has('idLocal') || urlParams.has('tipoOperacao') || urlParams.get('tab') === 'historico') {
                 const histBtn = document.getElementById('btn-tab-historico');
                 if (histBtn) switchUserTab('tab-historico', histBtn);

@@ -13,7 +13,7 @@ require_once 'db.php';
 
 // Validação estrita do privilégio de administrador e status ativo diretamente no banco de dados
 try {
-    $stmtAdminCheck = $pdo->prepare("SELECT acesso, nome, login, ativo FROM usuarios WHERE idusuarios = ? LIMIT 1");
+    $stmtAdminCheck = $pdo->prepare("SELECT acesso, cargo, nome, login, ativo FROM usuarios WHERE idusuarios = ? LIMIT 1");
     $stmtAdminCheck->execute([$_SESSION['usuario_id']]);
     $userDbData = $stmtAdminCheck->fetch();
 
@@ -26,6 +26,7 @@ try {
 
     // Sincroniza sessão com dados verificados do banco
     $_SESSION['acesso'] = (int)$userDbData['acesso'];
+    $_SESSION['cargo']  = isset($userDbData['cargo']) ? $userDbData['cargo'] : '';
     $_SESSION['nome']   = $userDbData['nome'];
     $_SESSION['login']  = $userDbData['login'];
     $_SESSION['ativo']  = (int)$userDbData['ativo'];
@@ -240,12 +241,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $senha  = $_POST['senha'];
             $email  = trim($_POST['email']);
             $acesso = (int)$_POST['acesso'];
+            $cargo  = ($acesso === 1) ? 'Administrador' : (($acesso === 2) ? 'Gerente' : 'Pesquisador');
             $ativo  = isset($_POST['ativo']) ? (int)$_POST['ativo'] : 1;
             
             if ($nome !== '' && $login !== '' && $senha !== '' && $email !== '') {
                 $hashSenha = password_hash($senha, PASSWORD_DEFAULT);
                 $dataNow = date('Y-m-d H:i:s');
-                $stmt = $pdo->prepare("INSERT INTO usuarios (nome, login, senha, email, data, acesso, ativo) VALUES (:nome, :login, :senha, :email, :data, :acesso, :ativo)");
+                $stmt = $pdo->prepare("INSERT INTO usuarios (nome, login, senha, email, data, acesso, cargo, ativo) VALUES (:nome, :login, :senha, :email, :data, :acesso, :cargo, :ativo)");
                 $stmt->execute([
                     ':nome'   => $nome,
                     ':login'  => $login,
@@ -253,6 +255,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':email'  => $email,
                     ':data'   => $dataNow,
                     ':acesso' => $acesso,
+                    ':cargo'  => $cargo,
                     ':ativo'  => $ativo
                 ]);
                 $mensagemSucesso = "Usuário '$login' cadastrado com sucesso!";
@@ -265,29 +268,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $login      = trim($_POST['login']);
             $email      = trim($_POST['email']);
             $acesso     = (int)$_POST['acesso'];
+            $cargo  = ($acesso === 1) ? 'Administrador' : (($acesso === 2) ? 'Gerente' : 'Pesquisador');
             $ativo      = isset($_POST['ativo']) ? (int)$_POST['ativo'] : 1;
             $senha      = $_POST['senha'];
 
             if ($idusuarios > 0 && $nome !== '' && $login !== '' && $email !== '') {
                 if (!empty($senha)) {
                     $hashSenha = password_hash($senha, PASSWORD_DEFAULT);
-                    $stmt = $pdo->prepare("UPDATE usuarios SET nome = :nome, login = :login, senha = :senha, email = :email, acesso = :acesso, ativo = :ativo WHERE idusuarios = :id");
+                    $stmt = $pdo->prepare("UPDATE usuarios SET nome = :nome, login = :login, senha = :senha, email = :email, acesso = :acesso, cargo = :cargo, ativo = :ativo WHERE idusuarios = :id");
                     $stmt->execute([
                         ':nome'   => $nome,
                         ':login'  => $login,
                         ':senha'  => $hashSenha,
                         ':email'  => $email,
                         ':acesso' => $acesso,
+                        ':cargo'  => $cargo,
                         ':ativo'  => $ativo,
                         ':id'     => $idusuarios
                     ]);
                 } else {
-                    $stmt = $pdo->prepare("UPDATE usuarios SET nome = :nome, login = :login, email = :email, acesso = :acesso, ativo = :ativo WHERE idusuarios = :id");
+                    $stmt = $pdo->prepare("UPDATE usuarios SET nome = :nome, login = :login, email = :email, acesso = :acesso, cargo = :cargo, ativo = :ativo WHERE idusuarios = :id");
                     $stmt->execute([
                         ':nome'   => $nome,
                         ':login'  => $login,
                         ':email'  => $email,
                         ':acesso' => $acesso,
+                        ':cargo'  => $cargo,
                         ':ativo'  => $ativo,
                         ':id'     => $idusuarios
                     ]);
@@ -1568,8 +1574,12 @@ foreach ($sistemas as $s) {
                                         <td style="padding: 14px 20px;"><code style="background: #f1f5f9; padding: 2px 6px; border-radius: 4px; color: #475569;">@<?php echo htmlspecialchars($row['login']); ?></code></td>
                                         <td style="padding: 14px 20px; color: #475569;"><?php echo htmlspecialchars($row['email']); ?></td>
                                         <td style="padding: 14px 20px;">
-                                            <?php if ($row['acesso'] == 1): ?>
+                                            <?php 
+                                            $userCargo = isset($row['cargo']) && !empty($row['cargo']) ? $row['cargo'] : '';
+                                            if ($row['acesso'] == 1 || strcasecmp($userCargo, 'administrador') === 0): ?>
                                                 <span class="badge-admin">Administrador</span>
+                                            <?php elseif ($row['acesso'] == 2 || strcasecmp($userCargo, 'gerente') === 0): ?>
+                                                <span class="badge-manager" style="background: #e0e7ff; color: #4338ca; border: 1px solid #c7d2fe; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; display: inline-flex; align-items: center; gap: 4px;">Gerente</span>
                                             <?php else: ?>
                                                 <span class="badge-user">Usuário Padrão</span>
                                             <?php endif; ?>
@@ -1970,9 +1980,10 @@ foreach ($sistemas as $s) {
                         <input type="password" name="senha" id="usuario-senha" class="form-control" placeholder="••••••••">
                     </div>
                     <div class="form-group">
-                        <label for="usuario-acesso" class="form-label">Nível de Acesso</label>
+                        <label for="usuario-acesso" class="form-label">Nível de Acesso / Cargo</label>
                         <select name="acesso" id="usuario-acesso" class="form-control">
-                            <option value="0">Usuário Padrão</option>
+                            <option value="0">Usuário Padrão (Pesquisador)</option>
+                            <option value="2">Gerente</option>
                             <option value="1">Administrador</option>
                         </select>
                     </div>

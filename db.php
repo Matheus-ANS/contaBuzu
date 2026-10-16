@@ -33,6 +33,19 @@ try {
         // Ignora em versões PHP/PDO legadas
     }
 
+    // Garantir que a coluna 'cargo' existe na tabela usuarios
+    try {
+        $stmtCargo = $pdo->query("SHOW COLUMNS FROM usuarios LIKE 'cargo'");
+        if ($stmtCargo && count($stmtCargo->fetchAll()) === 0) {
+            $pdo->exec("ALTER TABLE usuarios ADD COLUMN cargo VARCHAR(50) NULL DEFAULT 'Pesquisador' AFTER acesso");
+            $pdo->exec("UPDATE usuarios SET cargo = 'Administrador' WHERE acesso = 1");
+            $pdo->exec("UPDATE usuarios SET cargo = 'Gerente' WHERE acesso = 2");
+            $pdo->exec("UPDATE usuarios SET cargo = 'Pesquisador' WHERE acesso = 0 OR acesso IS NULL");
+        }
+    } catch (\PDOException $ex) {
+    } catch (\Exception $ex) {
+    }
+
     // Garantir que as colunas 'numero', 'descricao' e 'ativo' existem na tabela linha
     try {
         $stmtLinha = $pdo->query("SHOW COLUMNS FROM linha");
