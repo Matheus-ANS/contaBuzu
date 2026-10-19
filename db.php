@@ -205,74 +205,58 @@ try {
     } catch (\Exception $ex) {
     }
 
-    // Garantir que a tabela contagens existe e possui as colunas necessárias
+    // Garantir colunas auxiliares na tabela pesquisa
     try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS contagens (
-            idContagem INT AUTO_INCREMENT PRIMARY KEY,
-            idUsuario INT NOT NULL,
-            idLinha INT NULL,
-            idVeiculo INT NULL,
-            idLocal INT NULL,
-            sentido VARCHAR(50) DEFAULT 'Ida',
-            status ENUM('em_andamento', 'concluida') DEFAULT 'em_andamento',
-            totalPassageiros INT DEFAULT 0,
-            dataInicio DATETIME NOT NULL,
-            dataFim DATETIME NULL,
-            condicaoTempo VARCHAR(50) NULL DEFAULT 'bom',
-            tipoTransporte VARCHAR(50) NULL DEFAULT 'stco',
-            tipoContagem VARCHAR(50) NULL DEFAULT 'percentual',
-            tipoOperacao VARCHAR(50) NULL DEFAULT 'embarque',
-            turno VARCHAR(50) NULL DEFAULT 'Matutino',
-            KEY idx_usuario_status (idUsuario, status)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-
-        $stmtCont = $pdo->query("SHOW COLUMNS FROM contagens");
-        if ($stmtCont) {
-            $colsCont = $stmtCont->fetchAll(PDO::FETCH_COLUMN);
-            if (is_array($colsCont) && count($colsCont) > 0) {
-                if (!in_array('idEmpresa', $colsCont)) {
-                    $pdo->exec("ALTER TABLE contagens ADD COLUMN idEmpresa INT NULL AFTER idLocal");
-                }
-                if (!in_array('condicaoTempo', $colsCont)) {
-                    $pdo->exec("ALTER TABLE contagens ADD COLUMN condicaoTempo VARCHAR(50) NULL DEFAULT 'bom'");
-                }
-                if (!in_array('tipoTransporte', $colsCont)) {
-                    $pdo->exec("ALTER TABLE contagens ADD COLUMN tipoTransporte VARCHAR(50) NULL DEFAULT 'stco'");
-                }
-                if (!in_array('tipoContagem', $colsCont)) {
-                    $pdo->exec("ALTER TABLE contagens ADD COLUMN tipoContagem VARCHAR(50) NULL DEFAULT 'percentual'");
-                }
-                if (!in_array('tipoOperacao', $colsCont)) {
-                    $pdo->exec("ALTER TABLE contagens ADD COLUMN tipoOperacao VARCHAR(50) NULL DEFAULT 'embarque'");
-                }
-                if (!in_array('turno', $colsCont)) {
-                    $pdo->exec("ALTER TABLE contagens ADD COLUMN turno VARCHAR(50) NULL DEFAULT 'Matutino'");
-                }
-                try {
-                    $pdo->exec("ALTER TABLE contagens MODIFY COLUMN status VARCHAR(50) DEFAULT 'em_andamento'");
-                } catch (\Exception $exMod) {}
+        $stmtPesq = $pdo->query("SHOW COLUMNS FROM pesquisa");
+        if ($stmtPesq) {
+            $colsP = $stmtPesq->fetchAll(PDO::FETCH_COLUMN);
+            if (!in_array('idUsuario', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idUsuario INT NULL");
+            }
+            if (!in_array('idVeiculo', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idVeiculo INT NULL");
+            }
+            if (!in_array('idEmpresa', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idEmpresa INT NULL");
+            }
+            if (!in_array('status', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN status VARCHAR(50) NOT NULL DEFAULT 'em_andamento'");
+            }
+            if (!in_array('totalPassageiros', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN totalPassageiros FLOAT NOT NULL DEFAULT 0");
+            }
+            if (!in_array('dataInicio', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN dataInicio DATETIME NULL");
+            }
+            if (!in_array('dataFim', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN dataFim DATETIME NULL");
+            }
+            if (!in_array('turno', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN turno VARCHAR(50) NULL DEFAULT 'Matutino'");
+            }
+            if (!in_array('tipoTransporte', $colsP)) {
+                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN tipoTransporte VARCHAR(50) NULL DEFAULT 'stco'");
             }
         }
     } catch (\PDOException $ex) {
     } catch (\Exception $ex) {
     }
 
-    // Garantir que a tabela contagem_registros existe
+    // Garantir colunas auxiliares na tabela contagem
     try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS contagem_registros (
-            idRegistro INT AUTO_INCREMENT PRIMARY KEY,
-            idContagem INT NOT NULL,
-            idUsuario INT NOT NULL,
-            tipo VARCHAR(50) NOT NULL DEFAULT 'incremento',
-            quantidade INT NOT NULL,
-            justificativa TEXT NULL,
-            dataHora DATETIME NOT NULL,
-            KEY idx_contagem (idContagem)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-
-        try {
-            $pdo->exec("ALTER TABLE contagem_registros MODIFY COLUMN tipo VARCHAR(50) NOT NULL DEFAULT 'incremento'");
-        } catch (\Exception $exMod) {}
+        $stmtCont = $pdo->query("SHOW COLUMNS FROM contagem");
+        if ($stmtCont) {
+            $colsC = $stmtCont->fetchAll(PDO::FETCH_COLUMN);
+            if (!in_array('tipo', $colsC)) {
+                $pdo->exec("ALTER TABLE contagem ADD COLUMN tipo VARCHAR(50) NOT NULL DEFAULT 'incremento'");
+            }
+            if (!in_array('justificativa', $colsC)) {
+                $pdo->exec("ALTER TABLE contagem ADD COLUMN justificativa TEXT NULL");
+            }
+            if (!in_array('dataHora', $colsC)) {
+                $pdo->exec("ALTER TABLE contagem ADD COLUMN dataHora DATETIME NULL");
+            }
+        }
     } catch (\PDOException $ex) {
     } catch (\Exception $ex) {
     }

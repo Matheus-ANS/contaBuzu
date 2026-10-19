@@ -1761,6 +1761,65 @@ footer {
     font-weight: 600 !important;
 }
 
+/* Botão Salvar Contagem (Botoeira) */
+.btn-save-action {
+    grid-column: span 3;
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+    color: #ffffff !important;
+    padding: 14px 20px !important;
+    font-size: 1rem !important;
+    font-family: var(--font-heading) !important;
+    text-transform: none !important;
+    letter-spacing: normal !important;
+    flex-direction: row;
+    gap: 8px;
+    border-radius: 12px !important;
+    font-weight: 800 !important;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3) !important;
+    transition: all 0.2s ease !important;
+}
+.btn-save-action:hover {
+    background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%) !important;
+    box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45) !important;
+    transform: translateY(-1px);
+}
+.btn-save-action:active {
+    transform: scale(0.98);
+}
+
+/* Opções de Ônibus Registrados */
+.btn-opcao-onibus {
+    font-family: inherit;
+    user-select: none;
+}
+.btn-opcao-onibus:hover {
+    border-color: #3b82f6 !important;
+    background-color: #f8faff !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12);
+}
+.btn-opcao-onibus.onibus-ativo {
+    border-color: #2563eb !important;
+    background-color: #eff6ff !important;
+    box-shadow: 0 0 0 1px #2563eb, 0 4px 12px rgba(37, 99, 235, 0.15) !important;
+}
+
+/* Botões da Botoeira Percentual */
+.btn-count-percent {
+    position: relative;
+    user-select: none;
+}
+.btn-count-percent:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.1);
+}
+.btn-count-percent.active-percent {
+    outline: 3px solid #3b82f6 !important;
+    outline-offset: 2px !important;
+    transform: translateY(-2px) scale(1.03) !important;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18) !important;
+}
+
 /* Badges e Tabelas Modernas */
 .badge-reg {
     font-family: var(--font-heading) !important;
@@ -1923,7 +1982,8 @@ table td:last-child {
         padding: 16px 8px !important;
         font-size: 1.4rem !important;
     }
-    .btn-correct-action {
+    .btn-correct-action,
+    .btn-save-action {
         grid-column: span 3;
     }
 }
@@ -2805,7 +2865,8 @@ button, .chip-btn, .tab-btn, .btn, .pg-btn, a {
         min-height: 56px !important;
     }
 
-    .btn-correct-action {
+    .btn-correct-action,
+    .btn-save-action {
         grid-column: span 3 !important;
         padding: 14px !important;
         font-size: 0.92rem !important;
@@ -3010,6 +3071,293 @@ button, .chip-btn, .tab-btn, .btn, .pg-btn, a {
         max-height: 190px !important;
         border-left: none !important;
         border-top: 2px solid #e2e8f0 !important;
+    }
+
+    /* 1. Ajustes do Container e Header */
+    .dashboard-container {
+        margin: 8px auto !important;
+        padding: 0 8px !important;
+    }
+
+    .dashboard-card {
+        border-radius: 14px !important;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04) !important;
+    }
+
+    .dashboard-header {
+        padding: 12px 14px !important;
+        gap: 12px !important;
+    }
+
+    .dashboard-user {
+        width: 100% !important;
+    }
+
+    .header-right-actions {
+        width: 100% !important;
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+        justify-content: space-between !important;
+    }
+
+    .realtime-clock-card {
+        flex: 1 1 100% !important;
+        justify-content: space-between !important;
+        font-size: 0.82rem !important;
+        padding: 6px 10px !important;
+    }
+
+    .btn-admin-link,
+    .btn-logout {
+        flex: 1 1 auto !important;
+        justify-content: center !important;
+        text-align: center !important;
+        padding: 8px 12px !important;
+        font-size: 0.82rem !important;
+    }
+
+    /* 2. Abas de Navegação */
+    .tabs-navigation {
+        margin: 10px 8px 0 8px !important;
+        padding-bottom: 6px !important;
+        gap: 6px !important;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .tab-btn {
+        padding: 9px 12px !important;
+        font-size: 0.84rem !important;
+        border-radius: 8px !important;
+    }
+
+    /* 3. Sessão Ativa do Contador */
+    .session-card {
+        padding: 14px 12px !important;
+        border-radius: 14px !important;
+        margin-bottom: 16px !important;
+    }
+
+    .session-header {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 10px !important;
+        margin-bottom: 14px !important;
+    }
+
+    .session-title {
+        font-size: 1.05rem !important;
+    }
+
+    .session-header-actions {
+        width: 100% !important;
+        display: flex !important;
+        gap: 6px !important;
+        flex-wrap: wrap !important;
+    }
+
+    .session-header-actions button,
+    .session-header-actions form {
+        flex: 1 1 calc(33.333% - 6px) !important;
+        margin: 0 !important;
+    }
+
+    .session-header-actions form button {
+        width: 100% !important;
+    }
+
+    .session-header-actions button {
+        justify-content: center !important;
+        font-size: 0.76rem !important;
+        padding: 8px 6px !important;
+        min-height: 40px !important;
+    }
+
+    /* 4. Grade de Informações da Sessão */
+    .session-info-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 8px !important;
+        margin-bottom: 16px !important;
+    }
+
+    .session-info-item {
+        padding: 8px 10px !important;
+        border-radius: 8px !important;
+    }
+
+    .session-info-item label {
+        font-size: 0.68rem !important;
+        margin-bottom: 2px !important;
+    }
+
+    .session-info-item span {
+        font-size: 0.82rem !important;
+        line-height: 1.25 !important;
+    }
+
+    /* 5. Display do Contador */
+    .counter-display-card {
+        padding: 18px 12px !important;
+        border-radius: 14px !important;
+        margin-bottom: 16px !important;
+    }
+
+    .counter-display-card .counter-number,
+    #counterTotalPercent {
+        font-size: 2.8rem !important;
+        margin: 4px 0 !important;
+    }
+
+    .counter-display-card .counter-label {
+        font-size: 0.85rem !important;
+    }
+
+    /* 6. Botoeira Percentual */
+    .percent-btn-grid {
+        grid-template-columns: repeat(3, 1fr) !important;
+        gap: 8px !important;
+        margin-bottom: 16px !important;
+    }
+
+    .btn-count-percent {
+        padding: 10px 4px !important;
+        border-radius: 10px !important;
+    }
+
+    .btn-count-percent div:first-child {
+        font-size: 1.2rem !important;
+    }
+
+    .btn-count-percent div:last-child {
+        font-size: 0.72rem !important;
+    }
+
+    /* 7. Botoeira Numérica */
+    .counter-btn-grid {
+        grid-template-columns: repeat(3, 1fr) !important;
+        gap: 8px !important;
+    }
+
+    .btn-count {
+        min-height: 56px !important;
+        padding: 12px 4px !important;
+        font-size: 1.3rem !important;
+        border-radius: 12px !important;
+    }
+
+    .btn-save-action {
+        grid-column: span 3 !important;
+        padding: 14px 16px !important;
+        font-size: 0.98rem !important;
+        min-height: 52px !important;
+        border-radius: 12px !important;
+    }
+
+    /* 8. Painel de Seleção de Ônibus & Linha */
+    .onibus-selection-container {
+        padding: 14px 12px !important;
+        margin-top: 16px !important;
+        border-radius: 14px !important;
+    }
+
+    .onibus-selection-container h4 {
+        font-size: 0.95rem !important;
+    }
+
+    #destaque-selecao-ativa {
+        width: 100% !important;
+        justify-content: space-between !important;
+        padding: 8px 10px !important;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+    }
+
+    #destaque-selecao-ativa span {
+        font-size: 0.75rem !important;
+    }
+
+    #filtro-rapido-onibus {
+        max-width: 100% !important;
+        width: 100% !important;
+        font-size: 16px !important;
+    }
+
+    #select-linha-contagem-rapida {
+        font-size: 16px !important;
+        padding: 10px 12px !important;
+    }
+
+    #grid-onibus-registrados {
+        grid-template-columns: repeat(2, 1fr) !important;
+        max-height: 190px !important;
+        gap: 8px !important;
+    }
+
+    .btn-opcao-onibus {
+        padding: 8px 10px !important;
+    }
+
+    .btn-opcao-onibus span {
+        font-size: 0.88rem !important;
+    }
+
+    /* 9. Modais Adaptados para Telas de Celular */
+    #modalSelecaoVeiculos > div {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        max-height: 92vh !important;
+        overflow-y: auto !important;
+        width: 100% !important;
+    }
+
+    #modalSelecaoVeiculos .modal-card {
+        min-width: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        max-height: none !important;
+    }
+
+    #janela-externa-veiculos-selecionados {
+        width: 100% !important;
+        max-height: 200px !important;
+    }
+
+    #expandLogsModal .modal-card {
+        width: 98vw !important;
+        max-width: 100% !important;
+        padding: 14px 12px !important;
+        max-height: 94vh !important;
+    }
+
+    /* 10. Notificações Toast no Celular */
+    #global-toast-notification {
+        left: 12px !important;
+        right: 12px !important;
+        bottom: 16px !important;
+        justify-content: center !important;
+        text-align: center !important;
+        padding: 12px 16px !important;
+        font-size: 0.85rem !important;
+    }
+}
+
+/* Telas Ultra-Pequenas (Abaixo de 380px) */
+@media (max-width: 380px) {
+    .percent-btn-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+    }
+
+    .session-info-grid {
+        grid-template-columns: 1fr !important;
+    }
+
+    #grid-onibus-registrados {
+        grid-template-columns: 1fr !important;
+    }
+
+    .session-header-actions button {
+        font-size: 0.72rem !important;
+        padding: 8px 4px !important;
     }
 }
 

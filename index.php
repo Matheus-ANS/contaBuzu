@@ -95,32 +95,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $idVeiculo      = !empty($_POST['idVeiculo']) ? (int)$_POST['idVeiculo'] : null;
             $idLocal        = !empty($_POST['idLocal']) ? (int)$_POST['idLocal'] : null;
             $sentido        = !empty($_POST['sentido']) ? trim($_POST['sentido']) : 'Ida';
-            $condicaoTempo  = !empty($_POST['condicaoTempo']) ? trim($_POST['condicaoTempo']) : 'bom';
+            $condTempo      = !empty($_POST['condTempo']) ? trim($_POST['condTempo']) : (!empty($_POST['condicaoTempo']) ? trim($_POST['condicaoTempo']) : 'bom');
+            $condicaoTempo  = $condTempo;
             $tipoTransporte = !empty($_POST['tipoTransporte']) ? trim($_POST['tipoTransporte']) : 'stco';
             $tipoContagem   = !empty($_POST['tipoContagem']) ? trim($_POST['tipoContagem']) : 'percentual';
             $tipoOperacao   = !empty($_POST['tipoOperacao']) ? trim($_POST['tipoOperacao']) : 'embarque';
             $turno          = !empty($_POST['turno']) ? trim($_POST['turno']) : 'Matutino';
+            $veiculosSel    = !empty($_POST['veiculosSelecionados']) ? trim((string)$_POST['veiculosSelecionados']) : '';
+            if (empty($veiculosSel) && $idVeiculo) {
+                $veiculosSel = (string)$idVeiculo;
+            }
 
             if (in_array(strtolower($tipoOperacao), ['ida', 'volta'])) {
                 $sentido = ucfirst(strtolower($tipoOperacao));
             }
 
             // Cancela/Finaliza qualquer contagem ativa anterior do mesmo usuário
-            $stmtCloseOld = $pdo->prepare("UPDATE contagens SET status = 'concluida', dataFim = NOW() WHERE idUsuario = ? AND status = 'em_andamento'");
+            $stmtCloseOld = $pdo->prepare("UPDATE pesquisa SET status = 'concluida', dataFim = NOW() WHERE idUsuario = ? AND status = 'em_andamento'");
             $stmtCloseOld->execute([$usuarioId]);
 
-            // Cria nova contagem com todos os dados informados
+            // Mapeamentos para enums da tabela pesquisa
+            $viagemEnum = (strcasecmp($sentido, 'Volta') === 0) ? 'Volta' : 'Ida';
+            $tipoContagemEnum = (stripos($tipoContagem, 'perc') !== false) ? 'Percentual' : 'Quantidade';
+            $tipoOperacaoEnum = 'Embarque';
+            if (stripos($tipoOperacao, 'desemb') !== false) $tipoOperacaoEnum = 'Desembarque';
+            elseif (stripos($tipoOperacao, 'ocup') !== false) $tipoOperacaoEnum = 'Ocupação';
+
+            $condTempoEnum = 'Bom';
+            if (stripos($condTempo, 'nubl') !== false) $condTempoEnum = 'Nublado';
+            elseif (stripos($condTempo, 'leve') !== false) $condTempoEnum = 'Chuva Leve';
+            elseif (stripos($condTempo, 'dens') !== false || stripos($condTempo, 'fort') !== false) $condTempoEnum = 'Chuva Densa';
+
+            // Obter idSistema correspondente
+            $idSistema = 5; // default STCO
             try {
-                $stmtNew = $pdo->prepare("INSERT INTO contagens (idUsuario, idLinha, idVeiculo, idLocal, sentido, condicaoTempo, tipoTransporte, tipoContagem, tipoOperacao, turno, status, totalPassageiros, dataInicio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'em_andamento', 0, NOW())");
-                $stmtNew->execute([$usuarioId, $idLinha, $idVeiculo, $idLocal, $sentido, $condicaoTempo, $tipoTransporte, $tipoContagem, $tipoOperacao, $turno]);
-            } catch (\Exception $ex) {
-                // Fallback para tabela legado sem novas colunas
-                $stmtNew = $pdo->prepare("INSERT INTO contagens (idUsuario, idLinha, idVeiculo, idLocal, sentido, status, totalPassageiros, dataInicio) VALUES (?, ?, ?, ?, ?, 'em_andamento', 0, NOW())");
-                $stmtNew->execute([$usuarioId, $idLinha, $idVeiculo, $idLocal, $sentido]);
+                $stmtSis = $pdo->prepare("SELECT idsistemas FROM sistema WHERE LOWER(nomeSistema) = LOWER(?) LIMIT 1");
+                $stmtSis->execute([$tipoTransporte]);
+                $sisVal = $stmtSis->fetchColumn();
+                if ($sisVal) $idSistema = (int)$sisVal;
+            } catch (\Exception $eSis) {}
+
+            // Cria nova pesquisa com todos os dados informados
+            $stmtNew = $pdo->prepare("
+                INSERT INTO pesquisa 
+                    (idUsuario, idLinha, idVeiculo, idLocal, viagem, condTempo, idSistema, tipoTransporte, tipoContagem, tipoOperacao, turno, status, totalPassageiros, dataInicio) 
+                VALUES 
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'em_andamento', 0, NOW())
+            ");
+            $stmtNew->execute([$usuarioId, $idLinha, $idVeiculo, $idLocal, $viagemEnum, $condTempoEnum, $idSistema, $tipoTransporte, $tipoContagemEnum, $tipoOperacaoEnum, $turno]);
+            $idPesquisa = (int)$pdo->lastInsertId();
+
+            // Inserir os veículos selecionados na tabela veiculoPesquisado
+            $veicArray = array_values(array_filter(array_map('intval', explode(',', $veiculosSel))));
+            if ($idVeiculo && !in_array((int)$idVeiculo, $veicArray)) {
+                $veicArray[] = (int)$idVeiculo;
+            }
+            if (!empty($veicArray)) {
+                $stmtVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                foreach ($veicArray as $vId) {
+                    if ($vId > 0) {
+                        try {
+                            $stmtVP->execute([$idPesquisa, $vId]);
+                        } catch (\Exception $exVP) {}
+                    }
+                }
             }
 
             if ($isAjax) {
-                echo json_encode(['success' => true, 'message' => 'Contagem iniciada com sucesso!']);
+                echo json_encode(['success' => true, 'message' => 'Contagem iniciada com sucesso!', 'idContagem' => $idPesquisa]);
                 exit;
             }
             $mensagemSucesso = "Contagem de passageiros iniciada com sucesso!";
@@ -128,27 +170,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // 2. Incrementar contagem (+1, +5, +10 e porcentagens)
         elseif ($action === 'incrementar') {
-            $idContagem = (int)$_POST['idContagem'];
-            $qtd        = isset($_POST['qtd']) ? (int)$_POST['qtd'] : -1;
+            $idContagem    = (int)$_POST['idContagem']; // idPesquisa
+            $qtd           = isset($_POST['qtd']) ? (int)$_POST['qtd'] : -1;
+            $modo          = isset($_POST['modo']) ? trim($_POST['modo']) : '';
+            $idVeiculoAlvo = !empty($_POST['idVeiculo']) ? (int)$_POST['idVeiculo'] : 0;
 
             if ($qtd >= 0 && $idContagem > 0) {
-                // Valida pertencimento da contagem ativa
-                $stmtCheck = $pdo->prepare("SELECT idContagem, totalPassageiros FROM contagens WHERE idContagem = ? AND idUsuario = ? AND status = 'em_andamento' LIMIT 1");
+                // Valida pertencimento da pesquisa ativa
+                $stmtCheck = $pdo->prepare("SELECT idPesquisa, totalPassageiros, tipoContagem, idVeiculo FROM pesquisa WHERE idPesquisa = ? AND idUsuario = ? AND status = 'em_andamento' LIMIT 1");
                 $stmtCheck->execute([$idContagem, $usuarioId]);
                 $contagemAtiva = $stmtCheck->fetch();
 
                 if ($contagemAtiva) {
-                    // Atualiza acumulado (sem gerar log individual de incremento)
-                    if ($qtd > 0) {
-                        $stmtUpd = $pdo->prepare("UPDATE contagens SET totalPassageiros = totalPassageiros + ? WHERE idContagem = ?");
+                    $isPercentual = (stripos($contagemAtiva['tipoContagem'], 'perc') !== false || $modo === 'substituir');
+
+                    if ($isPercentual) {
+                        // Na contagem percentual, SUBSTITUI o valor da ocupação
+                        $stmtUpd = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = ? WHERE idPesquisa = ?");
                         $stmtUpd->execute([$qtd, $idContagem]);
+                        $novoTotal = $qtd;
+                    } else {
+                        // Na contagem numérica (+1, +5, +10), SOMA ao total acumulado
+                        if ($qtd > 0) {
+                            $stmtUpd = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = totalPassageiros + ? WHERE idPesquisa = ?");
+                            $stmtUpd->execute([$qtd, $idContagem]);
+                        }
+                        $novoTotal = (int)$contagemAtiva['totalPassageiros'] + $qtd;
                     }
 
-                    $novoTotal = (int)$contagemAtiva['totalPassageiros'] + $qtd;
+                    // Se foi especificado veículo alvo, atualiza idVeiculo ativo da pesquisa
+                    $veicIdContar = ($idVeiculoAlvo > 0) ? $idVeiculoAlvo : (int)$contagemAtiva['idVeiculo'];
+                    if ($idVeiculoAlvo > 0 && $idVeiculoAlvo != (int)$contagemAtiva['idVeiculo']) {
+                        $stmtVeicAtv = $pdo->prepare("UPDATE pesquisa SET idVeiculo = ? WHERE idPesquisa = ?");
+                        $stmtVeicAtv->execute([$idVeiculoAlvo, $idContagem]);
+                    }
+
+                    // Localizar ou registrar idVeiculoPesquisado
+                    $idVP = null;
+                    if ($veicIdContar > 0) {
+                        $stmtVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
+                        $stmtVP->execute([$idContagem, $veicIdContar]);
+                        $idVP = $stmtVP->fetchColumn();
+                        if (!$idVP) {
+                            $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                            $stmtInsVP->execute([$idContagem, $veicIdContar]);
+                            $idVP = $pdo->lastInsertId();
+                        }
+                    }
+
+                    // Registrar na tabela contagem
+                    if ($qtd > 0 && $idVP) {
+                        $stmtContIns = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, quantidade, idUsuario, tipo, dataHora) VALUES (?, ?, ?, ?, 'incremento', NOW())");
+                        $stmtContIns->execute([$idContagem, $idVP, $qtd, $usuarioId]);
+                    }
 
                     if ($isAjax) {
                         // Busca registros da sessão (apenas salvamentos e correções)
-                        $stmtLogs = $pdo->prepare("SELECT r.*, DATE_FORMAT(r.dataHora, '%H:%i:%s') as horaFormatada FROM contagem_registros r WHERE r.idContagem = ? AND r.tipo != 'incremento' ORDER BY r.idRegistro DESC LIMIT 10");
+                        $stmtLogs = $pdo->prepare("
+                            SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada 
+                            FROM contagem c 
+                            WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
+                            ORDER BY c.idContagem DESC LIMIT 10
+                        ");
                         $stmtLogs->execute([$idContagem]);
                         $logs = $stmtLogs->fetchAll();
 
@@ -177,24 +260,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     $mensagemErro = "A justificativa da correção é obrigatória!";
                 } else {
-                    $stmtCheck = $pdo->prepare("SELECT idContagem, totalPassageiros FROM contagens WHERE idContagem = ? AND idUsuario = ? AND status = 'em_andamento' LIMIT 1");
+                    $stmtCheck = $pdo->prepare("SELECT idPesquisa, totalPassageiros, idVeiculo FROM pesquisa WHERE idPesquisa = ? AND idUsuario = ? AND status = 'em_andamento' LIMIT 1");
                     $stmtCheck->execute([$idContagem, $usuarioId]);
                     $contagemAtiva = $stmtCheck->fetch();
 
                     if ($contagemAtiva) {
                         $qtdNegativa = -abs($qtdSubtrair);
 
-                        // Registra a correção no histórico
-                        $stmtReg = $pdo->prepare("INSERT INTO contagem_registros (idContagem, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, 'correcao', ?, ?, NOW())");
-                        $stmtReg->execute([$idContagem, $usuarioId, $qtdNegativa, $justificativa]);
+                        // Localizar ou registrar idVeiculoPesquisado
+                        $idVP = null;
+                        if (!empty($contagemAtiva['idVeiculo'])) {
+                            $stmtVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
+                            $stmtVP->execute([$idContagem, $contagemAtiva['idVeiculo']]);
+                            $idVP = $stmtVP->fetchColumn();
+                            if (!$idVP) {
+                                $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                                $stmtInsVP->execute([$idContagem, $contagemAtiva['idVeiculo']]);
+                                $idVP = $pdo->lastInsertId();
+                            }
+                        }
+
+                        // Registra a correção na tabela contagem
+                        if ($idVP) {
+                            $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, ?, 'correcao', ?, ?, NOW())");
+                            $stmtReg->execute([$idContagem, $idVP, $usuarioId, $qtdNegativa, $justificativa]);
+                        }
 
                         // Atualiza o total (evitando total negativo)
                         $novoTotal = max(0, (int)$contagemAtiva['totalPassageiros'] - $qtdSubtrair);
-                        $stmtUpd = $pdo->prepare("UPDATE contagens SET totalPassageiros = ? WHERE idContagem = ?");
+                        $stmtUpd = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = ? WHERE idPesquisa = ?");
                         $stmtUpd->execute([$novoTotal, $idContagem]);
 
                         if ($isAjax) {
-                            $stmtLogs = $pdo->prepare("SELECT r.*, DATE_FORMAT(r.dataHora, '%H:%i:%s') as horaFormatada FROM contagem_registros r WHERE r.idContagem = ? AND r.tipo != 'incremento' ORDER BY r.idRegistro DESC LIMIT 10");
+                            $stmtLogs = $pdo->prepare("
+                                SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada 
+                                FROM contagem c 
+                                WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
+                                ORDER BY c.idContagem DESC LIMIT 10
+                            ");
                             $stmtLogs->execute([$idContagem]);
                             $logs = $stmtLogs->fetchAll();
 
@@ -239,8 +342,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $mensagemErro = 'A justificativa da correção é obrigatória!';
             } else {
-                // Valida contagem ativa e busca tipoContagem
-                $stmtCheck = $pdo->prepare("SELECT idContagem, tipoContagem FROM contagens WHERE idContagem = ? AND (idUsuario = ? OR ? = 1) AND status = 'em_andamento' LIMIT 1");
+                // Valida pesquisa ativa e busca tipoContagem
+                $stmtCheck = $pdo->prepare("SELECT idPesquisa as idContagem, tipoContagem FROM pesquisa WHERE idPesquisa = ? AND (idUsuario = ? OR ? = 1) AND status = 'em_andamento' LIMIT 1");
                 $stmtCheck->execute([$idContagem, $usuarioId, $loggedAcesso]);
                 $contAtiva = $stmtCheck->fetch();
 
@@ -259,7 +362,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ");
                     $stmtIns->execute([$idContagem, $usuarioId, $idUsuarioDestino, $qtdSubtrair, $justificativa]);
 
-                    $isPerc = (!empty($contAtiva['tipoContagem']) && $contAtiva['tipoContagem'] === 'percentual');
+                    $isPerc = (!empty($contAtiva['tipoContagem']) && stripos($contAtiva['tipoContagem'], 'perc') !== false);
                     $textoQtd = $isPerc 
                         ? ($percentualSubtrair ? $percentualSubtrair . '%' : calcPercentualStr($qtdSubtrair))
                         : $qtdSubtrair . ' passageiro(s)';
@@ -289,11 +392,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $mensagemErro = 'Parâmetros de resposta inválidos.';
             } else {
-                // Busca a solicitação pendente com dados da contagem
+                // Busca a solicitação pendente com dados da pesquisa
                 $stmtSol = $pdo->prepare("
-                    SELECT s.*, c.totalPassageiros, c.tipoContagem, c.status as contagemStatus
+                    SELECT s.*, p.totalPassageiros, p.tipoContagem, p.status as contagemStatus, p.idVeiculo
                     FROM solicitacoes_correcao s
-                    LEFT JOIN contagens c ON s.idContagem = c.idContagem
+                    LEFT JOIN pesquisa p ON s.idContagem = p.idPesquisa
                     WHERE s.idSolicitacao = ? AND s.status = 'pendente'
                     LIMIT 1
                 ");
@@ -324,19 +427,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $idContagem  = (int)$sol['idContagem'];
                         $novoTotal   = max(0, (int)$sol['totalPassageiros'] - $qtdSubtrair);
 
-                        // Atualiza total da contagem
-                        $stmtUpdC = $pdo->prepare("UPDATE contagens SET totalPassageiros = ? WHERE idContagem = ?");
+                        // Atualiza total da pesquisa
+                        $stmtUpdC = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = ? WHERE idPesquisa = ?");
                         $stmtUpdC->execute([$novoTotal, $idContagem]);
 
+                        // Localizar idVeiculoPesquisado
+                        $idVP = null;
+                        if (!empty($sol['idVeiculo'])) {
+                            $stmtVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
+                            $stmtVP->execute([$idContagem, $sol['idVeiculo']]);
+                            $idVP = $stmtVP->fetchColumn();
+                            if (!$idVP) {
+                                $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                                $stmtInsVP->execute([$idContagem, $sol['idVeiculo']]);
+                                $idVP = $pdo->lastInsertId();
+                            }
+                        }
+
                         // Registra no extrato da contagem
-                        $isPerc = (!empty($sol['tipoContagem']) && $sol['tipoContagem'] === 'percentual');
+                        $isPerc = (!empty($sol['tipoContagem']) && stripos($sol['tipoContagem'], 'perc') !== false);
                         $descAjuste = $isPerc 
                             ? calcPercentualStr($qtdSubtrair) . " (-{$qtdSubtrair} pas.)"
                             : "-{$qtdSubtrair} passageiro(s)";
 
-                        $justifReg = "Correção de {$descAjuste} aprovada por {$loggedNome}. Motivo fiscal: " . $sol['justificativa'];
-                        $stmtReg = $pdo->prepare("INSERT INTO contagem_registros (idContagem, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, 'correcao', ?, ?, NOW())");
-                        $stmtReg->execute([$idContagem, $sol['idUsuarioSolicitante'], -$qtdSubtrair, $justifReg]);
+                        $justifReg = "Correção de {$descAjuste} aprovada por {$loggedNome}. Motivo: " . $sol['justificativa'];
+                        if ($idVP) {
+                            $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, ?, 'correcao', ?, ?, NOW())");
+                            $stmtReg->execute([$idContagem, $idVP, $sol['idUsuarioSolicitante'], -$qtdSubtrair, $justifReg]);
+                        }
 
                         // Marca solicitação como aprovada
                         $stmtUpdSol = $pdo->prepare("
@@ -382,7 +500,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         elseif ($action === 'finalizar_contagem') {
             $idContagem = (int)$_POST['idContagem'];
             if ($idContagem > 0) {
-                $stmtFin = $pdo->prepare("UPDATE contagens SET status = 'concluida', dataFim = NOW() WHERE idContagem = ? AND idUsuario = ?");
+                $stmtFin = $pdo->prepare("UPDATE pesquisa SET status = 'concluida', dataFim = NOW() WHERE (idPesquisa = ? OR status = 'em_andamento') AND idUsuario = ?");
                 $stmtFin->execute([$idContagem, $usuarioId]);
 
                 if ($isAjax) {
@@ -401,23 +519,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $turno      = !empty($_POST['turno']) ? trim($_POST['turno']) : null;
 
             if ($idContagem > 0) {
-                $stmtCheck = $pdo->prepare("SELECT idContagem, turno FROM contagens WHERE idContagem = ? AND idUsuario = ? AND status = 'em_andamento' LIMIT 1");
+                $stmtCheck = $pdo->prepare("SELECT idPesquisa, idLinha, idVeiculo, turno FROM pesquisa WHERE idPesquisa = ? AND idUsuario = ? AND status = 'em_andamento' LIMIT 1");
                 $stmtCheck->execute([$idContagem, $usuarioId]);
                 $cRow = $stmtCheck->fetch();
                 if ($cRow) {
-                    $novoTurno = ($turno !== null && $turno !== '') ? $turno : $cRow['turno'];
-                    $stmtUpd = $pdo->prepare("UPDATE contagens SET idLinha = ?, idVeiculo = ?, turno = ? WHERE idContagem = ? AND idUsuario = ?");
-                    $stmtUpd->execute([$idLinha, $idVeiculo, $novoTurno, $idContagem, $usuarioId]);
+                    $novoTurno   = ($turno !== null && $turno !== '') ? $turno : $cRow['turno'];
+                    $novaLinha   = ($idLinha !== null && $idLinha > 0) ? $idLinha : $cRow['idLinha'];
+                    $novoVeiculo = ($idVeiculo !== null && $idVeiculo > 0) ? $idVeiculo : $cRow['idVeiculo'];
+
+                    $stmtUpd = $pdo->prepare("UPDATE pesquisa SET idLinha = ?, idVeiculo = ?, turno = ? WHERE idPesquisa = ? AND idUsuario = ?");
+                    $stmtUpd->execute([$novaLinha, $novoVeiculo, $novoTurno, $idContagem, $usuarioId]);
+
+                    // Garantir que o novo veículo também esteja vinculado em veiculoPesquisado
+                    if ($novoVeiculo > 0) {
+                        $stmtChkVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
+                        $stmtChkVP->execute([$idContagem, $novoVeiculo]);
+                        if (!$stmtChkVP->fetchColumn()) {
+                            $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                            $stmtInsVP->execute([$idContagem, $novoVeiculo]);
+                        }
+                    }
 
                     if ($isAjax) {
                         $stmtInfo = $pdo->prepare("
-                            SELECT c.idLinha, c.idVeiculo, c.turno,
+                            SELECT p.idLinha, p.idVeiculo, p.turno,
                                    l.numero as linhaNumero, l.descricao as linhaDescricao,
                                    v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
-                            FROM contagens c
-                            LEFT JOIN linha l ON c.idLinha = l.idLinha
-                            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-                            WHERE c.idContagem = ?
+                            FROM pesquisa p
+                            LEFT JOIN linha l ON p.idLinha = l.idLinha
+                            LEFT JOIN veiculo v ON p.idVeiculo = v.idVeiculo
+                            WHERE p.idPesquisa = ?
                             LIMIT 1
                         ");
                         $stmtInfo->execute([$idContagem]);
@@ -430,6 +561,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         echo json_encode([
                             'success' => true,
                             'message' => 'Dados da sessão alterados com sucesso!',
+                            'idLinha' => $infoUpdated['idLinha'],
+                            'idVeiculo' => $infoUpdated['idVeiculo'],
                             'linhaText' => $nL,
                             'veiculoText' => $veic,
                             'turnoText' => $turnText
@@ -437,6 +570,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         exit;
                     }
                     $mensagemSucesso = "Dados da sessão alterados com sucesso!";
+                }
+            }
+        }
+
+        // 4.0.1.1. Atualizar Veículos Selecionados da Sessão Ativa
+        elseif ($action === 'atualizar_veiculos_sessao') {
+            $idContagem  = (int)$_POST['idContagem'];
+            $veiculosSel = isset($_POST['veiculosSelecionados']) ? trim((string)$_POST['veiculosSelecionados']) : '';
+
+            if ($idContagem > 0) {
+                $idsArr = array_values(array_filter(array_map('intval', explode(',', $veiculosSel))));
+
+                // Sincronizar veículos na tabela veiculoPesquisado
+                $stmtExistentes = $pdo->prepare("SELECT idVeiculo FROM veiculoPesquisado WHERE idPesquisa = ?");
+                $stmtExistentes->execute([$idContagem]);
+                $existentesArr = $stmtExistentes->fetchAll(PDO::FETCH_COLUMN);
+
+                $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                foreach ($idsArr as $vId) {
+                    if (!in_array($vId, $existentesArr)) {
+                        try {
+                            $stmtInsVP->execute([$idContagem, $vId]);
+                        } catch (\Exception $exVP) {}
+                    }
+                }
+
+                $veiculosDados = [];
+                if (!empty($idsArr)) {
+                    $inClause = implode(',', array_fill(0, count($idsArr), '?'));
+                    $stmtBuscaV = $pdo->prepare("SELECT idVeiculo, prefixo, placa FROM veiculo WHERE idVeiculo IN ($inClause) ORDER BY prefixo");
+                    $stmtBuscaV->execute($idsArr);
+                    $veiculosDados = $stmtBuscaV->fetchAll();
+                }
+
+                if ($isAjax) {
+                    echo json_encode([
+                        'success'  => true,
+                        'message'  => 'Veículos da contagem atualizados com sucesso!',
+                        'veiculos' => $veiculosDados
+                    ]);
+                    exit;
+                }
+            }
+        }
+
+        // 4.0.1.2. Cadastrar Novo Veículo na Frota
+        elseif ($action === 'cadastrar_veiculo_frota_rapido') {
+            $prefixo = isset($_POST['prefixo']) ? trim((string)$_POST['prefixo']) : '';
+            $placa   = isset($_POST['placa']) ? trim((string)$_POST['placa']) : '';
+
+            if ($prefixo === '') {
+                if ($isAjax) {
+                    echo json_encode(['success' => false, 'message' => 'Prefixo do veículo é obrigatório.']);
+                    exit;
+                }
+            } else {
+                $stmtCheckV = $pdo->prepare("SELECT idVeiculo, prefixo, placa, ativo FROM veiculo WHERE LOWER(TRIM(prefixo)) = LOWER(TRIM(?)) LIMIT 1");
+                $stmtCheckV->execute([$prefixo]);
+                $vExistente = $stmtCheckV->fetch();
+
+                if ($vExistente) {
+                    $idVeicReal = (int)$vExistente['idVeiculo'];
+                    $prefReal   = $vExistente['prefixo'];
+                    $placaReal  = !empty($vExistente['placa']) ? $vExistente['placa'] : $placa;
+
+                    if (isset($vExistente['ativo']) && (int)$vExistente['ativo'] === 0) {
+                        $stmtReativar = $pdo->prepare("UPDATE veiculo SET ativo = 1 WHERE idVeiculo = ?");
+                        $stmtReativar->execute([$idVeicReal]);
+                    }
+                } else {
+                    $stmtInsV = $pdo->prepare("INSERT INTO veiculo (prefixo, placa, ativo) VALUES (?, ?, 1)");
+                    $stmtInsV->execute([$prefixo, $placa]);
+                    $idVeicReal = (int)$pdo->lastInsertId();
+                    $prefReal   = $prefixo;
+                    $placaReal  = $placa;
+                }
+
+                if ($isAjax) {
+                    echo json_encode([
+                        'success'   => true,
+                        'message'   => "Veículo $prefReal registrado com sucesso!",
+                        'idVeiculo' => $idVeicReal,
+                        'prefixo'   => $prefReal,
+                        'placa'     => $placaReal
+                    ]);
+                    exit;
                 }
             }
         }
@@ -449,10 +668,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($idContagem > 0 && in_array($turno, $turnosValidos)) {
                 if ($podeVerSolicitacoes) {
-                    $stmtUpd = $pdo->prepare("UPDATE contagens SET turno = ? WHERE idContagem = ?");
+                    $stmtUpd = $pdo->prepare("UPDATE pesquisa SET turno = ? WHERE idPesquisa = ?");
                     $stmtUpd->execute(array($turno, $idContagem));
                 } else {
-                    $stmtUpd = $pdo->prepare("UPDATE contagens SET turno = ? WHERE idContagem = ? AND idUsuario = ?");
+                    $stmtUpd = $pdo->prepare("UPDATE pesquisa SET turno = ? WHERE idPesquisa = ? AND idUsuario = ?");
                     $stmtUpd->execute(array($turno, $idContagem, $usuarioId));
                 }
 
@@ -472,63 +691,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         elseif ($action === 'salvar_contagem') {
             $idContagem = (int)$_POST['idContagem'];
             if ($idContagem > 0) {
-                $stmtUpd = $pdo->prepare("UPDATE contagens SET dataFim = NOW() WHERE idContagem = ? AND idUsuario = ? AND status = 'em_andamento'");
+                $stmtUpd = $pdo->prepare("UPDATE pesquisa SET dataFim = NOW() WHERE idPesquisa = ? AND idUsuario = ? AND status = 'em_andamento'");
                 $stmtUpd->execute([$idContagem, $usuarioId]);
 
-                // Busca dados completos da contagem com relacionamentos para registrar todas as características
+                // Busca dados completos da pesquisa com relacionamentos
                 $stmtInfo = $pdo->prepare("
-                    SELECT c.*, 
+                    SELECT p.*, p.idPesquisa as idContagem, p.viagem as sentido, p.condTempo as condicaoTempo,
                            l.numero as linhaNumero, l.descricao as linhaDescricao,
                            v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca,
                            loc.local as nomeLocal
-                    FROM contagens c
-                    LEFT JOIN linha l ON c.idLinha = l.idLinha
-                    LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-                    LEFT JOIN locais loc ON c.idLocal = loc.idLocal
-                    WHERE c.idContagem = ? AND c.idUsuario = ?
+                    FROM pesquisa p
+                    LEFT JOIN linha l ON p.idLinha = l.idLinha
+                    LEFT JOIN veiculo v ON p.idVeiculo = v.idVeiculo
+                    LEFT JOIN locais loc ON p.idLocal = loc.idLocal
+                    WHERE p.idPesquisa = ? AND p.idUsuario = ?
                     LIMIT 1
                 ");
                 $stmtInfo->execute([$idContagem, $usuarioId]);
                 $cData = $stmtInfo->fetch();
 
                 if ($cData) {
-                    if (!function_exists('calcPercentualStr')) {
-                        function calcPercentualStr($total) {
-                            $t = (int)$total;
-                            if ($t >= 100) return '120%';
-                            if ($t >= 82) return '100%';
-                            if ($t >= 54) return '65%';
-                            if ($t >= 42) return '50%';
-                            if ($t >= 30) return '35%';
-                            if ($t >= 13) return '15%';
-                            return '0%';
+                    $totalVal = (float)$cData['totalPassageiros'];
+                    $msgSalvamento = "Contagem salva com sucesso";
+
+                    // Localizar ou inserir idVeiculoPesquisado
+                    $idVP = null;
+                    if (!empty($cData['idVeiculo'])) {
+                        $stmtVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
+                        $stmtVP->execute([$idContagem, $cData['idVeiculo']]);
+                        $idVP = $stmtVP->fetchColumn();
+                        if (!$idVP) {
+                            $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                            $stmtInsVP->execute([$idContagem, $cData['idVeiculo']]);
+                            $idVP = $pdo->lastInsertId();
                         }
                     }
 
-                    $nL = !empty($cData['linhaNumero']) ? $cData['linhaNumero'] . ' - ' . $cData['linhaDescricao'] : (!empty($cData['idLinha']) ? 'Linha #'.$cData['idLinha'] : 'N/A');
-                    $veic = !empty($cData['veiculoPrefixo']) ? $cData['veiculoPrefixo'] : (!empty($cData['idVeiculo']) ? 'Prefixo #'.$cData['idVeiculo'] : 'N/A');
-                    $loc = !empty($cData['nomeLocal']) ? $cData['nomeLocal'] : 'Local N/A';
-                    $sentido = !empty($cData['sentido']) ? $cData['sentido'] : 'Ida';
-                    $tipoOp = !empty($cData['tipoOperacao']) ? ucfirst($cData['tipoOperacao']) : 'Embarque';
-                    $turno = !empty($cData['turno']) ? ucfirst($cData['turno']) : 'Matutino';
-                    $clima = !empty($cData['condicaoTempo']) ? ucfirst($cData['condicaoTempo']) : 'Bom';
-                    $transporte = !empty($cData['tipoTransporte']) ? strtoupper($cData['tipoTransporte']) : 'STCO';
-                    $tipoCont = (!empty($cData['tipoContagem']) && $cData['tipoContagem'] === 'percentual') ? '% Percentual' : '👥 Quantidade';
-
-                    $totalVal = (int)$cData['totalPassageiros'];
-                    $totalStr = (!empty($cData['tipoContagem']) && $cData['tipoContagem'] === 'percentual')
-                        ? calcPercentualStr($totalVal) . " ({$totalVal} pas.)"
-                        : "{$totalVal} pas.";
-
-                    $caracteristicas = "Operação Salva. Linha: {$nL} | Veículo: {$veic} | Local: {$loc} ({$sentido}) | Operação: {$tipoOp} | Turno: {$turno} | Clima: {$clima} | Transporte: {$transporte} | Modo: {$tipoCont} | Total Acumulado: {$totalStr}";
-
-                    // Registra salvamento nos logs da sessão
-                    $stmtReg = $pdo->prepare("INSERT INTO contagem_registros (idContagem, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, 'salvamento', ?, ?, NOW())");
-                    $stmtReg->execute([$idContagem, $usuarioId, $totalVal, $caracteristicas]);
+                    // Registra salvamento na tabela contagem
+                    if ($idVP) {
+                        $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, ?, 'salvamento', ?, ?, NOW())");
+                        $stmtReg->execute([$idContagem, $idVP, $usuarioId, $totalVal, $msgSalvamento]);
+                    }
                 }
 
                 // Busca registros da sessão (apenas salvamentos e correções)
-                $stmtLogs = $pdo->prepare("SELECT r.*, DATE_FORMAT(r.dataHora, '%H:%i:%s') as horaFormatada FROM contagem_registros r WHERE r.idContagem = ? AND r.tipo != 'incremento' ORDER BY r.idRegistro DESC LIMIT 10");
+                $stmtLogs = $pdo->prepare("
+                    SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada 
+                    FROM contagem c 
+                    WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
+                    ORDER BY c.idContagem DESC LIMIT 10
+                ");
                 $stmtLogs->execute([$idContagem]);
                 $logs = $stmtLogs->fetchAll();
 
@@ -549,10 +761,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $idContagem = (int)$_POST['idContagem'];
             if ($idContagem > 0) {
                 try {
-                    $stmtCanc = $pdo->prepare("UPDATE contagens SET status = 'cancelada', dataFim = NOW() WHERE idContagem = ? AND idUsuario = ?");
+                    $stmtCanc = $pdo->prepare("UPDATE pesquisa SET status = 'cancelada', dataFim = NOW() WHERE (idPesquisa = ? OR status = 'em_andamento') AND idUsuario = ?");
                     $stmtCanc->execute([$idContagem, $usuarioId]);
                 } catch (\Exception $ex) {
-                    $stmtCanc = $pdo->prepare("DELETE FROM contagens WHERE idContagem = ? AND idUsuario = ?");
+                    $stmtCanc = $pdo->prepare("DELETE FROM pesquisa WHERE (idPesquisa = ? OR status = 'em_andamento') AND idUsuario = ?");
                     $stmtCanc->execute([$idContagem, $usuarioId]);
                 }
 
@@ -569,17 +781,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $idContagem = (int)$_POST['idContagem'];
             if ($idContagem > 0) {
                 $stmtC = $pdo->prepare("
-                    SELECT c.*, 
-                           DATE_FORMAT(c.dataInicio, '%d/%m/%Y %H:%i:%s') as inicioFmt,
-                           DATE_FORMAT(c.dataFim, '%d/%m/%Y %H:%i:%s') as fimFmt,
+                    SELECT p.*, p.idPesquisa as idContagem, p.viagem as sentido, p.condTempo as condicaoTempo,
+                           DATE_FORMAT(p.dataInicio, '%d/%m/%Y %H:%i:%s') as inicioFmt,
+                           DATE_FORMAT(p.dataFim, '%d/%m/%Y %H:%i:%s') as fimFmt,
                            l.numero as linhaNumero, l.descricao as linhaDescricao,
                            v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca,
                            loc.local as nomeLocal
-                    FROM contagens c
-                    LEFT JOIN linha l ON c.idLinha = l.idLinha
-                    LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-                    LEFT JOIN locais loc ON c.idLocal = loc.idLocal
-                    WHERE c.idContagem = ? AND c.idUsuario = ? AND LOWER(COALESCE(c.status, '')) != 'cancelada'
+                    FROM pesquisa p
+                    LEFT JOIN linha l ON p.idLinha = l.idLinha
+                    LEFT JOIN veiculo v ON p.idVeiculo = v.idVeiculo
+                    LEFT JOIN locais loc ON p.idLocal = loc.idLocal
+                    WHERE p.idPesquisa = ? AND p.idUsuario = ? AND LOWER(COALESCE(p.status, '')) != 'cancelada'
                     LIMIT 1
                 ");
                 $stmtC->execute([$idContagem, $usuarioId]);
@@ -587,10 +799,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($contagem) {
                     $stmtRegs = $pdo->prepare("
-                        SELECT r.*, DATE_FORMAT(r.dataHora, '%d/%m/%Y %H:%i:%s') as dataHoraFmt 
-                        FROM contagem_registros r 
-                        WHERE r.idContagem = ? 
-                        ORDER BY r.idRegistro DESC
+                        SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%d/%m/%Y %H:%i:%s') as dataHoraFmt,
+                               v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
+                        FROM contagem c 
+                        LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
+                        LEFT JOIN veiculo v ON vp.idVeiculo = v.idVeiculo
+                        WHERE c.idPesquisa = ? 
+                        ORDER BY c.idContagem DESC
                     ");
                     $stmtRegs->execute([$idContagem]);
                     $registros = $stmtRegs->fetchAll();
@@ -624,20 +839,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $sessaoAtiva = null;
 try {
     $stmtSessao = $pdo->prepare("
-        SELECT c.*, 
-               DATE_FORMAT(c.dataInicio, '%d/%m/%Y %H:%i') as dataInicioFormatada,
+        SELECT p.*, p.idPesquisa as idContagem, p.viagem as sentido, p.condTempo as condicaoTempo,
+               DATE_FORMAT(p.dataInicio, '%d/%m/%Y %H:%i') as dataInicioFormatada,
                l.numero as linhaNumero, l.descricao as linhaDescricao,
                v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca,
                loc.local as nomeLocal
-        FROM contagens c
-        LEFT JOIN linha l ON c.idLinha = l.idLinha
-        LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-        LEFT JOIN locais loc ON c.idLocal = loc.idLocal
-        WHERE c.idUsuario = ? AND c.status = 'em_andamento'
-        ORDER BY c.idContagem DESC LIMIT 1
+        FROM pesquisa p
+        LEFT JOIN linha l ON p.idLinha = l.idLinha
+        LEFT JOIN veiculo v ON p.idVeiculo = v.idVeiculo
+        LEFT JOIN locais loc ON p.idLocal = loc.idLocal
+        WHERE p.idUsuario = ? AND p.status = 'em_andamento'
+        ORDER BY p.idPesquisa DESC LIMIT 1
     ");
     $stmtSessao->execute([$usuarioId]);
     $sessaoAtiva = $stmtSessao->fetch();
+
+    if ($sessaoAtiva) {
+        $stmtVPs = $pdo->prepare("SELECT idVeiculo FROM veiculoPesquisado WHERE idPesquisa = ?");
+        $stmtVPs->execute([$sessaoAtiva['idPesquisa']]);
+        $idsVeicsFromVP = $stmtVPs->fetchAll(PDO::FETCH_COLUMN);
+        if ($sessaoAtiva['idVeiculo'] && !in_array($sessaoAtiva['idVeiculo'], $idsVeicsFromVP)) {
+            $idsVeicsFromVP[] = (int)$sessaoAtiva['idVeiculo'];
+        }
+        $sessaoAtiva['veiculosSelecionados'] = implode(',', $idsVeicsFromVP);
+    }
 } catch (PDOException $e) {}
 
 // Histórico de lançamentos da sessão ativa (apenas salvamentos e correções)
@@ -645,10 +870,13 @@ $registrosSessao = [];
 if ($sessaoAtiva) {
     try {
         $stmtLogs = $pdo->prepare("
-            SELECT r.*, DATE_FORMAT(r.dataHora, '%H:%i:%s') as horaFormatada 
-            FROM contagem_registros r 
-            WHERE r.idContagem = ? AND r.tipo != 'incremento'
-            ORDER BY r.idRegistro DESC LIMIT 15
+            SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada,
+                   v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
+            FROM contagem c 
+            LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
+            LEFT JOIN veiculo v ON vp.idVeiculo = v.idVeiculo
+            WHERE c.idPesquisa = ? AND c.tipo != 'incremento'
+            ORDER BY c.idContagem DESC LIMIT 15
         ");
         $stmtLogs->execute([$sessaoAtiva['idContagem']]);
         $registrosSessao = $stmtLogs->fetchAll();
@@ -741,11 +969,11 @@ try {
     if ($filtroTipoOp !== '') {
         $opLower = strtolower($filtroTipoOp);
         if ($opLower === 'ida' || $opLower === 'volta') {
-            $whereClauses[] = "(LOWER(c.sentido) = ? OR LOWER(c.tipoOperacao) = ?)";
+            $whereClauses[] = "(LOWER(COALESCE(c.viagem, '')) = ? OR LOWER(COALESCE(c.tipoOperacao, '')) = ?)";
             $paramsHist[]   = $opLower;
             $paramsHist[]   = $opLower;
         } else {
-            $whereClauses[] = "LOWER(c.tipoOperacao) = ?";
+            $whereClauses[] = "LOWER(COALESCE(c.tipoOperacao, '')) = ?";
             $paramsHist[]   = $opLower;
         }
     }
@@ -753,19 +981,19 @@ try {
     $whereSql = implode(" AND ", $whereClauses);
 
     $stmtHist = $pdo->prepare("
-        SELECT c.*, 
+        SELECT c.*, c.idPesquisa as idContagem, c.viagem as sentido, c.condTempo as condicaoTempo,
                DATE_FORMAT(c.dataInicio, '%d/%m/%Y %H:%i') as dataInicioFormatada,
                DATE_FORMAT(c.dataFim, '%d/%m/%Y %H:%i') as dataFimFormatada,
                l.numero as linhaNumero, l.descricao as linhaDescricao,
                v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca,
                loc.local as nomeLocal,
-               (SELECT COUNT(*) FROM contagem_registros r WHERE r.idContagem = c.idContagem) as totalLancamentos
-        FROM contagens c
+               (SELECT COUNT(*) FROM contagem r WHERE r.idPesquisa = c.idPesquisa) as totalLancamentos
+        FROM pesquisa c
         LEFT JOIN linha l ON c.idLinha = l.idLinha
         LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
         LEFT JOIN locais loc ON c.idLocal = loc.idLocal
         WHERE $whereSql
-        ORDER BY c.idContagem DESC
+        ORDER BY c.idPesquisa DESC
     ");
     $stmtHist->execute($paramsHist);
     $historicoUsuario = $stmtHist->fetchAll();
@@ -795,7 +1023,7 @@ try {
         $qtdPercentContagens++;
     }
 
-    $stmtStatsCorr = $pdo->prepare("SELECT COUNT(*) FROM contagem_registros WHERE idUsuario = ? AND tipo = 'correcao'");
+    $stmtStatsCorr = $pdo->prepare("SELECT COUNT(*) FROM contagem WHERE idUsuario = ? AND tipo = 'correcao'");
     $stmtStatsCorr->execute([$usuarioId]);
     $totalCorrecoesUsuario = (int)$stmtStatsCorr->fetchColumn();
 
@@ -832,18 +1060,18 @@ try {
                 COALESCE(NULLIF(l.numero, ''), CONCAT('Linha #', c.idLinha)) as linhaNumero,
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
                 COALESCE(NULLIF(v.prefixo, 0), v.placa, 'S/ Veículo') as veiculoPrefixo,
-                COALESCE(NULLIF(c.sentido, ''), 'Ida') as sentido,
+                COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN c.totalPassageiros ELSE 0 END) as embarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN c.totalPassageiros ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN c.tipoContagem = 'percentual' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
-                COUNT(c.idContagem) as totalRegistros
-            FROM contagens c
+                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
+                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
+                COUNT(c.idPesquisa) as totalRegistros
+            FROM pesquisa c
             LEFT JOIN linha l ON c.idLinha = l.idLinha
             LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
             WHERE $whereSql
-            GROUP BY DATE(c.dataInicio), DATE_FORMAT(c.dataInicio, '%H:%i'), c.idLinha, c.idVeiculo, l.numero, l.descricao, l.linha, v.prefixo, v.placa, COALESCE(NULLIF(c.sentido, ''), 'Ida')
+            GROUP BY DATE(c.dataInicio), DATE_FORMAT(c.dataInicio, '%H:%i'), c.idLinha, c.idVeiculo, l.numero, l.descricao, l.linha, v.prefixo, v.placa, COALESCE(NULLIF(c.viagem, ''), 'Ida')
             ORDER BY c.dataInicio DESC
         ");
         $stmtT1->execute($paramsHist);
@@ -859,17 +1087,17 @@ try {
                 c.idLinha,
                 COALESCE(NULLIF(l.numero, ''), CONCAT('Linha #', c.idLinha)) as linhaNumero,
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
-                COALESCE(NULLIF(c.sentido, ''), 'Ida') as sentido,
+                COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN c.totalPassageiros ELSE 0 END) as embarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN c.totalPassageiros ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN c.tipoContagem = 'percentual' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
-                COUNT(c.idContagem) as totalSessoes
-            FROM contagens c
+                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
+                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
+                COUNT(c.idPesquisa) as totalSessoes
+            FROM pesquisa c
             LEFT JOIN linha l ON c.idLinha = l.idLinha
             LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             WHERE $whereSql
-            GROUP BY DATE(c.dataInicio), c.idLinha, l.numero, l.descricao, l.linha, COALESCE(NULLIF(c.sentido, ''), 'Ida')
+            GROUP BY DATE(c.dataInicio), c.idLinha, l.numero, l.descricao, l.linha, COALESCE(NULLIF(c.viagem, ''), 'Ida')
             ORDER BY DATE(c.dataInicio) DESC, embarques DESC
         ");
         $stmtT2->execute($paramsHist);
@@ -884,18 +1112,18 @@ try {
                 c.idLocal,
                 COALESCE(loc.local, 'Praça Central') as nomeLocal,
                 loc.regiao as regiaoLocal,
-                COALESCE(NULLIF(c.sentido, ''), 'Ida') as sentido,
+                COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN c.totalPassageiros ELSE 0 END) as embarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN c.totalPassageiros ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN c.tipoContagem = 'percentual' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
-                COUNT(c.idContagem) as totalSessoes
-            FROM contagens c
+                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
+                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
+                COUNT(c.idPesquisa) as totalSessoes
+            FROM pesquisa c
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
             LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN linha l ON c.idLinha = l.idLinha
             WHERE $whereSql
-            GROUP BY c.idLocal, loc.local, loc.regiao, COALESCE(NULLIF(c.sentido, ''), 'Ida')
+            GROUP BY c.idLocal, loc.local, loc.regiao, COALESCE(NULLIF(c.viagem, ''), 'Ida')
             ORDER BY embarques DESC
         ");
         $stmtT3->execute($paramsHist);
@@ -909,18 +1137,18 @@ try {
             SELECT 
                 COALESCE(e.idEmpresa, 1) as idEmpresa,
                 COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'PLATAFORMA') as nomeEmpresa,
-                COALESCE(NULLIF(c.sentido, ''), 'Ida') as sentido,
+                COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN c.totalPassageiros ELSE 0 END) as embarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN c.totalPassageiros ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN c.tipoContagem = 'percentual' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
-                COUNT(DISTINCT c.idContagem) as totalSessoes
-            FROM contagens c
+                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
+                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
+                COUNT(DISTINCT c.idPesquisa) as totalSessoes
+            FROM pesquisa c
             LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN linha l ON c.idLinha = l.idLinha
             LEFT JOIN empresa e ON (c.idEmpresa = e.idEmpresa OR v.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa OR e.idEmpresa = 1)
             WHERE $whereSql
-            GROUP BY COALESCE(e.idEmpresa, 1), COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'PLATAFORMA'), COALESCE(NULLIF(c.sentido, ''), 'Ida')
+            GROUP BY COALESCE(e.idEmpresa, 1), COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'PLATAFORMA'), COALESCE(NULLIF(c.viagem, ''), 'Ida')
             ORDER BY embarques DESC
         ");
         $stmtT4->execute($paramsHist);
@@ -946,6 +1174,33 @@ try {
     }
     if ($stmtV) $veiculosDisponiveis = $stmtV->fetchAll();
 } catch (\Exception $e) {}
+
+// Veículos selecionados especificamente para a sessão ativa de contagem
+$veiculosSessao = [];
+if ($sessaoAtiva) {
+    $idsVeiculosSessao = [];
+    if (!empty($sessaoAtiva['veiculosSelecionados'])) {
+        $partesIds = explode(',', (string)$sessaoAtiva['veiculosSelecionados']);
+        foreach ($partesIds as $pid) {
+            $pidInt = (int)trim($pid);
+            if ($pidInt > 0 && !in_array($pidInt, $idsVeiculosSessao)) {
+                $idsVeiculosSessao[] = $pidInt;
+            }
+        }
+    }
+    // Inclui também o veículo ativo principal da sessão se não estiver na lista
+    if (!empty($sessaoAtiva['idVeiculo']) && !in_array((int)$sessaoAtiva['idVeiculo'], $idsVeiculosSessao)) {
+        $idsVeiculosSessao[] = (int)$sessaoAtiva['idVeiculo'];
+    }
+
+    if (!empty($idsVeiculosSessao)) {
+        foreach ($veiculosDisponiveis as $v) {
+            if (in_array((int)$v['idVeiculo'], $idsVeiculosSessao)) {
+                $veiculosSessao[] = $v;
+            }
+        }
+    }
+}
 
 $locaisDisponiveis = [];
 try {
@@ -980,7 +1235,7 @@ if ($canViewSolicitacoes) {
                    uSol.nome as solicitanteNome, uSol.login as solicitanteLogin,
                    uDest.nome as destinoNome, uDest.login as destinoLogin,
                    uResp.nome as respostaNome, uResp.login as respostaLogin,
-                   c.idLinha, c.idVeiculo, c.idLocal, c.sentido, c.tipoContagem, c.totalPassageiros as totalContagem,
+                   c.idLinha, c.idVeiculo, c.idLocal, c.viagem as sentido, c.tipoContagem, c.totalPassageiros as totalContagem,
                    l.numero as linhaNumero, l.descricao as linhaDescricao,
                    v.prefixo as veiculoPrefixo,
                    loc.local as nomeLocal,
@@ -990,7 +1245,7 @@ if ($canViewSolicitacoes) {
             LEFT JOIN usuarios uSol ON s.idUsuarioSolicitante = uSol.idusuarios
             LEFT JOIN usuarios uDest ON s.idUsuarioDestino = uDest.idusuarios
             LEFT JOIN usuarios uResp ON s.idUsuarioResposta = uResp.idusuarios
-            LEFT JOIN contagens c ON s.idContagem = c.idContagem
+            LEFT JOIN pesquisa c ON s.idContagem = c.idPesquisa
             LEFT JOIN linha l ON c.idLinha = l.idLinha
             LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
@@ -1057,14 +1312,14 @@ if ($canViewSolicitacoes) {
                     </div>
                 </div>
 
-                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <div class="header-right-actions" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
                     
                     <!-- Relógio Digital em Tempo Real com Opção de Exibir Data -->
                     <div class="realtime-clock-card" title="Data e Horário em Tempo Real" style="display: inline-flex; align-items: center; gap: 8px; background: #ffffff; padding: 7px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-weight: 600; font-size: 0.88rem; color: #1e293b; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                         <span class="pulse-dot" style="width: 8px; height: 8px; background: #22c55e; border-radius: 50%; display: inline-block;"></span>
-                        <span id="realtime-clock"><?php echo date('d/m/Y H:i:s'); ?></span>
-                        <button type="button" onclick="toggleDateInClock()" id="btn-toggle-date" title="Alternar exibição da data junto ao horário" style="background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 3px 8px; font-size: 0.75rem; cursor: pointer; color: #334155; font-weight: 600; font-family: inherit; transition: all 0.2s;">
-                            📅 Data: ON
+                        <span id="realtime-clock"><?php echo date('H:i:s'); ?></span>
+                        <button type="button" onclick="toggleDateInClock()" id="btn-toggle-date" title="Alternar exibição da data junto ao horário" style="background: #fee2e2; border: 1px solid #fecaca; border-radius: 6px; padding: 3px 8px; font-size: 0.75rem; cursor: pointer; color: #991b1b; font-weight: 600; font-family: inherit; transition: all 0.2s;">
+                            📅 Data: OFF
                         </button>
                     </div>
 
@@ -1149,13 +1404,13 @@ if ($canViewSolicitacoes) {
                             }
                         ?>
                         <!-- FORMS: INICIAR NOVA SESSÃO DE CONTAGEM (DESIGN ATUALIZADO) -->
-                        <form method="POST" action="index.php" id="form-iniciar-contagem">
+                        <form method="POST" action="index.php" id="form-iniciar-contagem" autocomplete="off">
                             <input type="hidden" name="action" value="iniciar_contagem">
-                            <input type="hidden" name="condicaoTempo" id="input_condicaoTempo" value="bom">
-                            <input type="hidden" name="tipoTransporte" id="input_tipoTransporte" value="stco">
-                            <input type="hidden" name="tipoContagem" id="input_tipoContagem" value="percentual">
-                            <input type="hidden" name="tipoOperacao" id="input_tipoOperacao" value="embarque">
-                            <input type="hidden" name="sentido" id="input_sentido" value="Ida">
+                            <input type="hidden" name="condicaoTempo" id="input_condicaoTempo" value="">
+                            <input type="hidden" name="tipoTransporte" id="input_tipoTransporte" value="">
+                            <input type="hidden" name="tipoContagem" id="input_tipoContagem" value="">
+                            <input type="hidden" name="tipoOperacao" id="input_tipoOperacao" value="">
+                            <input type="hidden" name="sentido" id="input_sentido" value="">
 
                             <div class="panel-layout-grid">
                                 <!-- ESQUERDA: DADOS -->
@@ -1303,7 +1558,7 @@ if ($canViewSolicitacoes) {
                                                         <span class="required-star">*</span>
                                                     </label>
                                                     <div class="chips-flex-row">
-                                                        <button type="button" id="chip-viagem-ida" class="chip-btn active chip-blue" onclick="selectChip('sentido', 'Ida', this, 'chip-blue')">
+                                                        <button type="button" id="chip-viagem-ida" class="chip-btn" onclick="selectChip('sentido', 'Ida', this, 'chip-blue')">
                                                             ➡️ Ida
                                                         </button>
                                                         <button type="button" id="chip-viagem-volta" class="chip-btn" onclick="selectChip('sentido', 'Volta', this, 'chip-blue')">
@@ -1324,7 +1579,7 @@ if ($canViewSolicitacoes) {
                                                         <span class="required-star">*</span>
                                                     </label>
                                                     <div class="chips-flex-row">
-                                                        <button type="button" id="chip-op-embarque" class="chip-btn active chip-green" onclick="selectChip('tipoOperacao', 'embarque', this, 'chip-green')">
+                                                        <button type="button" id="chip-op-embarque" class="chip-btn" onclick="selectChip('tipoOperacao', 'embarque', this, 'chip-green')">
                                                             ↓ Embarque
                                                         </button>
                                                         <button type="button" id="chip-op-desembarque" class="chip-btn" onclick="selectChip('tipoOperacao', 'desembarque', this, 'chip-green')">
@@ -1350,7 +1605,7 @@ if ($canViewSolicitacoes) {
                                                         <span class="required-star">*</span>
                                                     </label>
                                                     <div class="chips-flex-row">
-                                                        <button type="button" id="chip-percentual" class="chip-btn active chip-purple" onclick="selectChip('tipoContagem', 'percentual', this, 'chip-purple')">
+                                                        <button type="button" id="chip-percentual" class="chip-btn" onclick="selectChip('tipoContagem', 'percentual', this, 'chip-purple')">
                                                             % Percentual
                                                         </button>
                                                         <button type="button" id="chip-quantidade" class="chip-btn" onclick="selectChip('tipoContagem', 'quantidade', this, 'chip-purple')">
@@ -1368,16 +1623,16 @@ if ($canViewSolicitacoes) {
                                                         <span class="required-star">*</span>
                                                     </label>
                                                     <div class="chips-flex-row" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                                                        <button type="button" class="chip-btn active chip-blue" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'bom', this, 'chip-blue')">
+                                                        <button type="button" id="chip-tempo-bom" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'bom', this, 'chip-blue')">
                                                             ☀️ Bom
                                                         </button>
-                                                        <button type="button" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'nublado', this, 'chip-blue')">
+                                                        <button type="button" id="chip-tempo-nublado" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'nublado', this, 'chip-blue')">
                                                             ☁️ Nublado
                                                         </button>
-                                                        <button type="button" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'chuva leve', this, 'chip-blue')">
+                                                        <button type="button" id="chip-tempo-chuva-leve" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'chuva leve', this, 'chip-blue')">
                                                             🌧️ Chuva Leve
                                                         </button>
-                                                        <button type="button" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'chuva densa', this, 'chip-blue')">
+                                                        <button type="button" id="chip-tempo-chuva-densa" class="chip-btn" style="justify-content: center; padding: 7px 8px; font-size: 0.82rem; white-space: nowrap;" onclick="selectChip('condicaoTempo', 'chuva densa', this, 'chip-blue')">
                                                             ⛈️ Chuva Densa
                                                         </button>
                                                     </div>
@@ -1397,13 +1652,13 @@ if ($canViewSolicitacoes) {
                                                     <span class="required-star">*</span>
                                                 </label>
                                                 <div class="chips-flex-row">
-                                                    <button type="button" class="chip-btn active chip-blue" onclick="selectChip('tipoTransporte', 'stco', this, 'chip-blue')">
+                                                    <button type="button" id="chip-transp-stco" class="chip-btn" onclick="selectChip('tipoTransporte', 'stco', this, 'chip-blue')">
                                                         🚌 STCO
                                                     </button>
-                                                    <button type="button" class="chip-btn" onclick="selectChip('tipoTransporte', 'brt', this, 'chip-blue')">
+                                                    <button type="button" id="chip-transp-brt" class="chip-btn" onclick="selectChip('tipoTransporte', 'brt', this, 'chip-blue')">
                                                         🚌 BRT
                                                     </button>
-                                                    <button type="button" class="chip-btn" onclick="selectChip('tipoTransporte', 'stec', this, 'chip-blue')">
+                                                    <button type="button" id="chip-transp-stec" class="chip-btn" onclick="selectChip('tipoTransporte', 'stec', this, 'chip-blue')">
                                                         🚌 STEC
                                                     </button>
                                                 </div>
@@ -1424,8 +1679,8 @@ if ($canViewSolicitacoes) {
 
                                                 <!-- Caixas de seleção: Registrar / Não informado -->
                                                 <div style="display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
-                                                    <label id="card-modo-registrar" onclick="selecionarModoVeiculo('registrar')" style="flex: 1; min-width: 140px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 2px solid #2563eb; background: #eff6ff; border-radius: 10px; cursor: pointer; transition: all 0.2s; user-select: none;">
-                                                        <input type="radio" name="opcaoVeiculo" id="radio_modo_registrar" value="registrar" checked style="accent-color: #2563eb; width: 18px; height: 18px; cursor: pointer;">
+                                                    <label id="card-modo-registrar" onclick="selecionarModoVeiculo('registrar')" style="flex: 1; min-width: 140px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 2px solid #cbd5e1; background: #ffffff; border-radius: 10px; cursor: pointer; transition: all 0.2s; user-select: none;">
+                                                        <input type="radio" name="opcaoVeiculo" id="radio_modo_registrar" value="registrar" style="accent-color: #2563eb; width: 18px; height: 18px; cursor: pointer;">
                                                         <div>
                                                             <div style="font-weight: 700; font-size: 0.9rem; color: #1e3a8a;">Registrar</div>
                                                             <div style="font-size: 0.75rem; color: #3b82f6;">Informar prefixos dos veículos</div>
@@ -1442,7 +1697,7 @@ if ($canViewSolicitacoes) {
                                                 </div>
 
                                                 <!-- Bloco interativo quando 'Registrar' está ativo -->
-                                                <div id="box-veiculo-registrar" style="display: block;">
+                                                <div id="box-veiculo-registrar" style="display: none;">
                                                     <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
                                                         <button type="button" onclick="openModalVeiculos()" style="display: inline-flex; align-items: center; gap: 8px; background: #2563eb; color: #ffffff; border: none; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.88rem; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.25); transition: all 0.2s;">
                                                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -1508,12 +1763,13 @@ if ($canViewSolicitacoes) {
                                         Sessão em Andamento
                                     </div>
 
-                                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                        <!-- Botão Salvar Contagem (Mantém Sessão Ativa) -->
-                                        <button type="button" onclick="salvarContagemAtiva()" id="btn-salvar-contagem" style="background: #2563eb; color: #ffffff; border: none; padding: 8px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(37,99,235,0.25); transition: all 0.2s;">
+                                    <div class="session-header-actions" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                                        <!-- Botão Solicitar Correção (Supervisor) -->
+                                        <button type="button" onclick="openCorrectionModal()" id="btn-solicitar-correcao-topo" style="background: #fff1f2; color: #e11d48; border: 1.5px solid #fecdd3; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(225,29,72,0.1); transition: all 0.2s;" onmouseover="this.style.background='#ffe4e6';" onmouseout="this.style.background='#fff1f2';">
                                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="16" height="16">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c.11.128.19.278.234.442l.7 2.622A2.25 2.25 0 0 1 16.34 9H7.66a2.25 2.25 0 0 1-2.187-2.616l.7-2.622a2.25 2.25 0 0 1 .476-.884l1.5-1.5A2.25 2.25 0 0 1 9.75 1h4.5c.597 0 1.17.238 1.591.659l1.752 1.663zM12 12a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" />
-                                            </svg>                                            <span>Salvar Contagem</span>
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                                            </svg>
+                                            <span>Solicitar Correção</span>
                                         </button>
 
                                         <!-- Botão Finalizar Contagem -->
@@ -1543,28 +1799,10 @@ if ($canViewSolicitacoes) {
                                 </div>
 
                                 <div class="session-info-grid">
-                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha, Veículo ou Turno">
-                                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                                            <label style="margin:0; cursor: pointer;">Linha do Ônibus</label>
-                                        </div>
-                                        <span id="session-linha-text">
-                                            <?php 
-                                                $nL = !empty($sessaoAtiva['linhaNumero']) ? $sessaoAtiva['linhaNumero'] . ' - ' . $sessaoAtiva['linhaDescricao'] : 'Linha #'.$sessaoAtiva['idLinha'];
-                                                echo htmlspecialchars($nL); 
-                                            ?>
-                                        </span>
-                                    </div>
+                                    <span id="session-linha-text" style="display:none;"></span>
+                                    <span id="session-veiculo-text" style="display:none;"></span>
 
-                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha, Veículo ou Turno">
-                                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                                            <label style="margin:0; cursor: pointer;">Veículo (Prefixo)</label>
-                                        </div>
-                                        <span id="session-veiculo-text">
-                                            <?php echo htmlspecialchars($sessaoAtiva['veiculoPrefixo'] ? $sessaoAtiva['veiculoPrefixo'] : 'Prefixo #'.$sessaoAtiva['idVeiculo']); ?>
-                                        </span>
-                                    </div>
-
-                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha, Veículo ou Turno">
+                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Veículo ou Turno">
                                         <div style="display: flex; justify-content: space-between; align-items: center;">
                                             <label style="margin:0; cursor: pointer;">Turno</label>
                                             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
@@ -1633,50 +1871,41 @@ if ($canViewSolicitacoes) {
                                         </div>
                                     </div>
 
-                                    <!-- BOTOEIRA DE ADIÇÃO EM PORCENTAGEM -->
+                                    <!-- BOTOEIRA DE DEFINIÇÃO EM PORCENTAGEM (SUBSTITUIÇÃO DE VALOR) -->
                                     <div class="percent-btn-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px;">
-                                        <button type="button" class="btn-count-percent" onclick="sendIncrement(0)" style="background: #f8fafc; border: 2px solid #64748b; color: #334155; border-radius: 14px; padding: 14px 10px; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s;">
-                                            <div style="font-size: 1.4rem; font-weight: 800;">0%</div>
-                                            <div style="font-size: 0.8rem; font-weight: 600; opacity: 0.85;">(0 pas.)</div>
-                                        </button>
-
-                                        <button type="button" class="btn-count-percent" onclick="sendIncrement(13)" style="background: #eff6ff; border: 2px solid #3b82f6; color: #1d4ed8; border-radius: 14px; padding: 14px 10px; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s;">
-                                            <div style="font-size: 1.4rem; font-weight: 800;">15%</div>
-                                            <div style="font-size: 0.8rem; font-weight: 600; opacity: 0.85;">(13 pas.)</div>
-                                        </button>
-
-                                        <button type="button" class="btn-count-percent" onclick="sendIncrement(30)" style="background: #eff6ff; border: 2px solid #3b82f6; color: #1d4ed8; border-radius: 14px; padding: 14px 10px; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s;">
-                                            <div style="font-size: 1.4rem; font-weight: 800;">35%</div>
-                                            <div style="font-size: 0.8rem; font-weight: 600; opacity: 0.85;">(30 pas.)</div>
-                                        </button>
-
-                                        <button type="button" class="btn-count-percent" onclick="sendIncrement(42)" style="background: #f0fdf4; border: 2px solid #22c55e; color: #15803d; border-radius: 14px; padding: 14px 10px; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s;">
-                                            <div style="font-size: 1.4rem; font-weight: 800;">50%</div>
-                                            <div style="font-size: 0.8rem; font-weight: 600; opacity: 0.85;">(42 pas.)</div>
-                                        </button>
-
-                                        <button type="button" class="btn-count-percent" onclick="sendIncrement(54)" style="background: #fefce8; border: 2px solid #eab308; color: #854d0e; border-radius: 14px; padding: 14px 10px; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s;">
-                                            <div style="font-size: 1.4rem; font-weight: 800;">65%</div>
-                                            <div style="font-size: 0.8rem; font-weight: 600; opacity: 0.85;">(54 pas.)</div>
-                                        </button>
-
-                                        <button type="button" class="btn-count-percent" onclick="sendIncrement(82)" style="background: #faf5ff; border: 2px solid #a855f7; color: #6b21a8; border-radius: 14px; padding: 14px 10px; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s;">
-                                            <div style="font-size: 1.4rem; font-weight: 800;">100%</div>
-                                            <div style="font-size: 0.8rem; font-weight: 600; opacity: 0.85;">(82 pas.)</div>
-                                        </button>
-
-                                        <button type="button" class="btn-count-percent" onclick="sendIncrement(100)" style="background: #fff1f2; border: 2px solid #f43f5e; color: #be123c; border-radius: 14px; padding: 14px 10px; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s;">
-                                            <div style="font-size: 1.4rem; font-weight: 800;">120%</div>
-                                            <div style="font-size: 0.8rem; font-weight: 600; opacity: 0.85;">(>100 pas.)</div>
-                                        </button>
+                                        <?php 
+                                            $totAtual = (int)$sessaoAtiva['totalPassageiros'];
+                                            $opcoesPct = [
+                                                ['pct' => '0%',   'qtd' => 0,   'label' => '(0 pas.)',    'bg' => '#f8fafc', 'border' => '#64748b', 'color' => '#334155'],
+                                                ['pct' => '15%',  'qtd' => 13,  'label' => '(13 pas.)',   'bg' => '#eff6ff', 'border' => '#3b82f6', 'color' => '#1d4ed8'],
+                                                ['pct' => '35%',  'qtd' => 30,  'label' => '(30 pas.)',   'bg' => '#eff6ff', 'border' => '#3b82f6', 'color' => '#1d4ed8'],
+                                                ['pct' => '50%',  'qtd' => 42,  'label' => '(42 pas.)',   'bg' => '#f0fdf4', 'border' => '#22c55e', 'color' => '#15803d'],
+                                                ['pct' => '65%',  'qtd' => 54,  'label' => '(54 pas.)',   'bg' => '#fefce8', 'border' => '#eab308', 'color' => '#854d0e'],
+                                                ['pct' => '100%', 'qtd' => 82,  'label' => '(82 pas.)',   'bg' => '#faf5ff', 'border' => '#a855f7', 'color' => '#6b21a8'],
+                                                ['pct' => '120%', 'qtd' => 100, 'label' => '(>100 pas.)', 'bg' => '#fff1f2', 'border' => '#f43f5e', 'color' => '#be123c'],
+                                            ];
+                                        ?>
+                                        <?php foreach ($opcoesPct as $op): ?>
+                                            <?php 
+                                                $isAtivoPct = ($totAtual === $op['qtd']);
+                                            ?>
+                                            <button type="button" 
+                                                    class="btn-count-percent <?php echo $isAtivoPct ? 'active-percent' : ''; ?>" 
+                                                    data-qtd="<?php echo $op['qtd']; ?>"
+                                                    onclick="sendIncrement(<?php echo $op['qtd']; ?>, 'substituir', this)" 
+                                                    style="background: <?php echo $op['bg']; ?>; border: 2.5px solid <?php echo $op['border']; ?>; color: <?php echo $op['color']; ?>; border-radius: 14px; padding: 14px 10px; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s; <?php echo $isAtivoPct ? 'box-shadow: 0 6px 16px rgba(0,0,0,0.15); transform: translateY(-2px) scale(1.03);' : ''; ?>">
+                                                <div style="font-size: 1.4rem; font-weight: 800;"><?php echo $op['pct']; ?></div>
+                                                <div style="font-size: 0.8rem; font-weight: 600; opacity: 0.85;"><?php echo $op['label']; ?></div>
+                                            </button>
+                                        <?php endforeach; ?>
                                     </div>
 
                                     <div style="margin-bottom: 20px;">
-                                        <button type="button" class="btn-count btn-correct-action" onclick="openCorrectionModal()" style="width: 100%;">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="20" height="20">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                                        <button type="button" class="btn-count btn-save-action" onclick="salvarContagemAtiva()" id="btn-salvar-contagem" style="width: 100%; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; border: none; padding: 15px; border-radius: 14px; font-weight: 800; font-size: 1.05rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 4px 14px rgba(37,99,235,0.3); transition: all 0.2s;">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="22" height="22">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c.11.128.19.278.234.442l.7 2.622A2.25 2.25 0 0 1 16.34 9H7.66a2.25 2.25 0 0 1-2.187-2.616l.7-2.622a2.25 2.25 0 0 1 .476-.884l1.5-1.5A2.25 2.25 0 0 1 9.75 1h4.5c.597 0 1.17.238 1.591.659l1.752 1.663zM12 12a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" />
                                             </svg>
-                                            <span>Solicitar Correção de Contagem (Supervisor)</span>
+                                            <span>Salvar Contagem</span>
                                         </button>
                                     </div>
 
@@ -1704,14 +1933,120 @@ if ($canViewSolicitacoes) {
                                             <span class="btn-count-subtext">Lote Rápido</span>
                                         </button>
 
-                                        <button type="button" class="btn-count btn-correct-action" onclick="openCorrectionModal()">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="20" height="20">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                                        <button type="button" class="btn-count btn-save-action" onclick="salvarContagemAtiva()" id="btn-salvar-contagem-grid">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="22" height="22">
+                                                <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c.11.128.19.278.234.442l.7 2.622A2.25 2.25 0 0 1 16.34 9H7.66a2.25 2.25 0 0 1-2.187-2.616l.7-2.622a2.25 2.25 0 0 1 .476-.884l1.5-1.5A2.25 2.25 0 0 1 9.75 1h4.5c.597 0 1.17.238 1.591.659l1.752 1.663zM12 12a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" />
                                             </svg>
-                                            <span>Solicitar Correção de Contagem (Supervisor)</span>
+                                            <span>Salvar Contagem</span>
                                         </button>
                                     </div>
                                 <?php endif; ?>
+
+                                <!-- SELETOR DE ÔNIBUS E LINHA PARA DIRECIONAR A CONTAGEM -->
+                                <div class="onibus-selection-container" style="margin-top: 24px; padding: 20px; background: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.04);">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+                                        <div>
+                                            <h4 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #1e293b; display: flex; align-items: center; gap: 8px;">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                    <rect x="3" y="6" width="18" height="13" rx="2"></rect>
+                                                    <path d="M7 6V4a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v2"></path>
+                                                    <circle cx="7" cy="15" r="1"></circle>
+                                                    <circle cx="17" cy="15" r="1"></circle>
+                                                </svg>
+                                                Ônibus & Linha para Adicionar Pessoas
+                                            </h4>
+                                            <div style="font-size: 0.82rem; color: #64748b; margin-top: 3px;">
+                                                Selecione abaixo em qual ônibus ou linha os passageiros contados serão adicionados.
+                                            </div>
+                                        </div>
+
+                                        <!-- Indicador da Seleção Ativa Atual -->
+                                        <div id="destaque-selecao-ativa" style="display: flex; align-items: center; gap: 8px; background: #f0f7ff; border: 1.5px solid #bfdbfe; padding: 8px 14px; border-radius: 10px; flex-wrap: wrap;">
+                                            <span style="font-size: 0.8rem; color: #1e40af; font-weight: 700;">Ativo para contagem:</span>
+                                            <span id="badge-linha-ativa-mini" style="font-size: 0.82rem; font-weight: 800; color: #1d4ed8; background: #dbeafe; padding: 4px 10px; border-radius: 6px;">
+                                                Linha: <?php echo htmlspecialchars(!empty($sessaoAtiva['linhaNumero']) ? $sessaoAtiva['linhaNumero'] . ' - ' . $sessaoAtiva['linhaDescricao'] : 'Linha #'.$sessaoAtiva['idLinha']); ?>
+                                            </span>
+                                            <span id="badge-veiculo-ativo-mini" style="font-size: 0.82rem; font-weight: 800; color: #15803d; background: #dcfce7; padding: 4px 10px; border-radius: 6px;">
+                                                Ônibus: <?php echo htmlspecialchars(!empty($sessaoAtiva['veiculoPrefixo']) ? $sessaoAtiva['veiculoPrefixo'] : 'Prefixo #'.$sessaoAtiva['idVeiculo']); ?>
+                                            </span>
+                                        </div>
+                                    </div>
+
+
+                                    <!-- 2. OPÇÕES DE ÔNIBUS SELECIONADOS PARA ESTA SESSÃO DE CONTAGEM -->
+                                    <div>
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+                                            <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: flex; align-items: center; gap: 6px;">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;">
+                                                    <rect x="3" y="6" width="18" height="13" rx="2"></rect>
+                                                    <path d="M7 6V4a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v2"></path>
+                                                    <circle cx="7" cy="15" r="1"></circle>
+                                                    <circle cx="17" cy="15" r="1"></circle>
+                                                </svg>
+                                                Ônibus Selecionados para esta Contagem:
+                                                <span id="badge-total-onibus-cadastrados" style="font-size: 0.78rem; font-weight: 700; color: #2563eb; background: #eff6ff; padding: 2px 8px; border-radius: 9999px; border: 1px solid #bfdbfe;">
+                                                    <?php echo count($veiculosSessao); ?> selecionado(s)
+                                                </span>
+                                            </label>
+
+                                            <!-- Ações Rápidas: Botão de Registrar / Escolher Mais Ônibus -->
+                                            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                                                <!-- Botão Registrar / Selecionar Mais Ônibus para a Contagem -->
+                                                <button type="button" onclick="openModalGerenciarVeiculosSessao()" class="btn-gerenciar-veiculos-sessao" title="Registrar ou selecionar mais ônibus para esta contagem" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; border: none; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.25); transition: all 0.2s; white-space: nowrap;">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                                    </svg>
+                                                    <span>+ Registrar / Escolher Ônibus</span>
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <!-- Grade de cards apenas com os ônibus selecionados para esta contagem -->
+                                        <div id="grid-onibus-registrados" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-height: 240px; overflow-y: auto; padding: 6px; background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 12px;">
+                                            <?php if (count($veiculosSessao) > 0): ?>
+                                                <?php foreach ($veiculosSessao as $v): ?>
+                                                    <?php 
+                                                        $isVeicAtivo = ($sessaoAtiva && $sessaoAtiva['idVeiculo'] == $v['idVeiculo']);
+                                                        $pref = htmlspecialchars($v['prefixo']);
+                                                        $plc = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
+                                                        $searchData = strtolower($v['prefixo'] . ' ' . $plc);
+                                                    ?>
+                                                    <button type="button" 
+                                                            class="btn-opcao-onibus <?php echo $isVeicAtivo ? 'onibus-ativo' : ''; ?>" 
+                                                            id="btn-veiculo-opt-<?php echo $v['idVeiculo']; ?>"
+                                                            data-id-veiculo="<?php echo $v['idVeiculo']; ?>" 
+                                                            data-prefixo="<?php echo $pref; ?>"
+                                                            data-placa="<?php echo $plc; ?>"
+                                                            data-search="<?php echo $searchData; ?>"
+                                                            onclick="selecionarOnibusContagem(<?php echo $v['idVeiculo']; ?>, '<?php echo addslashes($pref); ?>')"
+                                                            style="display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid <?php echo $isVeicAtivo ? '#2563eb' : '#cbd5e1'; ?>; background: <?php echo $isVeicAtivo ? '#eff6ff' : '#ffffff'; ?>; cursor: pointer; text-align: left; transition: all 0.2s; position: relative;">
+                                                        <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 3px;">
+                                                            <span style="font-weight: 800; font-size: 0.95rem; color: <?php echo $isVeicAtivo ? '#1d4ed8' : '#0f172a'; ?>;">
+                                                                🚌 <?php echo $pref; ?>
+                                                            </span>
+                                                            <span class="badge-onibus-status" style="font-size: 0.68rem; font-weight: 800; color: #16a34a; background: #dcfce7; padding: 2px 6px; border-radius: 4px; display: <?php echo $isVeicAtivo ? 'inline-block' : 'none'; ?>;">
+                                                                ✓ ATIVO
+                                                            </span>
+                                                        </div>
+                                                        <?php if ($plc): ?>
+                                                            <div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">
+                                                                Placa: <?php echo $plc; ?>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                    </button>
+                                                <?php endforeach; ?>
+                                            <?php else: ?>
+                                                <div style="grid-column: 1 / -1; padding: 18px; text-align: center; color: #64748b; font-size: 0.88rem; background: #ffffff; border-radius: 10px; border: 1px dashed #cbd5e1;">
+                                                    Nenhum ônibus selecionado para esta sessão de contagem.
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div id="aviso-onibus-nao-encontrado" style="display: none; padding: 16px; text-align: center; color: #94a3b8; font-size: 0.88rem; font-style: italic; background: #ffffff; border-radius: 10px; margin-top: 6px; border: 1px dashed #cbd5e1;">
+                                            Nenhum ônibus encontrado correspondente ao filtro.
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- HISTÓRICO DE LANÇAMENTOS E AUDITORIA DA SESSÃO ATIVA -->
@@ -1768,7 +2103,15 @@ if ($canViewSolicitacoes) {
                                                             <?php echo $reg['tipo'] === 'salvamento' ? (int)$reg['quantidade'] . ' pas.' : (($reg['quantidade'] > 0 ? '+' : '') . (int)$reg['quantidade']); ?>
                                                         </td>
                                                         <td style="padding: 12px; color: #334155;">
-                                                            <?php echo !empty($reg['justificativa']) ? htmlspecialchars($reg['justificativa']) : '<em style="color:#a1a1aa;">Contagem direta</em>'; ?>
+                                                            <?php 
+                                                                if ($reg['tipo'] === 'salvamento' || (!empty($reg['justificativa']) && strpos($reg['justificativa'], 'Operação Salva.') === 0)) {
+                                                                    echo '<span style="color: #15803d; font-weight: 600;">✓ Contagem salva</span>';
+                                                                } elseif (!empty($reg['justificativa'])) {
+                                                                    echo htmlspecialchars($reg['justificativa']);
+                                                                } else {
+                                                                    echo '<em style="color:#a1a1aa;">Contagem direta</em>';
+                                                                }
+                                                            ?>
                                                         </td>
                                                     </tr>
                                                 <?php endforeach; ?>
@@ -2650,9 +2993,12 @@ if ($canViewSolicitacoes) {
                         </svg>
                         <input type="text" id="inputBuscaVeiculoModal" placeholder="Digite o prefixo ou placa do veículo..." oninput="filtrarVeiculosModal(this.value)" style="width: 100%; padding: 10px 14px 10px 40px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.92rem; outline: none; box-sizing: border-box; transition: all 0.2s;">
                     </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 0.8rem; color: #64748b;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 0.8rem; color: #64748b; flex-wrap: wrap; gap: 6px;">
                         <span>Selecione os veículos da frota abaixo:</span>
-                        <button type="button" onclick="desmarcarTodosVeiculosModal()" style="background: none; border: none; color: #dc2626; font-size: 0.8rem; font-weight: 600; cursor: pointer; text-decoration: underline;">Desmarcar todos</button>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <button type="button" onclick="cadastrarNovoVeiculoModalInline()" style="background: none; border: none; color: #16a34a; font-size: 0.8rem; font-weight: 700; cursor: pointer; text-decoration: underline;">+ Cadastrar Novo Ônibus</button>
+                            <button type="button" onclick="desmarcarTodosVeiculosModal()" style="background: none; border: none; color: #dc2626; font-size: 0.8rem; font-weight: 600; cursor: pointer; text-decoration: underline;">Desmarcar todos</button>
+                        </div>
                     </div>
                 </div>
 
@@ -2743,28 +3089,13 @@ if ($canViewSolicitacoes) {
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="22" height="22" style="color: #2563eb;">
                         <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
                     </svg>
-                    Alterar Dados da Sessão (Linha, Veículo e Turno)
+                    Alterar Dados da Sessão (Veículo e Turno)
                 </div>
                 <button type="button" onclick="closeAlterarLinhaVeiculoModal()" style="background: none; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer;">&times;</button>
             </div>
 
             <form id="alterarLinhaVeiculoForm" onsubmit="submitAlterarLinhaVeiculo(event)">
-                <div style="margin-bottom: 16px;">
-                    <label style="font-weight: 600; font-size: 0.88rem; color: #334155; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                        <span>Linha do Ônibus <span style="color: #dc2626;">*</span>:</span>
-                    </label>
-                    <select id="editIdLinha" required class="form-select-custom cb-searchable-select" data-placeholder="Digite o número ou nome da linha...">
-                        <option value="">-- Selecione a Linha --</option>
-                        <?php foreach ($linhasDisponiveis as $l): ?>
-                            <option value="<?php echo $l['idLinha']; ?>" <?php echo ($sessaoAtiva && $sessaoAtiva['idLinha'] == $l['idLinha']) ? 'selected' : ''; ?>>
-                                <?php 
-                                    $nomeL = !empty($l['numero']) ? $l['numero'] . ' - ' . $l['descricao'] : (!empty($l['linha']) ? $l['linha'] : 'Linha #' . $l['idLinha']);
-                                    echo htmlspecialchars($nomeL);
-                                ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
+                <input type="hidden" id="editIdLinha" value="<?php echo ($sessaoAtiva ? $sessaoAtiva['idLinha'] : ''); ?>">
 
                 <div style="margin-bottom: 16px;">
                     <label style="font-weight: 600; font-size: 0.88rem; color: #334155; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
@@ -3018,7 +3349,7 @@ if ($canViewSolicitacoes) {
                             <th style="padding: 14px 16px; width: 110px;">Horário</th>
                             <th style="padding: 14px 16px; width: 140px;">Operação</th>
                             <th style="padding: 14px 16px; width: 130px;">Quantidade</th>
-                            <th style="padding: 14px 16px;">Observação / Características Completas da Operação</th>
+                            <th style="padding: 14px 16px;">Observação / Status</th>
                         </tr>
                     </thead>
                     <tbody id="expandLogsTableBody">
@@ -3047,7 +3378,15 @@ if ($canViewSolicitacoes) {
                                         <?php echo $reg['tipo'] === 'salvamento' ? (int)$reg['quantidade'] . ' pas.' : (($reg['quantidade'] > 0 ? '+' : '') . (int)$reg['quantidade']); ?>
                                     </td>
                                     <td style="padding: 14px 16px; color: #1e293b; line-height: 1.5; font-size: 0.92rem;">
-                                        <?php echo !empty($reg['justificativa']) ? htmlspecialchars($reg['justificativa']) : '<em style="color:#a1a1aa;">Contagem direta</em>'; ?>
+                                        <?php 
+                                            if ($reg['tipo'] === 'salvamento' || (!empty($reg['justificativa']) && strpos($reg['justificativa'], 'Operação Salva.') === 0)) {
+                                                echo '<span style="color: #15803d; font-weight: 600;">✓ Contagem salva</span>';
+                                            } elseif (!empty($reg['justificativa'])) {
+                                                echo htmlspecialchars($reg['justificativa']);
+                                            } else {
+                                                echo '<em style="color:#a1a1aa;">Contagem direta</em>';
+                                            }
+                                        ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -3068,7 +3407,7 @@ if ($canViewSolicitacoes) {
     <!-- JAVASCRIPT EM TEMPO REAL, NAVEGAÇÃO DE ABAS E AJAX -->
     <script>
         // 1. RELÓGIO EM TEMPO REAL E OPÇÃO DE EXIBIR DATA
-        let showDateInClock = true;
+        let showDateInClock = false;
         
         function toggleDateInClock() {
             showDateInClock = !showDateInClock;
@@ -3077,6 +3416,7 @@ if ($canViewSolicitacoes) {
                 btn.textContent = showDateInClock ? '📅 Data: ON' : '📅 Data: OFF';
                 btn.style.background = showDateInClock ? '#f1f5f9' : '#fee2e2';
                 btn.style.color = showDateInClock ? '#334155' : '#991b1b';
+                btn.style.borderColor = showDateInClock ? '#cbd5e1' : '#fecaca';
             }
             updateClock();
         }
@@ -3120,11 +3460,11 @@ if ($canViewSolicitacoes) {
         function salvarContagemAtiva() {
             if (!activeContagemId) return;
 
-            const btn = document.getElementById('btn-salvar-contagem');
-            if (btn) {
-                btn.disabled = true;
-                btn.style.opacity = '0.7';
-            }
+            const btns = document.querySelectorAll('.btn-save-action, #btn-salvar-contagem, #btn-salvar-contagem-grid');
+            btns.forEach(b => {
+                b.disabled = true;
+                b.style.opacity = '0.7';
+            });
 
             const formData = new FormData();
             formData.append('action', 'salvar_contagem');
@@ -3138,10 +3478,10 @@ if ($canViewSolicitacoes) {
             })
             .then(res => res.json())
             .then(data => {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.style.opacity = '1';
-                }
+                btns.forEach(b => {
+                    b.disabled = false;
+                    b.style.opacity = '1';
+                });
                 if (data.success) {
                     showToastNotification(data.message || '✓ Contagem salva com sucesso!');
                     if (data.logs) renderLogs(data.logs);
@@ -3150,12 +3490,134 @@ if ($canViewSolicitacoes) {
                 }
             })
             .catch(err => {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.style.opacity = '1';
-                }
+                btns.forEach(b => {
+                    b.disabled = false;
+                    b.style.opacity = '1';
+                });
                 console.error('Erro ao salvar contagem:', err);
             });
+        }
+
+        // Seleção rápida de Ônibus para direcionar a contagem
+        function selecionarOnibusContagem(idVeiculo, prefixo) {
+            if (!activeContagemId || !idVeiculo) return;
+
+            const btnOpt = document.getElementById('btn-veiculo-opt-' + idVeiculo);
+            if (btnOpt) {
+                btnOpt.style.opacity = '0.6';
+            }
+
+            const formData = new FormData();
+            formData.append('action', 'alterar_linha_veiculo');
+            formData.append('idContagem', activeContagemId);
+            formData.append('idVeiculo', idVeiculo);
+            formData.append('ajax', '1');
+
+            fetch('index.php', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (btnOpt) btnOpt.style.opacity = '1';
+                if (data.success) {
+                    // Atualiza estados dos botões de ônibus
+                    document.querySelectorAll('.btn-opcao-onibus').forEach(btn => {
+                        btn.classList.remove('onibus-ativo');
+                        btn.style.border = '2px solid #cbd5e1';
+                        btn.style.background = '#ffffff';
+                        const badge = btn.querySelector('.badge-onibus-status');
+                        if (badge) badge.style.display = 'none';
+                        const prefSpan = btn.querySelector('span');
+                        if (prefSpan) prefSpan.style.color = '#0f172a';
+                    });
+
+                    if (btnOpt) {
+                        btnOpt.classList.add('onibus-ativo');
+                        btnOpt.style.border = '2px solid #2563eb';
+                        btnOpt.style.background = '#eff6ff';
+                        const badge = btnOpt.querySelector('.badge-onibus-status');
+                        if (badge) badge.style.display = 'inline-block';
+                        const prefSpan = btnOpt.querySelector('span');
+                        if (prefSpan) prefSpan.style.color = '#1d4ed8';
+                    }
+
+                    // Atualiza badges e textos na tela
+                    const badgeV = document.getElementById('badge-veiculo-ativo-mini');
+                    if (badgeV) badgeV.textContent = 'Ônibus: ' + (data.veiculoText || prefixo);
+
+                    const sessV = document.getElementById('session-veiculo-text');
+                    if (sessV) sessV.textContent = data.veiculoText || prefixo;
+
+                    const editV = document.getElementById('editIdVeiculo');
+                    if (editV) editV.value = idVeiculo;
+
+                    showToastNotification('✓ Ônibus ' + prefixo + ' selecionado para a contagem!');
+                } else {
+                    alert(data.message || 'Erro ao selecionar o veículo.');
+                }
+            })
+            .catch(err => {
+                if (btnOpt) btnOpt.style.opacity = '1';
+                console.error('Erro ao selecionar ônibus:', err);
+            });
+        }
+
+        // Seleção rápida de Linha para direcionar a contagem
+        function selecionarLinhaContagem(idLinha, textoLinha) {
+            if (!activeContagemId) return;
+
+            const formData = new FormData();
+            formData.append('action', 'alterar_linha_veiculo');
+            formData.append('idContagem', activeContagemId);
+            formData.append('idLinha', idLinha);
+            formData.append('ajax', '1');
+
+            fetch('index.php', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    const badgeL = document.getElementById('badge-linha-ativa-mini');
+                    if (badgeL) badgeL.textContent = 'Linha: ' + (data.linhaText || textoLinha);
+
+                    const sessL = document.getElementById('session-linha-text');
+                    if (sessL) sessL.textContent = data.linhaText || textoLinha;
+
+                    const editL = document.getElementById('editIdLinha');
+                    if (editL) editL.value = idLinha;
+
+                    showToastNotification('✓ Linha atualizada para a contagem!');
+                } else {
+                    alert(data.message || 'Erro ao alterar a linha.');
+                }
+            })
+            .catch(err => console.error('Erro ao alterar linha:', err));
+        }
+
+        // Filtro em tempo real na grade de ônibus
+        function filtrarOnibusGrid(termo) {
+            termo = (termo || '').toLowerCase().trim();
+            const btns = document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus');
+            let visiveis = 0;
+            btns.forEach(btn => {
+                const search = btn.getAttribute('data-search') || '';
+                if (!termo || search.indexOf(termo) !== -1) {
+                    btn.style.display = 'flex';
+                    visiveis++;
+                } else {
+                    btn.style.display = 'none';
+                }
+            });
+
+            const aviso = document.getElementById('aviso-onibus-nao-encontrado');
+            if (aviso) {
+                aviso.style.display = (visiveis === 0) ? 'block' : 'none';
+            }
         }
 
         function showToastNotification(msg) {
@@ -3187,6 +3649,12 @@ if ($canViewSolicitacoes) {
             const btns = document.querySelectorAll('.tabs-navigation .tab-btn');
             btns.forEach(b => b.classList.remove('active'));
             if (btn) btn.classList.add('active');
+
+            if (tabId === 'tab-contador') {
+                if (typeof limparTodasSelecoesObrigatorias === 'function') {
+                    limparTodasSelecoesObrigatorias();
+                }
+            }
         }
 
         // 3. PAGINAÇÃO, FILTRO DE BUSCA E DESTAQUE (HIGHLIGHT) NA TABELA DE HISTÓRICO
@@ -3428,8 +3896,8 @@ if ($canViewSolicitacoes) {
             .catch(err => console.error('Erro ao alterar dados da sessão:', err));
         }
 
-        // 4. INCREMENTO VIA AJAX (+1, +5, +10 E BOTÕES PERCENTUAIS)
-        function sendIncrement(qtd) {
+        // 4. INCREMENTO / SUBSTITUIÇÃO DE CONTAGEM VIA AJAX
+        function sendIncrement(qtd, modo, btnEl) {
             if (!activeContagemId) return;
 
             const counterEl = document.getElementById('counterTotal');
@@ -3445,10 +3913,27 @@ if ($canViewSolicitacoes) {
                 setTimeout(() => percentEl.classList.remove('bounce'), 200);
             }
 
+            // Destaque visual imediato no botão percentual clicado
+            if (btnEl && btnEl.classList.contains('btn-count-percent')) {
+                document.querySelectorAll('.btn-count-percent').forEach(b => {
+                    b.classList.remove('active-percent');
+                    b.style.boxShadow = 'none';
+                    b.style.transform = 'none';
+                });
+                btnEl.classList.add('active-percent');
+                btnEl.style.boxShadow = '0 6px 16px rgba(0,0,0,0.15)';
+                btnEl.style.transform = 'translateY(-2px) scale(1.03)';
+            }
+
             const formData = new FormData();
             formData.append('action', 'incrementar');
             formData.append('idContagem', activeContagemId);
             formData.append('qtd', qtd);
+            if (modo) {
+                formData.append('modo', modo);
+            } else if (activeTipoContagem === 'percentual') {
+                formData.append('modo', 'substituir');
+            }
             formData.append('ajax', '1');
 
             fetch('index.php', {
@@ -4044,14 +4529,17 @@ if ($canViewSolicitacoes) {
                     qtyText = '+' + reg.quantidade;
                 }
 
-                const obs = reg.justificativa ? escapeHtml(reg.justificativa) : '<em style="color:#a1a1aa;">Contagem direta</em>';
+                const isDetalheLongo = (isSalvo || (reg.justificativa && reg.justificativa.indexOf('Operação Salva.') === 0));
+                const obsLimpa = isDetalheLongo
+                    ? '<span style="color: #15803d; font-weight: 600;">✓ Contagem salva</span>'
+                    : (reg.justificativa ? escapeHtml(reg.justificativa) : '<em style="color:#a1a1aa;">Contagem direta</em>');
 
                 htmlNormal += `
                     <tr style="border-bottom: 1px solid #f1f5f9;">
                         <td style="padding: 12px; font-weight: 600; color: #475569;">${reg.horaFormatada || ''}</td>
                         <td style="padding: 12px;"><span class="badge-reg ${badgeClass}">${badgeText}</span></td>
                         <td style="padding: 12px; font-weight: 800; font-size: 1.05rem; color: ${qtyColor};">${qtyText}</td>
-                        <td style="padding: 12px; color: #334155;">${obs}</td>
+                        <td style="padding: 12px; color: #334155;">${obsLimpa}</td>
                     </tr>
                 `;
 
@@ -4060,7 +4548,7 @@ if ($canViewSolicitacoes) {
                         <td style="padding: 14px 16px; font-weight: 600; color: #475569; white-space: nowrap;">${reg.horaFormatada || ''}</td>
                         <td style="padding: 14px 16px;"><span class="badge-reg ${badgeClass}" style="font-size: 0.85rem; padding: 6px 12px;">${badgeText}</span></td>
                         <td style="padding: 14px 16px; font-weight: 800; font-size: 1.1rem; color: ${qtyColor};">${qtyText}</td>
-                        <td style="padding: 14px 16px; color: #1e293b; line-height: 1.5; font-size: 0.92rem;">${obs}</td>
+                        <td style="padding: 14px 16px; color: #1e293b; line-height: 1.5; font-size: 0.92rem;">${obsLimpa}</td>
                     </tr>
                 `;
             });
@@ -4339,12 +4827,172 @@ if ($canViewSolicitacoes) {
                 });
             });
             veiculosSelecionadosState = novos;
-            renderVeiculosChips();
-            atualizarInputsVeiculos();
-            closeModalVeiculos();
-            if (typeof atualizarBotaoIniciar === 'function') {
-                atualizarBotaoIniciar();
+
+            // Se estiver em uma sessão de contagem ativa, salva imediatamente no banco via AJAX
+            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
+                const ids = novos.map(function(v) { return v.id; }).join(',');
+                const formData = new FormData();
+                formData.append('action', 'atualizar_veiculos_sessao');
+                formData.append('idContagem', activeContagemId);
+                formData.append('veiculosSelecionados', ids);
+                formData.append('ajax', '1');
+
+                fetch('index.php', {
+                    method: 'POST',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        renderGridOnibusSessao(data.veiculos || []);
+                        showToastNotification('✓ ' + data.message);
+                    } else {
+                        alert(data.message || 'Erro ao atualizar veículos da contagem.');
+                    }
+                })
+                .catch(err => console.error('Erro ao atualizar veículos:', err));
+            } else {
+                renderVeiculosChips();
+                atualizarInputsVeiculos();
+                if (typeof atualizarBotaoIniciar === 'function') {
+                    atualizarBotaoIniciar();
+                }
             }
+
+            closeModalVeiculos();
+        }
+
+        // Abre o modal para gerenciar os veículos selecionados da sessão ativa
+        function openModalGerenciarVeiculosSessao() {
+            const btns = document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus');
+            veiculosSelecionadosState = [];
+            btns.forEach(btn => {
+                const idV = btn.getAttribute('data-id-veiculo');
+                if (idV) {
+                    veiculosSelecionadosState.push({
+                        id: idV,
+                        prefixo: btn.getAttribute('data-prefixo') || '',
+                        placa: btn.getAttribute('data-placa') || ''
+                    });
+                }
+            });
+
+            openModalVeiculos();
+        }
+
+        // Renderiza a grade de ônibus selecionados em tempo real na tela do contador
+        function renderGridOnibusSessao(veiculos) {
+            const grid = document.getElementById('grid-onibus-registrados');
+            const badgeTotal = document.getElementById('badge-total-onibus-cadastrados');
+            if (badgeTotal) {
+                badgeTotal.textContent = veiculos.length + ' selecionado(s)';
+            }
+            if (!grid) return;
+
+            if (veiculos.length === 0) {
+                grid.innerHTML = '<div style="grid-column: 1 / -1; padding: 18px; text-align: center; color: #64748b; font-size: 0.88rem; background: #ffffff; border-radius: 10px; border: 1px dashed #cbd5e1;">Nenhum ônibus selecionado para esta sessão de contagem.</div>';
+                return;
+            }
+
+            const editVeic = document.getElementById('editIdVeiculo');
+            const idAtivoAtual = editVeic ? parseInt(editVeic.value) : 0;
+            let temAtivo = false;
+
+            let html = '';
+            veiculos.forEach(v => {
+                const isAtivo = (idAtivoAtual && parseInt(v.idVeiculo) === idAtivoAtual);
+                if (isAtivo) temAtivo = true;
+                const pref = escapeHtml(v.prefixo);
+                const plc = v.placa ? escapeHtml(v.placa) : '';
+                const searchData = (v.prefixo + ' ' + (v.placa || '')).toLowerCase();
+
+                html += '<button type="button" ' +
+                    'class="btn-opcao-onibus ' + (isAtivo ? 'onibus-ativo' : '') + '" ' +
+                    'id="btn-veiculo-opt-' + v.idVeiculo + '" ' +
+                    'data-id-veiculo="' + v.idVeiculo + '" ' +
+                    'data-prefixo="' + pref + '" ' +
+                    'data-placa="' + plc + '" ' +
+                    'data-search="' + searchData + '" ' +
+                    'onclick="selecionarOnibusContagem(' + v.idVeiculo + ', \'' + pref.replace(/'/g, "\\'") + '\')" ' +
+                    'style="display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid ' + (isAtivo ? '#2563eb' : '#cbd5e1') + '; background: ' + (isAtivo ? '#eff6ff' : '#ffffff') + '; cursor: pointer; text-align: left; transition: all 0.2s; position: relative;">' +
+                    '<div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 3px;">' +
+                        '<span style="font-weight: 800; font-size: 0.95rem; color: ' + (isAtivo ? '#1d4ed8' : '#0f172a') + ';">' +
+                            '🚌 ' + pref +
+                        '</span>' +
+                        '<span class="badge-onibus-status" style="font-size: 0.68rem; font-weight: 800; color: #16a34a; background: #dcfce7; padding: 2px 6px; border-radius: 4px; display: ' + (isAtivo ? 'inline-block' : 'none') + ';">' +
+                            '✓ ATIVO' +
+                        '</span>' +
+                    '</div>' +
+                    (plc ? '<div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">Placa: ' + plc + '</div>' : '') +
+                '</button>';
+            });
+            grid.innerHTML = html;
+
+            if (!temAtivo && veiculos.length > 0) {
+                selecionarOnibusContagem(veiculos[0].idVeiculo, veiculos[0].prefixo);
+            }
+        }
+
+        // Permite cadastrar um novo prefixo na frota pelo próprio modal e já marcá-lo como selecionado
+        function cadastrarNovoVeiculoModalInline() {
+            const inputBusca = document.getElementById('inputBuscaVeiculoModal');
+            let sugestao = inputBusca ? inputBusca.value.trim() : '';
+            const prefixo = prompt('Digite o Prefixo do novo ônibus a registrar na frota:', sugestao);
+            if (!prefixo || !prefixo.trim()) return;
+
+            const placa = prompt('Digite a Placa do veículo (opcional):', '') || '';
+
+            const formData = new FormData();
+            formData.append('action', 'cadastrar_veiculo_frota_rapido');
+            formData.append('prefixo', prefixo.trim());
+            formData.append('placa', placa.trim());
+            formData.append('ajax', '1');
+
+            fetch('index.php', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    // Verifica se já existia na lista
+                    let chkExistente = document.querySelector('#lista-veiculos-modal .chk-veiculo-modal[value="' + data.idVeiculo + '"]');
+                    if (!chkExistente) {
+                        const lista = document.getElementById('lista-veiculos-modal');
+                        if (lista) {
+                            const lbl = document.createElement('label');
+                            lbl.className = 'item-veiculo-modal';
+                            lbl.setAttribute('data-id', data.idVeiculo);
+                            lbl.setAttribute('data-prefixo', data.prefixo);
+                            lbl.setAttribute('data-placa', data.placa || '');
+                            lbl.setAttribute('data-search', (data.prefixo + ' ' + (data.placa || '')).toLowerCase());
+                            lbl.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1.5px solid #2563eb; border-radius: 10px; cursor: pointer; transition: all 0.15s; background: #eff6ff; user-select: none;';
+
+                            lbl.innerHTML = '<div style="display: flex; align-items: center; gap: 12px;">' +
+                                '<input type="checkbox" class="chk-veiculo-modal" value="' + data.idVeiculo + '" data-prefixo="' + escapeHtml(data.prefixo) + '" data-placa="' + escapeHtml(data.placa || '') + '" checked onchange="atualizarItemVeiculoVisual(this)" style="width: 19px; height: 19px; accent-color: #2563eb; cursor: pointer;">' +
+                                '<div>' +
+                                    '<div style="font-weight: 700; font-size: 0.92rem; color: #1e293b;">Prefixo: ' + escapeHtml(data.prefixo) + '</div>' +
+                                    (data.placa ? '<div style="font-size: 0.78rem; color: #64748b;">Placa: ' + escapeHtml(data.placa) + '</div>' : '') +
+                                '</div>' +
+                            '</div>' +
+                            '<span class="badge-veiculo-checked" style="font-size: 0.75rem; font-weight: 700; color: #2563eb; background: #eff6ff; padding: 3px 8px; border-radius: 6px; border: 1px solid #bfdbfe;">✓ Selecionado</span>';
+
+                            lista.prepend(lbl);
+                        }
+                    } else {
+                        chkExistente.checked = true;
+                        atualizarItemVeiculoVisual(chkExistente);
+                    }
+
+                    atualizarPainelLateralSelecionados();
+                    showToastNotification('✓ Ônibus ' + data.prefixo + ' registrado e marcado!');
+                } else {
+                    alert(data.message || 'Erro ao registrar veículo.');
+                }
+            })
+            .catch(err => console.error('Erro ao registrar novo veículo:', err));
         }
 
         function removerVeiculoSelecionado(id) {
@@ -4423,9 +5071,11 @@ if ($canViewSolicitacoes) {
             var tipoTransp = inputTipoTransp ? inputTipoTransp.value : '';
 
             var radioNaoInf = document.getElementById('radio_modo_nao_informado');
+            var radioReg = document.getElementById('radio_modo_registrar');
             var isNaoInformado = radioNaoInf && radioNaoInf.checked;
+            var isRegistrar = radioReg && radioReg.checked;
             var temVeiculoRegistrado = (typeof veiculosSelecionadosState !== 'undefined' && veiculosSelecionadosState.length > 0);
-            var veiculoValido = isNaoInformado || temVeiculoRegistrado;
+            var veiculoValido = isNaoInformado || (isRegistrar && temVeiculoRegistrado);
 
             var faltaLinha = !idLinha || idLinha.trim() === '';
             var faltaLocal = !idLocal || idLocal.trim() === '';
@@ -5167,33 +5817,112 @@ if ($canViewSolicitacoes) {
             }
         });
 
+        // Limpeza e redefinição de todas as seleções obrigatórias para um estado totalmente limpo
+        function limparTodasSelecoesObrigatorias() {
+            const formInit = document.getElementById('form-iniciar-contagem');
+            if (!formInit) return;
+
+            // 1. Limpar storage legado
+            try {
+                localStorage.removeItem('cb_last_idLinha');
+                localStorage.removeItem('cb_last_idVeiculo');
+                localStorage.removeItem('cb_last_idLocal');
+                localStorage.removeItem('cb_last_tipoOperacao');
+            } catch (e) {}
+
+            // 2. Limpar selects e inputs de linha e local
+            const selLinha = document.getElementById('select_idLinha');
+            if (selLinha) {
+                selLinha.value = '';
+                selLinha.selectedIndex = 0;
+            }
+            const selLocal = document.getElementById('select_idLocal');
+            if (selLocal) {
+                selLocal.value = '';
+                selLocal.selectedIndex = 0;
+            }
+
+            // 3. Limpar inputs de sentido, tipoOperacao, tipoContagem, condicaoTempo, tipoTransporte
+            if (formInit.elements['sentido']) formInit.elements['sentido'].value = '';
+            if (formInit.elements['tipoOperacao']) formInit.elements['tipoOperacao'].value = '';
+            if (formInit.elements['tipoContagem']) formInit.elements['tipoContagem'].value = '';
+            if (formInit.elements['condicaoTempo']) formInit.elements['condicaoTempo'].value = '';
+            if (formInit.elements['tipoTransporte']) formInit.elements['tipoTransporte'].value = '';
+            if (formInit.elements['idVeiculo']) formInit.elements['idVeiculo'].value = '';
+            if (formInit.elements['veiculosSelecionados']) formInit.elements['veiculosSelecionados'].value = '';
+
+            // 4. Remover classe active de todos os botões/chips
+            document.querySelectorAll('#form-iniciar-contagem .chip-btn').forEach(function(btn) {
+                btn.classList.remove('active', 'chip-blue', 'chip-purple', 'chip-green', 'chip-navy');
+                btn.disabled = false;
+                btn.style.opacity = '';
+                btn.style.cursor = '';
+                btn.title = '';
+            });
+
+            // 5. Limpar seleção de veículo (nenhum radio marcado, caixas neutras)
+            const radioReg = document.getElementById('radio_modo_registrar');
+            const radioNao = document.getElementById('radio_modo_nao_informado');
+            const cardReg = document.getElementById('card-modo-registrar');
+            const cardNao = document.getElementById('card-modo-nao-informado');
+            const boxReg = document.getElementById('box-veiculo-registrar');
+            const boxNao = document.getElementById('box-veiculo-nao-informado');
+            if (radioReg) radioReg.checked = false;
+            if (radioNao) radioNao.checked = false;
+            if (cardReg) {
+                cardReg.style.borderColor = '#cbd5e1';
+                cardReg.style.background = '#ffffff';
+            }
+            if (cardNao) {
+                cardNao.style.borderColor = '#cbd5e1';
+                cardNao.style.background = '#ffffff';
+            }
+            if (boxReg) boxReg.style.display = 'none';
+            if (boxNao) boxNao.style.display = 'none';
+
+            veiculosSelecionadosState = [];
+            const selV = document.getElementById('select_idVeiculo');
+            if (selV) selV.value = '';
+            const inpV = document.getElementById('input_veiculosSelecionados');
+            if (inpV) inpV.value = '';
+
+            const modalChks = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal');
+            modalChks.forEach(function(c) {
+                c.checked = false;
+                if (typeof atualizarItemVeiculoVisual === 'function') {
+                    atualizarItemVeiculoVisual(c);
+                }
+            });
+
+            if (typeof renderVeiculosChips === 'function') renderVeiculosChips();
+            if (typeof atualizarContadorModal === 'function') atualizarContadorModal();
+
+            // 6. Limpar o texto dos inputs pesquisáveis customizados
+            document.querySelectorAll('#form-iniciar-contagem .cb-searchable-container').forEach(function(cont) {
+                const inp = cont.querySelector('.cb-searchable-input');
+                const clr = cont.querySelector('.cb-searchable-clear');
+                if (inp) inp.value = '';
+                if (clr) clr.style.display = 'none';
+                cont.classList.remove('cb-has-error');
+            });
+
+            // 7. Atualizar validação
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
+        }
+
         // Esconder alertas e gerenciar aba ativa na carga da página
         document.addEventListener("DOMContentLoaded", function() {
-            // Persistência automática das opções da contagem para facilitar novos inícios
+            // Inicializar todos os selects pesquisáveis na página
+            document.querySelectorAll('.cb-searchable-select').forEach(initSearchableSelect);
+
             const formInit = document.getElementById('form-iniciar-contagem');
             if (formInit) {
-                const savedLinha = localStorage.getItem('cb_last_idLinha');
-                const savedVeiculo = localStorage.getItem('cb_last_idVeiculo');
-                const savedLocal = localStorage.getItem('cb_last_idLocal');
-                const savedTipoOp = localStorage.getItem('cb_last_tipoOperacao');
-                
-                if (savedLinha && formInit.elements['idLinha']) {
-                    formInit.elements['idLinha'].value = savedLinha;
-                }
-                if (savedVeiculo && formInit.elements['idVeiculo']) {
-                    formInit.elements['idVeiculo'].value = savedVeiculo;
-                }
-                if (savedLocal && formInit.elements['idLocal']) {
-                    formInit.elements['idLocal'].value = savedLocal;
-                }
-                if (savedTipoOp && formInit.elements['tipoOperacao']) {
-                    const chipTarget = document.getElementById('chip-op-' + savedTipoOp);
-                    if (chipTarget) {
-                        selectChip('tipoOperacao', savedTipoOp, chipTarget, 'chip-green');
-                    }
-                }
+                // Garantir todas as seleções obrigatórias sem nada escolhido
+                limparTodasSelecoesObrigatorias();
 
-                // Validação e persistência no submit
+                // Validação no submit (sem salvar seleções para a próxima contagem)
                 formInit.addEventListener('submit', function(e) {
                     var status = checarStatusFormulario();
                     if (!status.valido) {
@@ -5236,11 +5965,6 @@ if ($canViewSolicitacoes) {
                         atualizarBotaoIniciar();
                         return false;
                     }
-
-                    if (formInit.elements['idLinha']) localStorage.setItem('cb_last_idLinha', formInit.elements['idLinha'].value);
-                    if (formInit.elements['idVeiculo']) localStorage.setItem('cb_last_idVeiculo', formInit.elements['idVeiculo'].value);
-                    if (formInit.elements['idLocal']) localStorage.setItem('cb_last_idLocal', formInit.elements['idLocal'].value);
-                    if (formInit.elements['tipoOperacao']) localStorage.setItem('cb_last_tipoOperacao', formInit.elements['tipoOperacao'].value);
                 });
 
                 formInit.addEventListener('change', function() {
@@ -5248,8 +5972,10 @@ if ($canViewSolicitacoes) {
                 });
             }
 
-            // Inicializar todos os selects pesquisáveis na página
-            document.querySelectorAll('.cb-searchable-select').forEach(initSearchableSelect);
+            // Ao retornar via histórico de navegação/cache (Back/Forward), força a limpeza de todas as seleções
+            window.addEventListener('pageshow', function() {
+                limparTodasSelecoesObrigatorias();
+            });
 
             // Validação inicial do formulário para bloquear/liberar o botão
             if (typeof atualizarBotaoIniciar === 'function') {
