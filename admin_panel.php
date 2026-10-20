@@ -1000,7 +1000,7 @@ foreach ($sistemas as $s) {
 
         // Salvar HTML original das células para termo destacado e aplicar filtro inicial
         document.addEventListener("DOMContentLoaded", function() {
-            // Ocultar mensagens de alerta (sucesso/erro) automaticamente após 3 segundos
+            // Ocultar mensagens de alerta (sucesso/erro) automaticamente após 2 segundos
             var alerts = document.querySelectorAll('.alert');
             alerts.forEach(function(alertEl) {
                 setTimeout(function() {
@@ -1008,7 +1008,7 @@ foreach ($sistemas as $s) {
                     setTimeout(function() {
                         alertEl.style.display = 'none';
                     }, 500);
-                }, 3000);
+                }, 2000);
             });
 
             var cells = document.querySelectorAll(".apps-table tbody td");

@@ -212,16 +212,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmtVP->execute([$idContagem, $veicIdContar]);
                         $idVP = $stmtVP->fetchColumn();
                         if (!$idVP) {
-                            $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
-                            $stmtInsVP->execute([$idContagem, $veicIdContar]);
-                            $idVP = $pdo->lastInsertId();
+                            try {
+                                $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                                $stmtInsVP->execute([$idContagem, $veicIdContar]);
+                                $idVP = $pdo->lastInsertId();
+                            } catch (\Exception $exInsVP) {}
                         }
                     }
-
-                    // Registrar na tabela contagem
+                    // Registrar na tabela contagem apenas se houver veículo selecionado
                     if ($qtd > 0 && $idVP) {
-                        $stmtContIns = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, quantidade, idUsuario, tipo, dataHora) VALUES (?, ?, ?, ?, 'incremento', NOW())");
-                        $stmtContIns->execute([$idContagem, $idVP, $qtd, $usuarioId]);
+                        try {
+                            $stmtContIns = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, quantidade, idUsuario, tipo, dataHora) VALUES (?, ?, ?, ?, 'incremento', NOW())");
+                            $stmtContIns->execute([$idContagem, $idVP, $qtd, $usuarioId]);
+                        } catch (\Exception $exCont) {}
                     }
 
                     if ($isAjax) {
@@ -355,7 +358,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $mensagemErro = 'Sessão de contagem inválida.';
                 } else {
                     $stmtIns = $pdo->prepare("
-                        INSERT INTO solicitacoes_correcao 
+                        INSERT INTO solicitacoesCorrecao 
                             (idContagem, idUsuarioSolicitante, idUsuarioDestino, quantidade, justificativa, status, dataSolicitacao) 
                         VALUES 
                             (?, ?, ?, ?, ?, 'pendente', NOW())
@@ -395,7 +398,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Busca a solicitação pendente com dados da pesquisa
                 $stmtSol = $pdo->prepare("
                     SELECT s.*, p.totalPassageiros, p.tipoContagem, p.status as contagemStatus, p.idVeiculo
-                    FROM solicitacoes_correcao s
+                    FROM solicitacoesCorrecao s
                     LEFT JOIN pesquisa p ON s.idContagem = p.idPesquisa
                     WHERE s.idSolicitacao = ? AND s.status = 'pendente'
                     LIMIT 1
@@ -458,7 +461,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         // Marca solicitação como aprovada
                         $stmtUpdSol = $pdo->prepare("
-                            UPDATE solicitacoes_correcao 
+                            UPDATE solicitacoesCorrecao 
                             SET status = 'aprovada', idUsuarioResposta = ?, motivoResposta = ?, dataResposta = NOW() 
                             WHERE idSolicitacao = ?
                         ");
@@ -477,7 +480,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $motivoFinal = !empty($motivo) ? $motivo : 'Solicitação recusada pelo supervisor.';
 
                         $stmtUpdSol = $pdo->prepare("
-                            UPDATE solicitacoes_correcao 
+                            UPDATE solicitacoesCorrecao 
                             SET status = 'rejeitada', idUsuarioResposta = ?, motivoResposta = ?, dataResposta = NOW() 
                             WHERE idSolicitacao = ?
                         ");
@@ -711,26 +714,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cData = $stmtInfo->fetch();
 
                 if ($cData) {
-                    $totalVal = (float)$cData['totalPassageiros'];
-                    $msgSalvamento = "Contagem salva com sucesso";
+                    if (empty($cData['idVeiculo'])) {
+                        if ($isAjax) {
+                            echo json_encode([
+                                'success' => false,
+                                'message' => 'Por favor, selecione um ônibus antes de salvar a contagem.'
+                            ]);
+                            exit;
+                        }
+                    } else {
+                        $totalVal = (float)$cData['totalPassageiros'];
+                        $msgSalvamento = "Contagem salva com sucesso";
 
-                    // Localizar ou inserir idVeiculoPesquisado
-                    $idVP = null;
-                    if (!empty($cData['idVeiculo'])) {
+                        // Localizar ou inserir idVeiculoPesquisado
+                        $idVP = null;
                         $stmtVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
                         $stmtVP->execute([$idContagem, $cData['idVeiculo']]);
                         $idVP = $stmtVP->fetchColumn();
                         if (!$idVP) {
-                            $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
-                            $stmtInsVP->execute([$idContagem, $cData['idVeiculo']]);
-                            $idVP = $pdo->lastInsertId();
+                            try {
+                                $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                                $stmtInsVP->execute([$idContagem, $cData['idVeiculo']]);
+                                $idVP = $pdo->lastInsertId();
+                            } catch (\Exception $exVP) {}
                         }
-                    }
 
-                    // Registra salvamento na tabela contagem
-                    if ($idVP) {
-                        $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, ?, 'salvamento', ?, ?, NOW())");
-                        $stmtReg->execute([$idContagem, $idVP, $usuarioId, $totalVal, $msgSalvamento]);
+                        // Registra salvamento na tabela contagem apenas quando o veículo estiver selecionado
+                        if ($idVP) {
+                            try {
+                                $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, ?, 'salvamento', ?, ?, NOW())");
+                                $stmtReg->execute([$idContagem, $idVP, $usuarioId, $totalVal, $msgSalvamento]);
+                            } catch (\Exception $exReg) {
+                                error_log("Erro ao registrar salvamento: " . $exReg->getMessage());
+                            }
+                        }
                     }
                 }
 
@@ -1241,7 +1258,7 @@ if ($canViewSolicitacoes) {
                    loc.local as nomeLocal,
                    DATE_FORMAT(s.dataSolicitacao, '%d/%m/%Y %H:%i') as dataSolicitacaoFmt,
                    DATE_FORMAT(s.dataResposta, '%d/%m/%Y %H:%i') as dataRespostaFmt
-            FROM solicitacoes_correcao s
+            FROM solicitacoesCorrecao s
             LEFT JOIN usuarios uSol ON s.idUsuarioSolicitante = uSol.idusuarios
             LEFT JOIN usuarios uDest ON s.idUsuarioDestino = uDest.idusuarios
             LEFT JOIN usuarios uResp ON s.idUsuarioResposta = uResp.idusuarios
@@ -1837,15 +1854,15 @@ if ($canViewSolicitacoes) {
                                     <div class="session-info-item">
                                         <label>Modo de Contagem</label>
                                         <span>
-                                            <strong style="color: <?php echo (isset($sessaoAtiva['tipoContagem']) && $sessaoAtiva['tipoContagem'] === 'percentual') ? '#7e22ce' : '#0054A6'; ?>;">
-                                                <?php echo (isset($sessaoAtiva['tipoContagem']) && $sessaoAtiva['tipoContagem'] === 'percentual') ? '% Percentual' : '👥 Quantidade'; ?>
+                                            <strong style="color: <?php echo (isset($sessaoAtiva['tipoContagem']) && stripos($sessaoAtiva['tipoContagem'], 'perc') !== false) ? '#7e22ce' : '#0054A6'; ?>;">
+                                                <?php echo (isset($sessaoAtiva['tipoContagem']) && stripos($sessaoAtiva['tipoContagem'], 'perc') !== false) ? '% Percentual' : '👥 Quantidade'; ?>
                                             </strong>
                                         </span>
                                     </div>
                                 </div>
 
                                 <?php
-                                    $tipoCont = isset($sessaoAtiva['tipoContagem']) ? $sessaoAtiva['tipoContagem'] : 'percentual';
+                                    $tipoCont = isset($sessaoAtiva['tipoContagem']) ? strtolower(trim($sessaoAtiva['tipoContagem'])) : 'percentual';
                                     
                                     if (!function_exists('calcPercentualStr')) {
                                         function calcPercentualStr($total) {
@@ -1862,7 +1879,7 @@ if ($canViewSolicitacoes) {
                                 ?>
 
                                 <!-- DISPLAY DO CONTADOR (PERCENTUAL OU QUANTIDADE) -->
-                                <?php if ($tipoCont === 'percentual'): ?>
+                                <?php if ($tipoCont === 'percentual' || stripos($tipoCont, 'perc') !== false): ?>
                                     <div class="counter-display-card" style="background: linear-gradient(135deg, #4c1d95 0%, #7e22ce 100%); padding: 24px; text-align: center; border-radius: 16px; margin-bottom: 20px;">
                                         <div class="counter-label" style="color: #e9d5ff; font-weight: 600; font-size: 0.95rem;">Nível de Ocupação (% Estimada)</div>
                                         <div class="counter-number" id="counterTotalPercent" style="color: #ffffff; font-size: 3.5rem; font-weight: 800; text-shadow: 0 4px 12px rgba(0,0,0,0.3); margin: 6px 0;"><?php echo calcPercentualStr($sessaoAtiva['totalPassageiros']); ?></div>
@@ -2100,7 +2117,15 @@ if ($canViewSolicitacoes) {
                                                             <?php endif; ?>
                                                         </td>
                                                         <td style="padding: 12px; font-weight: 800; font-size: 1.05rem; color: <?php echo $reg['tipo'] === 'salvamento' ? '#2563eb' : ($reg['quantidade'] > 0 ? '#16a34a' : '#dc2626'); ?>;">
-                                                            <?php echo $reg['tipo'] === 'salvamento' ? (int)$reg['quantidade'] . ' pas.' : (($reg['quantidade'] > 0 ? '+' : '') . (int)$reg['quantidade']); ?>
+                                                            <?php 
+                                                                if ($reg['tipo'] === 'salvamento') {
+                                                                    echo (isset($tipoCont) && stripos($tipoCont, 'perc') !== false) 
+                                                                        ? calcPercentualStr($reg['quantidade']) . ' (' . (int)$reg['quantidade'] . ' pas.)' 
+                                                                        : (int)$reg['quantidade'] . ' pas.';
+                                                                } else {
+                                                                    echo (($reg['quantidade'] > 0 ? '+' : '') . (int)$reg['quantidade']);
+                                                                }
+                                                            ?>
                                                         </td>
                                                         <td style="padding: 12px; color: #334155;">
                                                             <?php 
@@ -2865,7 +2890,7 @@ if ($canViewSolicitacoes) {
                                                 <!-- Quantidade de Ajuste -->
                                                 <td style="padding: 14px 16px; vertical-align: middle; text-align: center;">
                                                     <span style="display: inline-block; background: #fee2e2; color: #dc2626; padding: 4px 10px; border-radius: 8px; font-weight: 800; font-size: 0.95rem; border: 1px solid #fca5a5;">
-                                                        <?php if (!empty($sol['tipoContagem']) && $sol['tipoContagem'] === 'percentual'): ?>
+                                                        <?php if (!empty($sol['tipoContagem']) && stripos($sol['tipoContagem'], 'perc') !== false): ?>
                                                             -<?php echo calcPercentualStr((int)$sol['quantidade']); ?>
                                                             <span style="display: block; font-size: 0.72rem; font-weight: 600; opacity: 0.85;">(<?php echo (int)$sol['quantidade']; ?> pas.)</span>
                                                         <?php else: ?>
@@ -2920,7 +2945,7 @@ if ($canViewSolicitacoes) {
                                                 <td style="padding: 14px 16px; vertical-align: middle; text-align: center;">
                                                     <?php if ($podeResponder): ?>
                                                         <div style="display: flex; gap: 8px; justify-content: center;">
-                                                            <button type="button" onclick="aprovarSolicitacao(<?php echo $sol['idSolicitacao']; ?>, <?php echo (int)$sol['quantidade']; ?>, '<?php echo addslashes(htmlspecialchars($sol['solicitanteNome'])); ?>', <?php echo $sol['idContagem']; ?>, '<?php echo !empty($sol['tipoContagem']) ? $sol['tipoContagem'] : 'quantidade'; ?>')" title="Aprovar e abater da contagem" style="background: #16a34a; color: #ffffff; border: none; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; box-shadow: 0 1px 3px rgba(22,163,74,0.3); transition: all 0.2s;">
+                                                            <button type="button" onclick="aprovarSolicitacao(<?php echo $sol['idSolicitacao']; ?>, <?php echo (int)$sol['quantidade']; ?>, '<?php echo addslashes(htmlspecialchars($sol['solicitanteNome'])); ?>', <?php echo $sol['idContagem']; ?>, '<?php echo !empty($sol['tipoContagem']) ? strtolower($sol['tipoContagem']) : 'quantidade'; ?>')" title="Aprovar e abater da contagem" style="background: #16a34a; color: #ffffff; border: none; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; box-shadow: 0 1px 3px rgba(22,163,74,0.3); transition: all 0.2s;">
                                                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" width="14" height="14">
                                                                     <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                                                                 </svg>
@@ -3375,7 +3400,15 @@ if ($canViewSolicitacoes) {
                                         <?php endif; ?>
                                     </td>
                                     <td style="padding: 14px 16px; font-weight: 800; font-size: 1.1rem; color: <?php echo $reg['tipo'] === 'salvamento' ? '#2563eb' : ($reg['quantidade'] > 0 ? '#16a34a' : '#dc2626'); ?>;">
-                                        <?php echo $reg['tipo'] === 'salvamento' ? (int)$reg['quantidade'] . ' pas.' : (($reg['quantidade'] > 0 ? '+' : '') . (int)$reg['quantidade']); ?>
+                                        <?php 
+                                            if ($reg['tipo'] === 'salvamento') {
+                                                echo (isset($tipoCont) && stripos($tipoCont, 'perc') !== false) 
+                                                    ? calcPercentualStr($reg['quantidade']) . ' (' . (int)$reg['quantidade'] . ' pas.)' 
+                                                    : (int)$reg['quantidade'] . ' pas.';
+                                            } else {
+                                                echo (($reg['quantidade'] > 0 ? '+' : '') . (int)$reg['quantidade']);
+                                            }
+                                        ?>
                                     </td>
                                     <td style="padding: 14px 16px; color: #1e293b; line-height: 1.5; font-size: 0.92rem;">
                                         <?php 
@@ -3454,7 +3487,7 @@ if ($canViewSolicitacoes) {
 
         // Variáveis da sessão ativa para chamadas AJAX
         const activeContagemId = <?php echo ($sessaoAtiva ? (int)$sessaoAtiva['idContagem'] : 0); ?>;
-        const activeTipoContagem = '<?php echo ($sessaoAtiva && !empty($sessaoAtiva['tipoContagem'])) ? $sessaoAtiva['tipoContagem'] : 'quantidade'; ?>';
+        const activeTipoContagem = '<?php echo ($sessaoAtiva && !empty($sessaoAtiva['tipoContagem'])) ? strtolower(trim($sessaoAtiva['tipoContagem'])) : 'quantidade'; ?>';
 
         // Salvar progresso da contagem ativa via AJAX (Manter sessão aberta)
         function salvarContagemAtiva() {
@@ -3486,7 +3519,11 @@ if ($canViewSolicitacoes) {
                     showToastNotification(data.message || '✓ Contagem salva com sucesso!');
                     if (data.logs) renderLogs(data.logs);
                 } else {
-                    alert(data.message || 'Erro ao salvar a contagem.');
+                    alert(data.message || 'Por favor, selecione um ônibus antes de salvar a contagem.');
+                    const busSec = document.querySelector('.onibus-selection-container');
+                    if (busSec) {
+                        busSec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
                 }
             })
             .catch(err => {
@@ -3620,7 +3657,9 @@ if ($canViewSolicitacoes) {
             }
         }
 
-        function showToastNotification(msg) {
+        let toastTimeoutId = null;
+
+        function showToastNotification(msg, duration = 2000) {
             let toast = document.getElementById('global-toast-notification');
             if (!toast) {
                 toast = document.createElement('div');
@@ -3628,14 +3667,17 @@ if ($canViewSolicitacoes) {
                 toast.style.cssText = 'position: fixed; bottom: 24px; right: 24px; z-index: 9999; background: #15803d; color: #ffffff; padding: 14px 20px; border-radius: 12px; font-weight: 700; font-size: 0.92rem; box-shadow: 0 10px 25px rgba(0,0,0,0.2); display: flex; align-items: center; gap: 8px; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); transform: translateY(100px); opacity: 0;';
                 document.body.appendChild(toast);
             }
+            if (toastTimeoutId) {
+                clearTimeout(toastTimeoutId);
+            }
             toast.textContent = msg;
             toast.style.transform = 'translateY(0)';
             toast.style.opacity = '1';
 
-            setTimeout(() => {
+            toastTimeoutId = setTimeout(() => {
                 toast.style.transform = 'translateY(100px)';
                 toast.style.opacity = '0';
-            }, 4000);
+            }, duration);
         }
 
         // 2. ALTERNÂNCIA DE ABAS DO USUÁRIO (Contador vs Meu Histórico)
@@ -4096,7 +4138,7 @@ if ($canViewSolicitacoes) {
                     showToastNotification('✓ ' + (data.message || 'Solicitação enviada ao supervisor com sucesso!'));
                     setTimeout(() => {
                         window.location.href = 'index.php?tab=solicitacoes';
-                    }, 1200);
+                    }, 2000);
                 } else {
                     alert(data.message || 'Erro ao enviar solicitação de correção.');
                 }
@@ -4113,7 +4155,7 @@ if ($canViewSolicitacoes) {
 
         // 5.1. GERENCIAMENTO DE SOLICITAÇÕES (APROVAR / REJEITAR)
         function aprovarSolicitacao(idSolicitacao, qtd, fiscalNome, idContagem, tipoContagem) {
-            const ajusteTexto = (tipoContagem === 'percentual')
+            const ajusteTexto = (tipoContagem && tipoContagem.toLowerCase().includes('perc'))
                 ? `-${getPercentualLabel(qtd)} (${qtd} pas.)`
                 : `-${qtd} passageiro(s)`;
 
@@ -4138,7 +4180,7 @@ if ($canViewSolicitacoes) {
                     showToastNotification('✓ ' + (data.message || 'Solicitação aprovada com sucesso!'));
                     setTimeout(() => {
                         window.location.href = 'index.php?tab=solicitacoes';
-                    }, 900);
+                    }, 2000);
                 } else {
                     alert(data.message || 'Erro ao aprovar solicitação.');
                 }
@@ -4208,7 +4250,7 @@ if ($canViewSolicitacoes) {
                     showToastNotification(data.message || 'Solicitação rejeitada com sucesso.');
                     setTimeout(() => {
                         window.location.href = 'index.php?tab=solicitacoes';
-                    }, 900);
+                    }, 2000);
                 } else {
                     alert(data.message || 'Erro ao rejeitar solicitação.');
                 }
@@ -4523,7 +4565,9 @@ if ($canViewSolicitacoes) {
                 let qtyText = reg.quantidade;
                 if (isSalvo) {
                     qtyColor = '#2563eb';
-                    qtyText = reg.quantidade + ' pas.';
+                    qtyText = (activeTipoContagem === 'percentual' || (typeof activeTipoContagem === 'string' && activeTipoContagem.includes('perc')))
+                        ? (getPercentualLabel(reg.quantidade) + ' (' + parseInt(reg.quantidade, 10) + ' pas.)')
+                        : (reg.quantidade + ' pas.');
                 } else if (reg.quantidade > 0) {
                     qtyColor = '#16a34a';
                     qtyText = '+' + reg.quantidade;
@@ -6006,7 +6050,7 @@ if ($canViewSolicitacoes) {
                     setTimeout(function() {
                         alertEl.style.display = 'none';
                     }, 500);
-                }, 3000);
+                }, 2000);
             });
         });
     </script>

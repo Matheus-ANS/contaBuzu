@@ -205,65 +205,29 @@ try {
     } catch (\Exception $ex) {
     }
 
-    // Garantir colunas auxiliares na tabela pesquisa
-    try {
-        $stmtPesq = $pdo->query("SHOW COLUMNS FROM pesquisa");
-        if ($stmtPesq) {
-            $colsP = $stmtPesq->fetchAll(PDO::FETCH_COLUMN);
-            if (!in_array('idUsuario', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idUsuario INT NULL");
-            }
-            if (!in_array('idVeiculo', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idVeiculo INT NULL");
-            }
-            if (!in_array('idEmpresa', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idEmpresa INT NULL");
-            }
-            if (!in_array('status', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN status VARCHAR(50) NOT NULL DEFAULT 'em_andamento'");
-            }
-            if (!in_array('totalPassageiros', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN totalPassageiros FLOAT NOT NULL DEFAULT 0");
-            }
-            if (!in_array('dataInicio', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN dataInicio DATETIME NULL");
-            }
-            if (!in_array('dataFim', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN dataFim DATETIME NULL");
-            }
-            if (!in_array('turno', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN turno VARCHAR(50) NULL DEFAULT 'Matutino'");
-            }
-            if (!in_array('tipoTransporte', $colsP)) {
-                $pdo->exec("ALTER TABLE pesquisa ADD COLUMN tipoTransporte VARCHAR(50) NULL DEFAULT 'stco'");
-            }
-        }
-    } catch (\PDOException $ex) {
-    } catch (\Exception $ex) {
-    }
-
-    // Garantir colunas auxiliares na tabela contagem
+    // Garantir colunas na tabela contagem (justificativa e idVeiculoPesquisado anulável)
     try {
         $stmtCont = $pdo->query("SHOW COLUMNS FROM contagem");
         if ($stmtCont) {
             $colsC = $stmtCont->fetchAll(PDO::FETCH_COLUMN);
-            if (!in_array('tipo', $colsC)) {
-                $pdo->exec("ALTER TABLE contagem ADD COLUMN tipo VARCHAR(50) NOT NULL DEFAULT 'incremento'");
-            }
             if (!in_array('justificativa', $colsC)) {
                 $pdo->exec("ALTER TABLE contagem ADD COLUMN justificativa TEXT NULL");
+            }
+            if (!in_array('tipo', $colsC)) {
+                $pdo->exec("ALTER TABLE contagem ADD COLUMN tipo VARCHAR(50) NOT NULL DEFAULT 'incremento'");
             }
             if (!in_array('dataHora', $colsC)) {
                 $pdo->exec("ALTER TABLE contagem ADD COLUMN dataHora DATETIME NULL");
             }
+            try {
+                $pdo->exec("ALTER TABLE contagem MODIFY COLUMN idVeiculoPesquisado INT(11) NULL");
+            } catch (\Exception $exN) {}
         }
-    } catch (\PDOException $ex) {
-    } catch (\Exception $ex) {
-    }
+    } catch (\Exception $ex) {}
 
-    // Garantir que a tabela solicitacoes_correcao existe para o fluxo de aprovação de supervisores
+    // Garantir que a tabela solicitacoesCorrecao existe para o fluxo de aprovação de supervisores
     try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS solicitacoes_correcao (
+        $pdo->exec("CREATE TABLE IF NOT EXISTS solicitacoesCorrecao (
             idSolicitacao INT AUTO_INCREMENT PRIMARY KEY,
             idContagem INT NOT NULL,
             idUsuarioSolicitante INT NOT NULL,

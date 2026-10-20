@@ -161,7 +161,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     setTimeout(function() {
                         alertEl.style.display = 'none';
                     }, 500);
-                }, 3000);
+                }, 2000);
             });
         });
     </script>
