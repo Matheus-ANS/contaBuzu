@@ -11,6 +11,15 @@ if (!isset($_SESSION['usuario_id'])) {
 
 require_once 'db.php';
 
+if (!function_exists('formatarNumeroVeiculo')) {
+    function formatarNumeroVeiculo($val) {
+        $val = (string)$val;
+        $limpo = preg_replace('/^\s*prefixo[:\s-]*/i', '', $val);
+        $limpo = trim($limpo);
+        return $limpo !== '' ? $limpo : trim($val);
+    }
+}
+
 $usuarioId = (int)$_SESSION['usuario_id'];
 
 // Sincroniza privilégios do usuário diretamente com o banco de dados e valida status ativo
@@ -641,50 +650,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // 4.0.1.2. Cadastrar Novo Veículo na Frota
-        elseif ($action === 'cadastrar_veiculo_frota_rapido') {
-            $prefixo = isset($_POST['prefixo']) ? trim((string)$_POST['prefixo']) : '';
-            $placa   = isset($_POST['placa']) ? trim((string)$_POST['placa']) : '';
 
-            if ($prefixo === '') {
-                if ($isAjax) {
-                    echo json_encode(['success' => false, 'message' => 'Prefixo do veículo é obrigatório.']);
-                    exit;
-                }
-            } else {
-                $stmtCheckV = $pdo->prepare("SELECT idVeiculo, prefixo, placa, ativo FROM veiculo WHERE LOWER(TRIM(prefixo)) = LOWER(TRIM(?)) LIMIT 1");
-                $stmtCheckV->execute([$prefixo]);
-                $vExistente = $stmtCheckV->fetch();
-
-                if ($vExistente) {
-                    $idVeicReal = (int)$vExistente['idVeiculo'];
-                    $prefReal   = $vExistente['prefixo'];
-                    $placaReal  = !empty($vExistente['placa']) ? $vExistente['placa'] : $placa;
-
-                    if (isset($vExistente['ativo']) && (int)$vExistente['ativo'] === 0) {
-                        $stmtReativar = $pdo->prepare("UPDATE veiculo SET ativo = 1 WHERE idVeiculo = ?");
-                        $stmtReativar->execute([$idVeicReal]);
-                    }
-                } else {
-                    $stmtInsV = $pdo->prepare("INSERT INTO veiculo (prefixo, placa, ativo) VALUES (?, ?, 1)");
-                    $stmtInsV->execute([$prefixo, $placa]);
-                    $idVeicReal = (int)$pdo->lastInsertId();
-                    $prefReal   = $prefixo;
-                    $placaReal  = $placa;
-                }
-
-                if ($isAjax) {
-                    echo json_encode([
-                        'success'   => true,
-                        'message'   => "Veículo $prefReal registrado com sucesso!",
-                        'idVeiculo' => $idVeicReal,
-                        'prefixo'   => $prefReal,
-                        'placa'     => $placaReal
-                    ]);
-                    exit;
-                }
-            }
-        }
 
         // 4.0.2. Alterar Turno de Sessão no Histórico
         elseif ($action === 'alterar_turno_historico') {
@@ -1723,7 +1689,7 @@ if ($canViewSolicitacoes) {
                                                         <input type="radio" name="opcaoVeiculo" id="radio_modo_registrar" value="registrar" style="accent-color: #2563eb; width: 18px; height: 18px; cursor: pointer;">
                                                         <div>
                                                             <div style="font-weight: 700; font-size: 0.9rem; color: #1e3a8a;">Registrar</div>
-                                                            <div style="font-size: 0.75rem; color: #3b82f6;">Informar prefixos dos veículos</div>
+                                                            <div style="font-size: 0.75rem; color: #3b82f6;">Informar número dos veículos</div>
                                                         </div>
                                                     </label>
 
@@ -2004,9 +1970,9 @@ if ($canViewSolicitacoes) {
                                                         if ($temMultiplosVeiculos) {
                                                             echo 'Nenhum ativo (clique em um ônibus abaixo)';
                                                         } elseif ($qtdVeiculosSessao === 1) {
-                                                            echo 'Prefixo: ' . htmlspecialchars($veiculosSessao[0]['prefixo']);
+                                                            echo htmlspecialchars(formatarNumeroVeiculo($veiculosSessao[0]['prefixo']));
                                                         } else {
-                                                            echo htmlspecialchars(!empty($sessaoAtiva['veiculoPrefixo']) ? 'Prefixo: '.$sessaoAtiva['veiculoPrefixo'] : 'Não informado');
+                                                            echo htmlspecialchars(!empty($sessaoAtiva['veiculoPrefixo']) ? formatarNumeroVeiculo($sessaoAtiva['veiculoPrefixo']) : 'Não informado');
                                                         }
                                                     ?>
                                                 </span>
@@ -2031,9 +1997,10 @@ if ($canViewSolicitacoes) {
                                                     // Caso tenha mais de 1 veículo, NENHUM botão aparece ativo inicialmente
                                                     // Apenas se tiver exatamente 1 veículo registrado
                                                     $isVeicAtivo = (!$temMultiplosVeiculos && $qtdVeiculosSessao === 1 && (int)$v['idVeiculo'] === $idVeicAtivoInicial);
+                                                    $numFmt = htmlspecialchars(formatarNumeroVeiculo($v['prefixo']));
                                                     $pref = htmlspecialchars($v['prefixo']);
                                                     $plc = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
-                                                    $searchData = strtolower($v['prefixo'] . ' ' . $plc);
+                                                    $searchData = strtolower($v['prefixo'] . ' ' . $numFmt . ' ' . $plc);
                                                 ?>
                                                 <button type="button" 
                                                         class="btn-opcao-onibus <?php echo $isVeicAtivo ? 'onibus-ativo' : ''; ?>" 
@@ -2046,7 +2013,7 @@ if ($canViewSolicitacoes) {
                                                         style="display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid <?php echo $isVeicAtivo ? '#2563eb' : '#cbd5e1'; ?>; background: <?php echo $isVeicAtivo ? '#eff6ff' : '#ffffff'; ?>; cursor: pointer; text-align: left; transition: all 0.2s; position: relative;">
                                                     <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 3px;">
                                                         <span style="font-weight: 800; font-size: 0.95rem; color: <?php echo $isVeicAtivo ? '#1d4ed8' : '#0f172a'; ?>;">
-                                                            🚌 <?php echo $pref; ?>
+                                                            🚌 <?php echo $numFmt; ?>
                                                         </span>
                                                         <span class="badge-onibus-status" style="font-size: 0.68rem; font-weight: 800; color: #16a34a; background: #dcfce7; padding: 2px 6px; border-radius: 4px; display: <?php echo $isVeicAtivo ? 'inline-block' : 'none'; ?>;">
                                                             ✓ ATIVO
@@ -3028,12 +2995,11 @@ if ($canViewSolicitacoes) {
                             <circle cx="11" cy="11" r="8"></circle>
                             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                         </svg>
-                        <input type="text" id="inputBuscaVeiculoModal" placeholder="Digite o prefixo do veículo..." oninput="filtrarVeiculosModal(this.value)" style="width: 100%; padding: 10px 14px 10px 40px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.92rem; outline: none; box-sizing: border-box; transition: all 0.2s;">
+                        <input type="text" id="inputBuscaVeiculoModal" placeholder="Digite o número do veículo..." oninput="filtrarVeiculosModal(this.value)" style="width: 100%; padding: 10px 14px 10px 40px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.92rem; outline: none; box-sizing: border-box; transition: all 0.2s;">
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 0.8rem; color: #64748b; flex-wrap: wrap; gap: 6px;">
-                        <span>Digite o prefixo para localizar os veículos da frota:</span>
+                        <span>Digite o número do veículo para localizar na frota:</span>
                         <div style="display: flex; gap: 10px; align-items: center;">
-                            <button type="button" onclick="cadastrarNovoVeiculoModalInline()" style="background: none; border: none; color: #16a34a; font-size: 0.8rem; font-weight: 700; cursor: pointer; text-decoration: underline;">+ Cadastrar Novo Ônibus</button>
                             <button type="button" onclick="desmarcarTodosVeiculosModal()" style="background: none; border: none; color: #dc2626; font-size: 0.8rem; font-weight: 600; cursor: pointer; text-decoration: underline;">Limpar Seleção</button>
                         </div>
                     </div>
@@ -3044,15 +3010,16 @@ if ($canViewSolicitacoes) {
                     <!-- Aviso exibido quando a busca está vazia (nenhum veículo exibido até o usuário digitar) -->
                     <div id="aviso-veiculos-digite" style="text-align: center; padding: 45px 15px; color: #64748b; font-size: 0.92rem;">
                         <div style="font-size: 2.5rem; margin-bottom: 10px; opacity: 0.85;">🔍</div>
-                        <div style="font-weight: 700; color: #1e293b; font-size: 1rem; margin-bottom: 4px;">Digite o número ou prefixo do veículo</div>
-                        <p style="margin: 0; font-size: 0.82rem; color: #94a3b8;">Comece a digitar no campo acima para pesquisar veículos com prefixos correspondentes.</p>
+                        <div style="font-weight: 700; color: #1e293b; font-size: 1rem; margin-bottom: 4px;">Digite o número do veículo</div>
+                        <p style="margin: 0; font-size: 0.82rem; color: #94a3b8;">Comece a digitar no campo acima para pesquisar veículos.</p>
                     </div>
 
                     <?php foreach ($veiculosDisponiveis as $v): ?>
                         <?php 
+                            $numFmt = htmlspecialchars(formatarNumeroVeiculo($v['prefixo']));
                             $pStr = htmlspecialchars($v['prefixo']);
                             $plStr = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
-                            $buscaData = strtolower($v['prefixo'] . ' ' . $plStr);
+                            $buscaData = strtolower($v['prefixo'] . ' ' . $numFmt . ' ' . $plStr);
                         ?>
                         <div class="item-veiculo-modal" 
                              data-id="<?php echo $v['idVeiculo']; ?>" 
@@ -3065,7 +3032,7 @@ if ($canViewSolicitacoes) {
                                 <input type="radio" name="radio_veiculo_candidato" class="radio-veiculo-modal" value="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $pStr; ?>" data-placa="<?php echo $plStr; ?>" style="width: 19px; height: 19px; accent-color: #2563eb; cursor: pointer;">
                                 <div>
                                     <div style="font-weight: 700; font-size: 0.94rem; color: #1e293b;">
-                                        Prefixo: <span class="prefixo-destaque" style="color: #2563eb;"><?php echo $pStr; ?></span>
+                                        <span class="prefixo-destaque" style="color: #2563eb;"><?php echo $numFmt; ?></span>
                                     </div>
                                     <?php if ($plStr): ?>
                                         <div style="font-size: 0.78rem; color: #64748b;">
@@ -3078,15 +3045,6 @@ if ($canViewSolicitacoes) {
                                 <span class="badge-veiculo-checked" style="display: none; font-size: 0.75rem; font-weight: 700; color: #16a34a; background: #dcfce7; padding: 4px 9px; border-radius: 6px; border: 1px solid #bbf7d0;">
                                     ✓ Na Fila
                                 </span>
-                                <button type="button" 
-                                        class="btn-registrar-inline" 
-                                        onclick="registrarVeiculoItem(event, this)" 
-                                        data-id="<?php echo $v['idVeiculo']; ?>" 
-                                        data-prefixo="<?php echo $pStr; ?>" 
-                                        data-placa="<?php echo $plStr; ?>"
-                                        style="background: #2563eb; color: #ffffff; border: none; padding: 6px 14px; border-radius: 7px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; box-shadow: 0 1px 3px rgba(37,99,235,0.25); transition: all 0.15s;">
-                                    Registrar Veículo
-                                </button>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -3109,13 +3067,7 @@ if ($canViewSolicitacoes) {
                                 <line x1="12" y1="5" x2="12" y2="19"></line>
                                 <line x1="5" y1="12" x2="19" y2="12"></line>
                             </svg>
-                            <span>+ Adicionar à Fila</span>
-                        </button>
-                        <button type="button" id="btn-salvar-veiculos-modal-footer" onclick="salvarVeiculosRegistradosModal()" style="padding: 9px 18px; background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); color: #ffffff; border: none; border-radius: 8px; font-weight: 800; cursor: pointer; box-shadow: 0 2px 6px rgba(22,163,74,0.3); transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                                <polyline points="20 6 9 17 4 12"></polyline>
-                            </svg>
-                            <span>Salvar Veículos</span>
+                            <span>Salvar Veículo</span>
                         </button>
                     </div>
                 </div>
@@ -3142,7 +3094,7 @@ if ($canViewSolicitacoes) {
                         <div style="font-size: 2.2rem; margin-bottom: 8px; opacity: 0.6;">📋</div>
                         <strong style="color: #64748b;">Nenhum veículo registrado</strong>
                         <p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">
-                            Pesquise o veículo pelo prefixo e clique em registrar para adicioná-lo à fila aqui.
+                            Pesquise o veículo e clique em "Salvar Veículo" para adicioná-lo à fila aqui.
                         </p>
                     </div>
                 </div>
@@ -3219,13 +3171,13 @@ if ($canViewSolicitacoes) {
 
                 <div style="margin-bottom: 16px;">
                     <label style="font-weight: 600; font-size: 0.88rem; color: #334155; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                        <span>Veículo (Prefixo) <span style="color: #dc2626;">*</span>:</span>
+                        <span>Veículo <span style="color: #dc2626;">*</span>:</span>
                     </label>
-                    <select id="editIdVeiculo" required class="form-select-custom cb-searchable-select" data-maxlength="5" data-placeholder="Digite o prefixo do veículo (até 5 dígitos)...">
+                    <select id="editIdVeiculo" required class="form-select-custom cb-searchable-select" data-maxlength="5" data-placeholder="Digite o número do veículo (até 5 dígitos)...">
                         <option value="">-- Selecione o Veículo --</option>
                         <?php foreach ($veiculosDisponiveis as $v): ?>
                             <option value="<?php echo $v['idVeiculo']; ?>" <?php echo ($sessaoAtiva && $sessaoAtiva['idVeiculo'] == $v['idVeiculo']) ? 'selected' : ''; ?>>
-                                Prefixo: <?php echo htmlspecialchars($v['prefixo']); ?> <?php echo !empty($v['placa']) ? '('.htmlspecialchars($v['placa']).')' : ''; ?>
+                                <?php echo htmlspecialchars(formatarNumeroVeiculo($v['prefixo'])); ?> <?php echo !empty($v['placa']) ? '('.htmlspecialchars($v['placa']).')' : ''; ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -3688,9 +3640,10 @@ if ($canViewSolicitacoes) {
                     }
 
                     // Atualiza badges e textos na tela
+                    const numFmt = formatarNumeroVeiculo(data.veiculoText || prefixo);
                     const badgeV = document.getElementById('badge-veiculo-ativo-mini');
                     if (badgeV) {
-                        badgeV.textContent = 'Prefixo: ' + (data.veiculoText || prefixo);
+                        badgeV.textContent = numFmt;
                         badgeV.style.color = '#15803d';
                     }
 
@@ -3703,12 +3656,12 @@ if ($canViewSolicitacoes) {
                     }
 
                     const sessV = document.getElementById('session-veiculo-text');
-                    if (sessV) sessV.textContent = data.veiculoText || prefixo;
+                    if (sessV) sessV.textContent = numFmt;
 
                     const editV = document.getElementById('editIdVeiculo');
                     if (editV) editV.value = idVeiculo;
 
-                    showToastNotification('✓ Ônibus ' + prefixo + ' selecionado para a contagem!');
+                    showToastNotification('✓ Ônibus ' + numFmt + ' selecionado para a contagem!');
                 } else {
                     alert(data.message || 'Erro ao selecionar o veículo.');
                 }
@@ -4869,6 +4822,13 @@ if ($canViewSolicitacoes) {
             }
         }
 
+        function formatarNumeroVeiculo(val) {
+            if (!val) return '';
+            var s = String(val).trim();
+            var limpo = s.replace(/^prefixo[:\s-]*/i, '').trim();
+            return limpo !== '' ? limpo : s;
+        }
+
         function selecionarVeiculoCandidato(elem) {
             if (!elem) return;
             var id = elem.getAttribute('data-id');
@@ -4881,18 +4841,29 @@ if ($canViewSolicitacoes) {
                 placa: placa
             };
 
+            // Remove destaque de seleção dos outros itens que não estão na fila
+            document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal').forEach(function(item) {
+                var itemId = String(item.getAttribute('data-id'));
+                var estaNaFila = veiculosTempModal.some(function(v) { return String(v.id) === itemId; });
+                if (!estaNaFila) {
+                    item.style.borderColor = '#e2e8f0';
+                    item.style.background = '#ffffff';
+                }
+            });
+
             var radio = elem.querySelector('.radio-veiculo-modal');
             if (radio) {
                 radio.checked = true;
             }
+            elem.style.borderColor = '#2563eb';
+            elem.style.background = '#eff6ff';
 
+            var numFmt = formatarNumeroVeiculo(prefixo);
             var info = document.getElementById('info-veiculo-escolhido');
             if (info) {
-                info.innerHTML = 'Veículo selecionado: <strong style="color: #1e3a8a;">Prefixo ' + escapeHtml(prefixo) + '</strong>' + (placa ? ' (' + escapeHtml(placa) + ')' : '');
+                info.innerHTML = 'Veículo selecionado: <strong style="color: #1e3a8a;">' + escapeHtml(numFmt) + '</strong>' + (placa ? ' (' + escapeHtml(placa) + ')' : '') + '. Clique em <strong>"Salvar Veículo"</strong> para adicionar à fila.';
             }
-
-            // Ao clicar no veículo pesquisado, adiciona à fila de conferência sem salvar automaticamente
-            adicionarVeiculoNaFilaTemp(veiculoCandidatoSelecionado);
+            // NOTA: Apenas o botão "Salvar Veículo" adiciona à fila de conferência.
         }
 
         function registrarVeiculoEscolhidoModal() {
@@ -4905,32 +4876,17 @@ if ($canViewSolicitacoes) {
                         placa: checkedRadio.getAttribute('data-placa') || ''
                     };
                 } else {
-                    alert('Por favor, digite o número do veículo e selecione-o na pesquisa antes de registrar.');
+                    alert('Por favor, digite o número do veículo e selecione-o na lista antes de salvar.');
                     return;
                 }
             }
             adicionarVeiculoNaFilaTemp(veiculoCandidatoSelecionado);
         }
 
-        function registrarVeiculoItem(event, btn) {
-            if (event) {
-                event.stopPropagation();
-                event.preventDefault();
-            }
-            var id = btn.getAttribute('data-id');
-            var prefixo = btn.getAttribute('data-prefixo');
-            var placa = btn.getAttribute('data-placa');
-
-            adicionarVeiculoNaFilaTemp({
-                id: id,
-                prefixo: prefixo,
-                placa: placa
-            });
-        }
-
-        // Adiciona à fila de conferência no modal SEM salvar automaticamente
+        // Adiciona à fila de conferência no modal SEM salvar no banco/sessão
         function adicionarVeiculoNaFilaTemp(veiculo) {
             if (!veiculo || !veiculo.id) return;
+            var numFmt = formatarNumeroVeiculo(veiculo.prefixo);
 
             // Verificar se o veículo já está na fila temporária
             var jaExiste = veiculosTempModal.some(function(v) {
@@ -4938,11 +4894,11 @@ if ($canViewSolicitacoes) {
             });
 
             if (jaExiste) {
-                showToastNotification('⚠️ O veículo ' + veiculo.prefixo + ' já está registrado na fila!', 2500);
+                showToastNotification('⚠️ O veículo ' + numFmt + ' já está registrado na fila!', 2500);
                 return;
             }
 
-            // Registra na fila temporária (NÃO salva automaticamente)
+            // Registra na fila temporária (NÃO salva na contagem ainda)
             veiculosTempModal.push({
                 id: String(veiculo.id),
                 prefixo: String(veiculo.prefixo),
@@ -4954,8 +4910,8 @@ if ($canViewSolicitacoes) {
             atualizarContadorModal();
             sincronizarStatusVeiculosModal();
 
-            // Notifica e chama a atenção para o botão de confirmação logo abaixo
-            showToastNotification('✓ Veículo ' + veiculo.prefixo + ' registrado na fila! Deseja salvar? Confirme abaixo.', 2800);
+            // Notifica e chama a atenção para o botão de confirmação "Sim, Salvar" no quadrado de veículos registrados
+            showToastNotification('✓ Veículo ' + numFmt + ' adicionado à fila! Clique em "Sim, Salvar" ao lado.', 2800);
             destacarBoxConfirmacao();
 
             // Limpa o termo de busca para a próxima pesquisa
@@ -4968,7 +4924,7 @@ if ($canViewSolicitacoes) {
             veiculoCandidatoSelecionado = null;
             var info = document.getElementById('info-veiculo-escolhido');
             if (info) {
-                info.innerHTML = 'Veículo <strong style="color: #1e3a8a;">' + escapeHtml(veiculo.prefixo) + '</strong> registrado. Salve abaixo ou pesquise mais.';
+                info.innerHTML = 'Veículo <strong style="color: #1e3a8a;">' + escapeHtml(numFmt) + '</strong> adicionado à fila. Salve em "Sim, Salvar" ou pesquise mais.';
             }
         }
 
@@ -4988,7 +4944,7 @@ if ($canViewSolicitacoes) {
             }
         }
 
-        // CONFIRMAÇÃO: Salva os veículos registrados de forma definitiva
+        // CONFIRMAÇÃO: Salva os veículos registrados de forma definitiva (apenas quando clica em 'Sim, Salvar')
         function salvarVeiculosRegistradosModal() {
             if (veiculosTempModal.length === 0) {
                 if (!confirm('Nenhum veículo está registrado na fila. Deseja realmente salvar a contagem sem nenhum veículo informado?')) {
@@ -5013,7 +4969,7 @@ if ($canViewSolicitacoes) {
             }
 
             closeModalVeiculos();
-            showToastNotification('✓ ' + veiculosSelecionadosState.length + ' veículo(s) registrado(s) e salvo(s) com sucesso!', 3000);
+            showToastNotification('✓ ' + veiculosSelecionadosState.length + ' veículo(s) salvo(s) com sucesso!', 3000);
         }
 
         // CANCELAMENTO: Descarta as adições sem salvar
@@ -5079,14 +5035,9 @@ if ($canViewSolicitacoes) {
             document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal').forEach(function(item) {
                 var id = String(item.getAttribute('data-id'));
                 var badge = item.querySelector('.badge-veiculo-checked');
-                var btn = item.querySelector('.btn-registrar-inline');
                 var radio = item.querySelector('.radio-veiculo-modal');
                 if (idsTemp.indexOf(id) !== -1) {
                     if (badge) badge.style.display = 'inline-block';
-                    if (btn) {
-                        btn.style.background = '#16a34a';
-                        btn.textContent = '✓ Na Fila';
-                    }
                     if (radio) {
                         radio.checked = true;
                     }
@@ -5094,10 +5045,6 @@ if ($canViewSolicitacoes) {
                     item.style.background = '#f0fdf4';
                 } else {
                     if (badge) badge.style.display = 'none';
-                    if (btn) {
-                        btn.style.background = '#2563eb';
-                        btn.textContent = 'Registrar Veículo';
-                    }
                     if (radio) {
                         radio.checked = false;
                     }
@@ -5139,7 +5086,7 @@ if ($canViewSolicitacoes) {
                 container.innerHTML = '<div id="vazio-lateral-hint" style="text-align: center; padding: 35px 15px; color: #94a3b8; font-size: 0.84rem;">' +
                     '<div style="font-size: 2.2rem; margin-bottom: 8px; opacity: 0.6;">📋</div>' +
                     '<strong style="color: #64748b;">Nenhum veículo registrado</strong>' +
-                    '<p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">Pesquise o veículo pelo prefixo e clique nele para adicioná-lo à fila aqui.</p>' +
+                    '<p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">Pesquise o veículo e clique em "Salvar Veículo" para adicioná-lo à fila aqui.</p>' +
                     '</div>';
                 return;
             }
@@ -5148,13 +5095,14 @@ if ($canViewSolicitacoes) {
             veiculosTempModal.forEach(function(v) {
                 var id = v.id;
                 var prefixo = v.prefixo || id;
+                var numFmt = formatarNumeroVeiculo(prefixo);
                 var placa = v.placa || '';
 
                 html += '<div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; background: #ffffff; border: 1.5px solid #bfdbfe; border-left: 4px solid #2563eb; border-radius: 8px; box-shadow: 0 1px 3px rgba(37,99,235,0.06); transition: all 0.15s;">';
                 html += '  <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">';
                 html += '    <span style="font-size: 1.1rem; line-height: 1;">🚌</span>';
                 html += '    <div style="min-width: 0;">';
-                html += '      <div style="font-weight: 700; font-size: 0.88rem; color: #1e3a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Prefixo: ' + escapeHtml(prefixo) + '</div>';
+                html += '      <div style="font-weight: 700; font-size: 0.88rem; color: #1e3a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + escapeHtml(numFmt) + '</div>';
                 if (placa) {
                     html += '  <div style="font-size: 0.75rem; color: #64748b;">Placa: ' + escapeHtml(placa) + '</div>';
                 }
@@ -5237,9 +5185,10 @@ if ($canViewSolicitacoes) {
             veiculos.forEach(v => {
                 const isAtivo = (idAtivoAtual > 0 && parseInt(v.idVeiculo) === idAtivoAtual);
                 if (isAtivo) temAtivo = true;
+                const numFmt = escapeHtml(formatarNumeroVeiculo(v.prefixo));
                 const pref = escapeHtml(v.prefixo);
                 const plc = v.placa ? escapeHtml(v.placa) : '';
-                const searchData = (v.prefixo + ' ' + (v.placa || '')).toLowerCase();
+                const searchData = (v.prefixo + ' ' + numFmt + ' ' + (v.placa || '')).toLowerCase();
 
                 html += '<button type="button" ' +
                     'class="btn-opcao-onibus ' + (isAtivo ? 'onibus-ativo' : '') + '" ' +
@@ -5252,7 +5201,7 @@ if ($canViewSolicitacoes) {
                     'style="display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid ' + (isAtivo ? '#2563eb' : '#cbd5e1') + '; background: ' + (isAtivo ? '#eff6ff' : '#ffffff') + '; cursor: pointer; text-align: left; transition: all 0.2s; position: relative;">' +
                     '<div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 3px;">' +
                         '<span style="font-weight: 800; font-size: 0.95rem; color: ' + (isAtivo ? '#1d4ed8' : '#0f172a') + ';">' +
-                            '🚌 ' + pref +
+                            '🚌 ' + numFmt +
                         '</span>' +
                         '<span class="badge-onibus-status" style="font-size: 0.68rem; font-weight: 800; color: #16a34a; background: #dcfce7; padding: 2px 6px; border-radius: 4px; display: ' + (isAtivo ? 'inline-block' : 'none') + ';">' +
                             '✓ ATIVO' +
@@ -5285,39 +5234,6 @@ if ($canViewSolicitacoes) {
                     badgeV.style.color = '#ea580c';
                 }
             }
-        }
-
-        // Permite cadastrar um novo prefixo na frota pelo próprio modal e já marcá-lo como selecionado
-        function cadastrarNovoVeiculoModalInline() {
-            const inputBusca = document.getElementById('inputBuscaVeiculoModal');
-            let sugestao = inputBusca ? inputBusca.value.trim() : '';
-            const prefixo = prompt('Digite o Prefixo do novo ônibus a registrar na frota:', sugestao);
-            if (!prefixo || !prefixo.trim()) return;
-
-            const placa = prompt('Digite a Placa do veículo (opcional):', '') || '';
-
-            const formData = new FormData();
-            formData.append('action', 'cadastrar_veiculo_frota_rapido');
-            formData.append('prefixo', prefixo.trim());
-            formData.append('placa', placa.trim());
-            formData.append('ajax', '1');
-
-            fetch('index.php', {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    adicionarVeiculoNaFilaTemp({
-                        id: String(data.idVeiculo),
-                        prefixo: String(data.prefixo),
-                        placa: String(data.placa || '')
-                    });
-                }
-            })
-            .catch(err => console.error('Erro ao registrar novo veículo:', err));
         }
 
         function removerVeiculoSelecionado(id) {
@@ -5376,8 +5292,9 @@ if ($canViewSolicitacoes) {
 
             var html = '';
             veiculosSelecionadosState.forEach(function(v) {
+                var numFmt = formatarNumeroVeiculo(v.prefixo);
                 html += '<span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #eff6ff; border: 1.5px solid #bfdbfe; border-radius: 9999px; font-size: 0.84rem; font-weight: 700; color: #1d4ed8; box-shadow: 0 1px 2px rgba(37,99,235,0.1);">';
-                html += '🚌 Prefixo: ' + escapeHtml(v.prefixo);
+                html += '🚌 ' + escapeHtml(numFmt);
                 if (v.placa) html += ' <span style="font-weight: 500; font-size: 0.76rem; color: #64748b;">(' + escapeHtml(v.placa) + ')</span>';
                 html += '<button type="button" onclick="removerVeiculoSelecionado(\'' + escapeHtml(v.id) + '\')" title="Remover" style="background: none; border: none; color: #94a3b8; cursor: pointer; padding: 0 0 0 4px; font-size: 1.1rem; line-height: 1; display: inline-flex; align-items: center;">&times;</button>';
                 html += '</span>';
