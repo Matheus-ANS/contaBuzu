@@ -5,21 +5,62 @@
 @ini_set('display_errors', '1');
 @ini_set('display_startup_errors', '1');
 
-$host    = '192.168.45.1';
-$db      = 'contaBuzu';
-$user    = 'root';
-$pass    = '';
 $charset = 'utf8mb4';
-
-$dsn = "mysql:host=$host;dbname=$db;charset=$charset";
 $options = [
     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES   => false,
 ];
 
+// Configurações de conexão: variáveis de ambiente > MySQL local > servidor em rede
+$dbConfigs = [];
+if (getenv('DB_HOST')) {
+    $dbConfigs[] = [
+        'host' => getenv('DB_HOST'),
+        'db'   => getenv('DB_NAME') ?: 'contaBuzu',
+        'user' => getenv('DB_USER') ?: 'root',
+        'pass' => getenv('DB_PASS') !== false ? getenv('DB_PASS') : '',
+    ];
+}
+$dbConfigs[] = [
+    'host' => '127.0.0.1',
+    'db'   => 'contaBuzu',
+    'user' => 'root',
+    'pass' => 'T@r2707',
+];
+$dbConfigs[] = [
+    'host' => '192.168.45.1',
+    'db'   => 'contaBuzu',
+    'user' => 'root',
+    'pass' => '',
+];
+$dbConfigs[] = [
+    'host' => '127.0.0.1',
+    'db'   => 'contaBuzu',
+    'user' => 'root',
+    'pass' => '',
+];
+
+$host = '127.0.0.1';
+$pdo = null;
+$lastException = null;
+
+foreach ($dbConfigs as $cfg) {
+    try {
+        $dsn = "mysql:host={$cfg['host']};dbname={$cfg['db']};charset=$charset";
+        $opts = $options + [PDO::ATTR_TIMEOUT => 2];
+        $pdo = new PDO($dsn, $cfg['user'], $cfg['pass'], $opts);
+        $host = $cfg['host'];
+        break;
+    } catch (\PDOException $ex) {
+        $lastException = $ex;
+    }
+}
+
 try {
-    $pdo = new PDO($dsn, $user, $pass, $options);
+    if (!$pdo) {
+        throw $lastException ?: new \PDOException("Não foi possível estabelecer conexão com o banco de dados.");
+    }
     
     // Garantir que a coluna 'ativo' existe na tabela usuarios
     try {
@@ -205,8 +246,77 @@ try {
     } catch (\Exception $ex) {
     }
 
+    // Garantir que a tabela pesquisa existe
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS pesquisa (
+            idPesquisa INT AUTO_INCREMENT PRIMARY KEY,
+            idUsuario INT NOT NULL,
+            idLinha INT NULL,
+            idVeiculo INT NULL,
+            idLocal INT NULL,
+            idEmpresa INT NULL,
+            viagem VARCHAR(50) DEFAULT 'Ida',
+            condTempo VARCHAR(50) DEFAULT 'Bom',
+            idSistema INT NULL DEFAULT 5,
+            tipoTransporte VARCHAR(50) DEFAULT 'stco',
+            tipoContagem VARCHAR(50) DEFAULT 'Percentual',
+            tipoOperacao VARCHAR(50) DEFAULT 'Embarque',
+            turno VARCHAR(50) DEFAULT 'Matutino',
+            status VARCHAR(50) NOT NULL DEFAULT 'em_andamento',
+            totalPassageiros FLOAT NOT NULL DEFAULT 0,
+            dataInicio DATETIME NOT NULL,
+            dataFim DATETIME NULL,
+            KEY idx_pesquisa_usuario_status (idUsuario, status),
+            KEY idx_pesquisa_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        $stmtPesq = $pdo->query("SHOW COLUMNS FROM pesquisa");
+        if ($stmtPesq) {
+            $colsP = $stmtPesq->fetchAll(PDO::FETCH_COLUMN);
+            if (!in_array('idUsuario', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idUsuario INT NULL");
+            if (!in_array('idVeiculo', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idVeiculo INT NULL");
+            if (!in_array('idEmpresa', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idEmpresa INT NULL");
+            if (!in_array('status', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN status VARCHAR(50) NOT NULL DEFAULT 'em_andamento'");
+            if (!in_array('totalPassageiros', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN totalPassageiros FLOAT NOT NULL DEFAULT 0");
+            if (!in_array('dataInicio', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN dataInicio DATETIME NULL");
+            if (!in_array('dataFim', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN dataFim DATETIME NULL");
+            if (!in_array('turno', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN turno VARCHAR(50) NULL DEFAULT 'Matutino'");
+            if (!in_array('tipoTransporte', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN tipoTransporte VARCHAR(50) NULL DEFAULT 'stco'");
+            if (!in_array('viagem', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN viagem VARCHAR(50) NULL DEFAULT 'Ida'");
+            if (!in_array('condTempo', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN condTempo VARCHAR(50) NULL DEFAULT 'Bom'");
+            if (!in_array('idSistema', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN idSistema INT NULL DEFAULT 5");
+            if (!in_array('tipoContagem', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN tipoContagem VARCHAR(50) NULL DEFAULT 'Percentual'");
+            if (!in_array('tipoOperacao', $colsP)) $pdo->exec("ALTER TABLE pesquisa ADD COLUMN tipoOperacao VARCHAR(50) NULL DEFAULT 'Embarque'");
+        }
+    } catch (\Exception $ex) {}
+
+    // Garantir que a tabela veiculoPesquisado existe
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS veiculoPesquisado (
+            idVeiculoPesquisado INT AUTO_INCREMENT PRIMARY KEY,
+            idPesquisa INT NOT NULL,
+            idVeiculo INT NOT NULL,
+            ordem INT NULL DEFAULT 0,
+            KEY idx_vp_pesquisa (idPesquisa),
+            KEY idx_vp_veiculo (idVeiculo)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (\Exception $ex) {}
+
     // Garantir colunas na tabela contagem (justificativa e idVeiculoPesquisado anulável)
     try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS contagem (
+            idContagem INT AUTO_INCREMENT PRIMARY KEY,
+            idPesquisa INT NOT NULL,
+            idVeiculoPesquisado INT NULL,
+            idUsuario INT NOT NULL,
+            tipo VARCHAR(50) NOT NULL DEFAULT 'incremento',
+            quantidade FLOAT NOT NULL DEFAULT 0,
+            justificativa TEXT NULL,
+            dataHora DATETIME NOT NULL,
+            KEY idx_contagem_pesquisa (idPesquisa),
+            KEY idx_contagem_usuario (idUsuario)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
         $stmtCont = $pdo->query("SHOW COLUMNS FROM contagem");
         if ($stmtCont) {
             $colsC = $stmtCont->fetchAll(PDO::FETCH_COLUMN);
