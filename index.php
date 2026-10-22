@@ -11,6 +11,15 @@ if (!isset($_SESSION['usuario_id'])) {
 
 require_once 'db.php';
 
+if (!function_exists('formatarNumeroVeiculo')) {
+    function formatarNumeroVeiculo($val) {
+        $val = (string)$val;
+        $limpo = preg_replace('/^\s*prefixo[:\s-]*/i', '', $val);
+        $limpo = trim($limpo);
+        return $limpo !== '' ? $limpo : trim($val);
+    }
+}
+
 $usuarioId = (int)$_SESSION['usuario_id'];
 
 // Sincroniza privilégios do usuário diretamente com o banco de dados e valida status ativo
@@ -135,6 +144,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($sisVal) $idSistema = (int)$sisVal;
             } catch (\Exception $eSis) {}
 
+            // Obter os veículos registrados
+            $veicArray = array_values(array_filter(array_map('intval', explode(',', $veiculosSel))));
+            if ($idVeiculo && !in_array((int)$idVeiculo, $veicArray)) {
+                $veicArray[] = (int)$idVeiculo;
+            }
+
+            // Regra crucial: caso tenha mais de 1 veículo registrado, NENHUM começa ativo na pesquisa!
+            // Apenas quando tiver exatamente 1 veículo registrado ele fica ativo imediatamente.
+            if (count($veicArray) > 1) {
+                $idVeiculo = null;
+            } elseif (count($veicArray) === 1) {
+                $idVeiculo = $veicArray[0];
+            }
+
             // Cria nova pesquisa com todos os dados informados
             $stmtNew = $pdo->prepare("
                 INSERT INTO pesquisa 
@@ -146,10 +169,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $idPesquisa = (int)$pdo->lastInsertId();
 
             // Inserir os veículos selecionados na tabela veiculoPesquisado
-            $veicArray = array_values(array_filter(array_map('intval', explode(',', $veiculosSel))));
-            if ($idVeiculo && !in_array((int)$idVeiculo, $veicArray)) {
-                $veicArray[] = (int)$idVeiculo;
-            }
             if (!empty($veicArray)) {
                 $stmtVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
                 foreach ($veicArray as $vId) {
@@ -228,10 +247,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     if ($isAjax) {
-                        // Busca registros da sessão (apenas salvamentos e correções)
+                        // Busca registros da sessão (apenas salvamentos e correções) com identificação do veículo
                         $stmtLogs = $pdo->prepare("
-                            SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada 
+                            SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada,
+                                   v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
                             FROM contagem c 
+                            LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
+                            LEFT JOIN pesquisa p ON c.idPesquisa = p.idPesquisa
+                            LEFT JOIN veiculo v ON COALESCE(vp.idVeiculo, p.idVeiculo) = v.idVeiculo
                             WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
                             ORDER BY c.idContagem DESC LIMIT 10
                         ");
@@ -296,8 +319,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         if ($isAjax) {
                             $stmtLogs = $pdo->prepare("
-                                SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada 
+                                SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada,
+                                       v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
                                 FROM contagem c 
+                                LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
+                                LEFT JOIN pesquisa p ON c.idPesquisa = p.idPesquisa
+                                LEFT JOIN veiculo v ON COALESCE(vp.idVeiculo, p.idVeiculo) = v.idVeiculo
                                 WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
                                 ORDER BY c.idContagem DESC LIMIT 10
                             ");
@@ -325,6 +352,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $justificativa      = isset($_POST['justificativa']) ? trim($_POST['justificativa']) : '';
             $idUsuarioDestino   = isset($_POST['idUsuarioDestino']) ? (int)$_POST['idUsuarioDestino'] : 0;
             $percentualSubtrair = isset($_POST['percentual_subtrair']) ? trim($_POST['percentual_subtrair']) : '';
+            $contagemAlvo       = isset($_POST['contagem_alvo']) ? trim($_POST['contagem_alvo']) : '';
+
+            if (!empty($contagemAlvo) && strpos($justificativa, '[Alvo:') === false && strpos($justificativa, '[Contagem') === false) {
+                $justificativa = "[Alvo: {$contagemAlvo}] " . $justificativa;
+            }
 
             if ($idContagem <= 0 || $qtdSubtrair <= 0) {
                 if ($isAjax) {
@@ -586,17 +618,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $idsArr = array_values(array_filter(array_map('intval', explode(',', $veiculosSel))));
 
                 // Sincronizar veículos na tabela veiculoPesquisado
-                $stmtExistentes = $pdo->prepare("SELECT idVeiculo FROM veiculoPesquisado WHERE idPesquisa = ?");
-                $stmtExistentes->execute([$idContagem]);
-                $existentesArr = $stmtExistentes->fetchAll(PDO::FETCH_COLUMN);
-
-                $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
-                foreach ($idsArr as $vId) {
-                    if (!in_array($vId, $existentesArr)) {
+                $pdo->prepare("DELETE FROM veiculoPesquisado WHERE idPesquisa = ?")->execute([$idContagem]);
+                if (!empty($idsArr)) {
+                    $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
+                    foreach ($idsArr as $vId) {
                         try {
                             $stmtInsVP->execute([$idContagem, $vId]);
                         } catch (\Exception $exVP) {}
                     }
+                }
+
+                // Regra de veículo ativo:
+                // Se tiver exatamente 1 veículo: ele é definido como o veículo ativo da pesquisa.
+                // Se tiver mais de 1 veículo: se o veículo atual não estiver na lista selecionada, limpa para forçar escolha manual.
+                if (count($idsArr) === 1) {
+                    $pdo->prepare("UPDATE pesquisa SET idVeiculo = ? WHERE idPesquisa = ?")->execute([$idsArr[0], $idContagem]);
+                } elseif (count($idsArr) > 1) {
+                    $stmtCurV = $pdo->prepare("SELECT idVeiculo FROM pesquisa WHERE idPesquisa = ?");
+                    $stmtCurV->execute([$idContagem]);
+                    $currV = (int)$stmtCurV->fetchColumn();
+                    if ($currV && !in_array($currV, $idsArr)) {
+                        $pdo->prepare("UPDATE pesquisa SET idVeiculo = NULL WHERE idPesquisa = ?")->execute([$idContagem]);
+                    }
+                } else {
+                    $pdo->prepare("UPDATE pesquisa SET idVeiculo = NULL WHERE idPesquisa = ?")->execute([$idContagem]);
                 }
 
                 $veiculosDados = [];
@@ -618,50 +663,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // 4.0.1.2. Cadastrar Novo Veículo na Frota
-        elseif ($action === 'cadastrar_veiculo_frota_rapido') {
-            $prefixo = isset($_POST['prefixo']) ? trim((string)$_POST['prefixo']) : '';
-            $placa   = isset($_POST['placa']) ? trim((string)$_POST['placa']) : '';
 
-            if ($prefixo === '') {
-                if ($isAjax) {
-                    echo json_encode(['success' => false, 'message' => 'Prefixo do veículo é obrigatório.']);
-                    exit;
-                }
-            } else {
-                $stmtCheckV = $pdo->prepare("SELECT idVeiculo, prefixo, placa, ativo FROM veiculo WHERE LOWER(TRIM(prefixo)) = LOWER(TRIM(?)) LIMIT 1");
-                $stmtCheckV->execute([$prefixo]);
-                $vExistente = $stmtCheckV->fetch();
-
-                if ($vExistente) {
-                    $idVeicReal = (int)$vExistente['idVeiculo'];
-                    $prefReal   = $vExistente['prefixo'];
-                    $placaReal  = !empty($vExistente['placa']) ? $vExistente['placa'] : $placa;
-
-                    if (isset($vExistente['ativo']) && (int)$vExistente['ativo'] === 0) {
-                        $stmtReativar = $pdo->prepare("UPDATE veiculo SET ativo = 1 WHERE idVeiculo = ?");
-                        $stmtReativar->execute([$idVeicReal]);
-                    }
-                } else {
-                    $stmtInsV = $pdo->prepare("INSERT INTO veiculo (prefixo, placa, ativo) VALUES (?, ?, 1)");
-                    $stmtInsV->execute([$prefixo, $placa]);
-                    $idVeicReal = (int)$pdo->lastInsertId();
-                    $prefReal   = $prefixo;
-                    $placaReal  = $placa;
-                }
-
-                if ($isAjax) {
-                    echo json_encode([
-                        'success'   => true,
-                        'message'   => "Veículo $prefReal registrado com sucesso!",
-                        'idVeiculo' => $idVeicReal,
-                        'prefixo'   => $prefReal,
-                        'placa'     => $placaReal
-                    ]);
-                    exit;
-                }
-            }
-        }
 
         // 4.0.2. Alterar Turno de Sessão no Histórico
         elseif ($action === 'alterar_turno_historico') {
@@ -693,7 +695,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // 4.0. Salvar Progresso da Contagem (Mantém Sessão Ativa)
         elseif ($action === 'salvar_contagem') {
             $idContagem = (int)$_POST['idContagem'];
+            $idVeiculoPost = !empty($_POST['idVeiculo']) ? (int)$_POST['idVeiculo'] : 0;
             if ($idContagem > 0) {
+                if ($idVeiculoPost > 0) {
+                    $stmtVeicSet = $pdo->prepare("UPDATE pesquisa SET idVeiculo = ? WHERE idPesquisa = ? AND idUsuario = ?");
+                    $stmtVeicSet->execute([$idVeiculoPost, $idContagem, $usuarioId]);
+                }
+
                 $stmtUpd = $pdo->prepare("UPDATE pesquisa SET dataFim = NOW() WHERE idPesquisa = ? AND idUsuario = ? AND status = 'em_andamento'");
                 $stmtUpd->execute([$idContagem, $usuarioId]);
 
@@ -718,7 +726,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($isAjax) {
                             echo json_encode([
                                 'success' => false,
-                                'message' => 'Por favor, selecione um ônibus antes de salvar a contagem.'
+                                'message' => 'Por favor, selecione um veículo antes de salvar a contagem.'
                             ]);
                             exit;
                         }
@@ -748,13 +756,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 error_log("Erro ao registrar salvamento: " . $exReg->getMessage());
                             }
                         }
+
+                        // Limpa o total acumulado da pesquisa para permitir novos lançamentos limpos
+                        try {
+                            $stmtReset = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = 0 WHERE idPesquisa = ?");
+                            $stmtReset->execute([$idContagem]);
+                        } catch (\Exception $exReset) {
+                            error_log("Erro ao zerar totalPassageiros: " . $exReset->getMessage());
+                        }
                     }
                 }
 
-                // Busca registros da sessão (apenas salvamentos e correções)
+                // Busca registros da sessão (apenas salvamentos e correções) com veículo
                 $stmtLogs = $pdo->prepare("
-                    SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada 
+                    SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada,
+                           v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
                     FROM contagem c 
+                    LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
+                    LEFT JOIN pesquisa p ON c.idPesquisa = p.idPesquisa
+                    LEFT JOIN veiculo v ON COALESCE(vp.idVeiculo, p.idVeiculo) = v.idVeiculo
                     WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
                     ORDER BY c.idContagem DESC LIMIT 10
                 ");
@@ -765,7 +785,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     echo json_encode([
                         'success' => true,
                         'message' => 'Contagem salva com sucesso! A sessão permanece aberta para continuar os lançamentos.',
-                        'logs' => $logs
+                        'total'   => 0,
+                        'logs'    => $logs
                     ]);
                     exit;
                 }
@@ -891,7 +912,8 @@ if ($sessaoAtiva) {
                    v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
             FROM contagem c 
             LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
-            LEFT JOIN veiculo v ON vp.idVeiculo = v.idVeiculo
+            LEFT JOIN pesquisa p ON c.idPesquisa = p.idPesquisa
+            LEFT JOIN veiculo v ON COALESCE(vp.idVeiculo, p.idVeiculo) = v.idVeiculo
             WHERE c.idPesquisa = ? AND c.tipo != 'incremento'
             ORDER BY c.idContagem DESC LIMIT 15
         ");
@@ -999,16 +1021,36 @@ try {
 
     $stmtHist = $pdo->prepare("
         SELECT c.*, c.idPesquisa as idContagem, c.viagem as sentido, c.condTempo as condicaoTempo,
-               DATE_FORMAT(c.dataInicio, '%d/%m/%Y %H:%i') as dataInicioFormatada,
+               COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y %H:%i'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y %H:%i'), DATE_FORMAT(NOW(), '%d/%m/%Y %H:%i')) as dataInicioFormatada,
                DATE_FORMAT(c.dataFim, '%d/%m/%Y %H:%i') as dataFimFormatada,
                l.numero as linhaNumero, l.descricao as linhaDescricao,
                v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca,
                loc.local as nomeLocal,
+               COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) as totalPassageiros,
                (SELECT COUNT(*) FROM contagem r WHERE r.idPesquisa = c.idPesquisa) as totalLancamentos
         FROM pesquisa c
         LEFT JOIN linha l ON c.idLinha = l.idLinha
         LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
         LEFT JOIN locais loc ON c.idLocal = loc.idLocal
+        LEFT JOIN (
+            SELECT 
+                vp.idPesquisa,
+                SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
+            FROM veiculoPesquisado vp
+            LEFT JOIN (
+                SELECT 
+                    idPesquisa,
+                    idVeiculoPesquisado,
+                    MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
+                    SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
+                FROM contagem
+                GROUP BY idPesquisa, idVeiculoPesquisado
+            ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
+            GROUP BY vp.idPesquisa
+        ) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
+        LEFT JOIN (
+            SELECT idPesquisa, MAX(dataHora) as maxDataHora FROM contagem GROUP BY idPesquisa
+        ) cnt_max ON c.idPesquisa = cnt_max.idPesquisa
         WHERE $whereSql
         ORDER BY c.idPesquisa DESC
     ");
@@ -1067,29 +1109,59 @@ try {
 
     // --- CONSULTAS DAS 4 TABELAS DO DASHBOARD ---
 
-    // 1. Quantidade de passageiros por data / hora / linha / veículo
+    // 1. Quantidade de passageiros por data / hora / linha / veículo (detalha todos os veículos contados)
     $dadosTabelaLinhaVeiculoDataHora = [];
     try {
         $stmtT1 = $pdo->prepare("
             SELECT 
-                DATE_FORMAT(c.dataInicio, '%d/%m/%Y') as dataFormatada,
-                DATE_FORMAT(c.dataInicio, '%H:%i') as horaFormatada,
+                COALESCE(
+                    DATE_FORMAT(cnt_agg.dataHoraMax, '%d/%m/%Y'),
+                    DATE_FORMAT(c.dataInicio, '%d/%m/%Y'),
+                    DATE_FORMAT(NOW(), '%d/%m/%Y')
+                ) as dataFormatada,
+                COALESCE(
+                    DATE_FORMAT(cnt_agg.dataHoraMax, '%H:%i'),
+                    DATE_FORMAT(c.dataInicio, '%H:%i'),
+                    '00:00'
+                ) as horaFormatada,
                 COALESCE(NULLIF(l.numero, ''), CONCAT('Linha #', c.idLinha)) as linhaNumero,
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
-                COALESCE(NULLIF(v.prefixo, 0), v.placa, 'S/ Veículo') as veiculoPrefixo,
+                COALESCE(NULLIF(v_vp.prefixo, 0), v_vp.placa, NULLIF(v_c.prefixo, 0), v_c.placa, 'S/ Veículo') as veiculoPrefixo,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN c.totalPassageiros ELSE 0 END) as embarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN c.totalPassageiros ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
-                COUNT(c.idPesquisa) as totalRegistros
+                CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
+                    COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                ELSE 0 END as embarques,
+                CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 
+                    COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                ELSE 0 END as desembarques,
+                CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN 
+                    COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                ELSE 0 END as ocupacaoInformada,
+                CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN 
+                    COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                ELSE NULL END as mediaPercentual,
+                1 as totalRegistros
             FROM pesquisa c
             LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
+            LEFT JOIN veiculo v_c ON c.idVeiculo = v_c.idVeiculo
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
+            LEFT JOIN veiculoPesquisado vp ON c.idPesquisa = vp.idPesquisa
+            LEFT JOIN veiculo v_vp ON vp.idVeiculo = v_vp.idVeiculo
+            LEFT JOIN (
+                SELECT 
+                    idPesquisa,
+                    idVeiculoPesquisado,
+                    MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
+                    SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr,
+                    MAX(dataHora) as dataHoraMax
+                FROM contagem
+                GROUP BY idPesquisa, idVeiculoPesquisado
+            ) cnt_agg ON (
+                (vp.idVeiculoPesquisado IS NOT NULL AND cnt_agg.idVeiculoPesquisado = vp.idVeiculoPesquisado)
+                OR (vp.idVeiculoPesquisado IS NULL AND cnt_agg.idPesquisa = c.idPesquisa)
+            )
             WHERE $whereSql
-            GROUP BY DATE(c.dataInicio), DATE_FORMAT(c.dataInicio, '%H:%i'), c.idLinha, c.idVeiculo, l.numero, l.descricao, l.linha, v.prefixo, v.placa, COALESCE(NULLIF(c.viagem, ''), 'Ida')
-            ORDER BY c.dataInicio DESC
+            ORDER BY c.idPesquisa DESC, COALESCE(vp.idVeiculoPesquisado, 0) ASC
         ");
         $stmtT1->execute($paramsHist);
         $dadosTabelaLinhaVeiculoDataHora = $stmtT1->fetchAll();
@@ -1100,22 +1172,40 @@ try {
     try {
         $stmtT2 = $pdo->prepare("
             SELECT 
-                DATE_FORMAT(c.dataInicio, '%d/%m/%Y') as dataFormatada,
+                COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y'), DATE_FORMAT(NOW(), '%d/%m/%Y')) as dataFormatada,
                 c.idLinha,
                 COALESCE(NULLIF(l.numero, ''), CONCAT('Linha #', c.idLinha)) as linhaNumero,
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN c.totalPassageiros ELSE 0 END) as embarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN c.totalPassageiros ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
+                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
                 COUNT(c.idPesquisa) as totalSessoes
             FROM pesquisa c
             LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
+            LEFT JOIN (
+                SELECT 
+                    vp.idPesquisa,
+                    SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
+                FROM veiculoPesquisado vp
+                LEFT JOIN (
+                    SELECT 
+                        idPesquisa,
+                        idVeiculoPesquisado,
+                        MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
+                        SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
+                    FROM contagem
+                    GROUP BY idPesquisa, idVeiculoPesquisado
+                ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
+                GROUP BY vp.idPesquisa
+            ) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
+            LEFT JOIN (
+                SELECT idPesquisa, MAX(dataHora) as maxDataHora FROM contagem GROUP BY idPesquisa
+            ) cnt_max ON c.idPesquisa = cnt_max.idPesquisa
             WHERE $whereSql
-            GROUP BY DATE(c.dataInicio), c.idLinha, l.numero, l.descricao, l.linha, COALESCE(NULLIF(c.viagem, ''), 'Ida')
-            ORDER BY DATE(c.dataInicio) DESC, embarques DESC
+            GROUP BY COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y'), DATE_FORMAT(NOW(), '%d/%m/%Y')), c.idLinha, l.numero, l.descricao, l.linha, COALESCE(NULLIF(c.viagem, ''), 'Ida')
+            ORDER BY DATE(COALESCE(c.dataInicio, cnt_max.maxDataHora, NOW())) DESC, embarques DESC
         ");
         $stmtT2->execute($paramsHist);
         $dadosTabelaTotalPorLinha = $stmtT2->fetchAll();
@@ -1130,15 +1220,30 @@ try {
                 COALESCE(loc.local, 'Praça Central') as nomeLocal,
                 loc.regiao as regiaoLocal,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN c.totalPassageiros ELSE 0 END) as embarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN c.totalPassageiros ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
+                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
                 COUNT(c.idPesquisa) as totalSessoes
             FROM pesquisa c
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
-            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN linha l ON c.idLinha = l.idLinha
+            LEFT JOIN (
+                SELECT 
+                    vp.idPesquisa,
+                    SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
+                FROM veiculoPesquisado vp
+                LEFT JOIN (
+                    SELECT 
+                        idPesquisa,
+                        idVeiculoPesquisado,
+                        MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
+                        SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
+                    FROM contagem
+                    GROUP BY idPesquisa, idVeiculoPesquisado
+                ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
+                GROUP BY vp.idPesquisa
+            ) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
             WHERE $whereSql
             GROUP BY c.idLocal, loc.local, loc.regiao, COALESCE(NULLIF(c.viagem, ''), 'Ida')
             ORDER BY embarques DESC
@@ -1155,15 +1260,31 @@ try {
                 COALESCE(e.idEmpresa, 1) as idEmpresa,
                 COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'PLATAFORMA') as nomeEmpresa,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN c.totalPassageiros ELSE 0 END) as embarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN c.totalPassageiros ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN c.totalPassageiros ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN c.totalPassageiros ELSE NULL END) as mediaPercentual,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
+                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
+                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
                 COUNT(DISTINCT c.idPesquisa) as totalSessoes
             FROM pesquisa c
             LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN linha l ON c.idLinha = l.idLinha
             LEFT JOIN empresa e ON (c.idEmpresa = e.idEmpresa OR v.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa OR e.idEmpresa = 1)
+            LEFT JOIN (
+                SELECT 
+                    vp.idPesquisa,
+                    SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
+                FROM veiculoPesquisado vp
+                LEFT JOIN (
+                    SELECT 
+                        idPesquisa,
+                        idVeiculoPesquisado,
+                        MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
+                        SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
+                    FROM contagem
+                    GROUP BY idPesquisa, idVeiculoPesquisado
+                ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
+                GROUP BY vp.idPesquisa
+            ) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
             WHERE $whereSql
             GROUP BY COALESCE(e.idEmpresa, 1), COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'PLATAFORMA'), COALESCE(NULLIF(c.viagem, ''), 'Ida')
             ORDER BY embarques DESC
@@ -1420,6 +1541,23 @@ if ($canViewSolicitacoes) {
                                 $turnoAtual = 'Noturno';
                             }
                         ?>
+                        <!-- POPUP DE AVISO: SELEÇÕES PENDENTES NO TOPO DA TELA -->
+                        <div id="popup-selecoes-pendentes-topo" style="display: none; position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 999999; width: 92%; max-width: 420px; background: #ffffff; border: 1.5px solid #fed7aa; border-left: 6px solid #ea580c; border-radius: 14px; box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(234, 88, 12, 0.08); padding: 14px 18px; transition: all 0.3s ease;">
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                                <div style="display: flex; align-items: center; gap: 12px;">
+                                    <div style="width: 36px; height: 36px; border-radius: 10px; background: #fff7ed; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border: 1px solid #ffedd5;">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="10"></circle>
+                                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                                        </svg>
+                                    </div>
+                                    <div style="font-weight: 800; font-size: 0.98rem; color: #9a3412;">Seleções obrigatórias pendentes</div>
+                                </div>
+                                <button type="button" onclick="fecharPopupSelecoesPendentes()" style="background: none; border: none; font-size: 1.4rem; color: #94a3b8; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: 6px; transition: color 0.15s;" onmouseover="this.style.color='#ea580c'" onmouseout="this.style.color='#94a3b8'">&times;</button>
+                            </div>
+                        </div>
+
                         <!-- FORMS: INICIAR NOVA SESSÃO DE CONTAGEM (DESIGN ATUALIZADO) -->
                         <form method="POST" action="index.php" id="form-iniciar-contagem" autocomplete="off">
                             <input type="hidden" name="action" value="iniciar_contagem">
@@ -1700,7 +1838,7 @@ if ($canViewSolicitacoes) {
                                                         <input type="radio" name="opcaoVeiculo" id="radio_modo_registrar" value="registrar" style="accent-color: #2563eb; width: 18px; height: 18px; cursor: pointer;">
                                                         <div>
                                                             <div style="font-weight: 700; font-size: 0.9rem; color: #1e3a8a;">Registrar</div>
-                                                            <div style="font-size: 0.75rem; color: #3b82f6;">Informar prefixos dos veículos</div>
+                                                            <div style="font-size: 0.75rem; color: #3b82f6;">Informar número dos veículos</div>
                                                         </div>
                                                     </label>
 
@@ -1721,7 +1859,7 @@ if ($canViewSolicitacoes) {
                                                                 <circle cx="11" cy="11" r="8"></circle>
                                                                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                                                             </svg>
-                                                            <span>Buscar e Escolher Veículo(s)</span>
+                                                            <span>Pesquisar e Registrar Veículo(s)</span>
                                                         </button>
                                                         <span id="badge-contador-veiculos" style="font-size: 0.82rem; font-weight: 700; color: #64748b; background: #f1f5f9; padding: 4px 10px; border-radius: 6px;">0 selecionado(s)</span>
                                                     </div>
@@ -1731,6 +1869,18 @@ if ($canViewSolicitacoes) {
                                                         <span id="txt-sem-veiculo-hint" style="font-size: 0.82rem; color: #94a3b8; font-style: italic;">
                                                             Nenhum veículo selecionado ainda. Clique no botão acima para escolher os veículos para a contagem.
                                                         </span>
+                                                    </div>
+
+                                                    <!-- Bloco de Confirmação/Status logo abaixo dos veículos registrados -->
+                                                    <div id="box-confirmar-veiculos-main" style="display: none; margin-top: 8px; padding: 10px 14px; background: #f0fdf4; border: 1.5px solid #bbf7d0; border-radius: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #16a34a;"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                                            <span style="font-size: 0.85rem; font-weight: 700; color: #166534;">Veículos registrados e salvos com sucesso!</span>
+                                                        </div>
+                                                        <div style="display: flex; gap: 8px; align-items: center;">
+                                                            <button type="button" onclick="openModalVeiculos()" style="padding: 5px 12px; background: #ffffff; color: #15803d; border: 1px solid #86efac; border-radius: 6px; font-weight: 700; font-size: 0.8rem; cursor: pointer;">Alterar Veículos</button>
+                                                            <button type="button" onclick="desmarcarTodosVeiculosModal()" style="padding: 5px 10px; background: transparent; color: #dc2626; border: none; font-weight: 700; font-size: 0.8rem; cursor: pointer; text-decoration: underline;">Limpar</button>
+                                                        </div>
                                                     </div>
 
                                                     <!-- Inputs ocultos para submissão -->
@@ -1757,14 +1907,12 @@ if ($canViewSolicitacoes) {
 
                             <!-- BOTÃO PRINCIPAL DE INICIAR CONTAGEM -->
                             <div style="margin-top: 20px;">
-                                <button type="submit" id="btn-iniciar-contagem" class="btn-iniciar-contagem-verde" disabled>
+                                <button type="submit" id="btn-iniciar-contagem" class="btn-iniciar-contagem-verde" onclick="return tentarEntrarPainelContagem(event);">
                                     <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
                                         <path d="M8 5.14v13.72a1 1 0 0 0 1.5.86l11-6.86a1 1 0 0 0 0-1.72l-11-6.86a1 1 0 0 0-1.5.86z"/>
                                     </svg>
                                     <span>Iniciar Contagem</span>
                                 </button>
-                                <div id="status-validacao-contagem" style="margin-top: 10px; padding: 10px 14px; border-radius: 10px; font-size: 0.84rem; text-align: center; background: #fff7ed; border: 1.5px solid #fed7aa; color: #c2410c; display: none; transition: all 0.2s;">
-                                </div>
                             </div>
                         </form>
 
@@ -1816,8 +1964,15 @@ if ($canViewSolicitacoes) {
                                 </div>
 
                                 <div class="session-info-grid">
-                                    <span id="session-linha-text" style="display:none;"></span>
-                                    <span id="session-veiculo-text" style="display:none;"></span>
+                                    <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha, Veículo ou Turno">
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <label style="margin:0; cursor: pointer;">Linha</label>
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                                        </div>
+                                        <span id="session-linha-text" style="font-weight: 700; color: #1e3a8a;">
+                                            <?php echo htmlspecialchars(!empty($sessaoAtiva['linhaNumero']) ? $sessaoAtiva['linhaNumero'] . ' - ' . $sessaoAtiva['linhaDescricao'] : 'Linha #'.$sessaoAtiva['idLinha']); ?>
+                                        </span>
+                                    </div>
 
                                     <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Veículo ou Turno">
                                         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1863,19 +2018,6 @@ if ($canViewSolicitacoes) {
 
                                 <?php
                                     $tipoCont = isset($sessaoAtiva['tipoContagem']) ? strtolower(trim($sessaoAtiva['tipoContagem'])) : 'percentual';
-                                    
-                                    if (!function_exists('calcPercentualStr')) {
-                                        function calcPercentualStr($total) {
-                                            $t = (int)$total;
-                                            if ($t >= 100) return '120%';
-                                            if ($t >= 82) return '100%';
-                                            if ($t >= 54) return '65%';
-                                            if ($t >= 42) return '50%';
-                                            if ($t >= 30) return '35%';
-                                            if ($t >= 13) return '15%';
-                                            return '0%';
-                                        }
-                                    }
                                 ?>
 
                                 <!-- DISPLAY DO CONTADOR (PERCENTUAL OU QUANTIDADE) -->
@@ -1917,15 +2059,6 @@ if ($canViewSolicitacoes) {
                                         <?php endforeach; ?>
                                     </div>
 
-                                    <div style="margin-bottom: 20px;">
-                                        <button type="button" class="btn-count btn-save-action" onclick="salvarContagemAtiva()" id="btn-salvar-contagem" style="width: 100%; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; border: none; padding: 15px; border-radius: 14px; font-weight: 800; font-size: 1.05rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 4px 14px rgba(37,99,235,0.3); transition: all 0.2s;">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="22" height="22">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c.11.128.19.278.234.442l.7 2.622A2.25 2.25 0 0 1 16.34 9H7.66a2.25 2.25 0 0 1-2.187-2.616l.7-2.622a2.25 2.25 0 0 1 .476-.884l1.5-1.5A2.25 2.25 0 0 1 9.75 1h4.5c.597 0 1.17.238 1.591.659l1.752 1.663zM12 12a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" />
-                                            </svg>
-                                            <span>Salvar Contagem</span>
-                                        </button>
-                                    </div>
-
                                 <?php else: ?>
 
                                     <!-- BOTOEIRA NUMÉRICA PADRÃO -->
@@ -1934,7 +2067,12 @@ if ($canViewSolicitacoes) {
                                         <div class="counter-number" id="counterTotal"><?php echo (int)$sessaoAtiva['totalPassageiros']; ?></div>
                                     </div>
 
-                                    <div class="counter-btn-grid">
+                                    <div class="counter-btn-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px;">
+                                        <button type="button" class="btn-count btn-zero-count" onclick="zerarContagemQuantidade(this)" title="Zerar a contagem atual" style="background: linear-gradient(135deg, #64748b 0%, #475569 100%) !important; color: #ffffff !important; border: none !important; border-radius: 14px !important; padding: 14px 8px !important; font-family: inherit; cursor: pointer; text-align: center; transition: all 0.2s; box-shadow: 0 4px 12px rgba(71,85,105,0.25);">
+                                            <span style="font-size: 1.5rem; font-weight: 800; display: block; line-height: 1;">0</span>
+                                            <span class="btn-count-subtext" style="font-size: 0.78rem; font-weight: 700; opacity: 0.95;">Zerar</span>
+                                        </button>
+
                                         <button type="button" class="btn-count btn-plus-1" onclick="sendIncrement(1)">
                                             <span>+1</span>
                                             <span class="btn-count-subtext">Passageiro</span>
@@ -1949,120 +2087,106 @@ if ($canViewSolicitacoes) {
                                             <span>+10</span>
                                             <span class="btn-count-subtext">Lote Rápido</span>
                                         </button>
-
-                                        <button type="button" class="btn-count btn-save-action" onclick="salvarContagemAtiva()" id="btn-salvar-contagem-grid">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="22" height="22">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c.11.128.19.278.234.442l.7 2.622A2.25 2.25 0 0 1 16.34 9H7.66a2.25 2.25 0 0 1-2.187-2.616l.7-2.622a2.25 2.25 0 0 1 .476-.884l1.5-1.5A2.25 2.25 0 0 1 9.75 1h4.5c.597 0 1.17.238 1.591.659l1.752 1.663zM12 12a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" />
-                                            </svg>
-                                            <span>Salvar Contagem</span>
-                                        </button>
                                     </div>
                                 <?php endif; ?>
 
-                                <!-- SELETOR DE ÔNIBUS E LINHA PARA DIRECIONAR A CONTAGEM -->
-                                <div class="onibus-selection-container" style="margin-top: 24px; padding: 20px; background: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.04);">
-                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
-                                        <div>
-                                            <h4 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #1e293b; display: flex; align-items: center; gap: 8px;">
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                <!-- PARTE DOS VEÍCULOS SELECIONADOS (COLOCADA ACIMA DO BOTÃO SALVAR CONTAGEM) -->
+                                <div class="secao-veiculos-painel" style="margin-top: 18px; margin-bottom: 18px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
+                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                            <label style="font-weight: 800; font-size: 0.94rem; color: #1e293b; margin: 0; display: flex; align-items: center; gap: 6px;">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;">
                                                     <rect x="3" y="6" width="18" height="13" rx="2"></rect>
                                                     <path d="M7 6V4a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v2"></path>
                                                     <circle cx="7" cy="15" r="1"></circle>
                                                     <circle cx="17" cy="15" r="1"></circle>
                                                 </svg>
-                                                Ônibus & Linha para Adicionar Pessoas
-                                            </h4>
-                                            <div style="font-size: 0.82rem; color: #64748b; margin-top: 3px;">
-                                                Selecione abaixo em qual ônibus ou linha os passageiros contados serão adicionados.
-                                            </div>
-                                        </div>
-
-                                        <!-- Indicador da Seleção Ativa Atual -->
-                                        <div id="destaque-selecao-ativa" style="display: flex; align-items: center; gap: 8px; background: #f0f7ff; border: 1.5px solid #bfdbfe; padding: 8px 14px; border-radius: 10px; flex-wrap: wrap;">
-                                            <span style="font-size: 0.8rem; color: #1e40af; font-weight: 700;">Ativo para contagem:</span>
-                                            <span id="badge-linha-ativa-mini" style="font-size: 0.82rem; font-weight: 800; color: #1d4ed8; background: #dbeafe; padding: 4px 10px; border-radius: 6px;">
-                                                Linha: <?php echo htmlspecialchars(!empty($sessaoAtiva['linhaNumero']) ? $sessaoAtiva['linhaNumero'] . ' - ' . $sessaoAtiva['linhaDescricao'] : 'Linha #'.$sessaoAtiva['idLinha']); ?>
-                                            </span>
-                                            <span id="badge-veiculo-ativo-mini" style="font-size: 0.82rem; font-weight: 800; color: #15803d; background: #dcfce7; padding: 4px 10px; border-radius: 6px;">
-                                                Ônibus: <?php echo htmlspecialchars(!empty($sessaoAtiva['veiculoPrefixo']) ? $sessaoAtiva['veiculoPrefixo'] : 'Prefixo #'.$sessaoAtiva['idVeiculo']); ?>
+                                                Veículos
+                                            </label>
+                                            <span id="badge-total-onibus-cadastrados" style="font-size: 0.78rem; font-weight: 700; color: #2563eb; background: #eff6ff; padding: 2px 8px; border-radius: 9999px; border: 1px solid #bfdbfe;">
+                                                <?php echo count($veiculosSessao); ?> registrado(s)
                                             </span>
                                         </div>
                                     </div>
 
-
-                                    <!-- 2. OPÇÕES DE ÔNIBUS SELECIONADOS PARA ESTA SESSÃO DE CONTAGEM -->
-                                    <div>
-                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
-                                            <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: flex; align-items: center; gap: 6px;">
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;">
-                                                    <rect x="3" y="6" width="18" height="13" rx="2"></rect>
-                                                    <path d="M7 6V4a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v2"></path>
-                                                    <circle cx="7" cy="15" r="1"></circle>
-                                                    <circle cx="17" cy="15" r="1"></circle>
-                                                </svg>
-                                                Ônibus Selecionados para esta Contagem:
-                                                <span id="badge-total-onibus-cadastrados" style="font-size: 0.78rem; font-weight: 700; color: #2563eb; background: #eff6ff; padding: 2px 8px; border-radius: 9999px; border: 1px solid #bfdbfe;">
-                                                    <?php echo count($veiculosSessao); ?> selecionado(s)
-                                                </span>
-                                            </label>
-
-                                            <!-- Ações Rápidas: Botão de Registrar / Escolher Mais Ônibus -->
-                                            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                                                <!-- Botão Registrar / Selecionar Mais Ônibus para a Contagem -->
-                                                <button type="button" onclick="openModalGerenciarVeiculosSessao()" class="btn-gerenciar-veiculos-sessao" title="Registrar ou selecionar mais ônibus para esta contagem" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; border: none; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.25); transition: all 0.2s; white-space: nowrap;">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                                                        <line x1="12" y1="5" x2="12" y2="19"></line>
-                                                        <line x1="5" y1="12" x2="19" y2="12"></line>
-                                                    </svg>
-                                                    <span>+ Registrar / Escolher Ônibus</span>
-                                                </button>
+                                    <!-- Browser de pesquisa rápida de veículos por prefixo -->
+                                    <div class="browser-veiculos-painel" style="margin-bottom: 12px; position: relative; width: 100%;">
+                                        <div style="position: relative; width: 100%;">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: #94a3b8; pointer-events: none;">
+                                                <circle cx="11" cy="11" r="8"></circle>
+                                                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                            </svg>
+                                            <input type="text" 
+                                                   id="input-busca-onibus-painel" 
+                                                   placeholder="Digite os números do prefixo..." 
+                                                   autocomplete="off"
+                                                   style="width: 100%; padding: 11px 16px 11px 40px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.92rem; outline: none; box-sizing: border-box; transition: all 0.2s;"
+                                            >
+                                            <!-- Dropdown com sugestões ordenadas por prefixos mais próximos em tempo real -->
+                                            <div id="dropdown-sugestoes-onibus-painel" style="display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px); background: #ffffff; border: 1.5px solid #cbd5e1; border-radius: 10px; max-height: 220px; overflow-y: auto; z-index: 1000; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.15);">
                                             </div>
                                         </div>
+                                    </div>
 
-                                        <!-- Grade de cards apenas com os ônibus selecionados para esta contagem -->
-                                        <div id="grid-onibus-registrados" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-height: 240px; overflow-y: auto; padding: 6px; background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 12px;">
-                                            <?php if (count($veiculosSessao) > 0): ?>
-                                                <?php foreach ($veiculosSessao as $v): ?>
-                                                    <?php 
-                                                        $isVeicAtivo = ($sessaoAtiva && $sessaoAtiva['idVeiculo'] == $v['idVeiculo']);
-                                                        $pref = htmlspecialchars($v['prefixo']);
-                                                        $plc = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
-                                                        $searchData = strtolower($v['prefixo'] . ' ' . $plc);
-                                                    ?>
-                                                    <button type="button" 
-                                                            class="btn-opcao-onibus <?php echo $isVeicAtivo ? 'onibus-ativo' : ''; ?>" 
-                                                            id="btn-veiculo-opt-<?php echo $v['idVeiculo']; ?>"
-                                                            data-id-veiculo="<?php echo $v['idVeiculo']; ?>" 
-                                                            data-prefixo="<?php echo $pref; ?>"
-                                                            data-placa="<?php echo $plc; ?>"
-                                                            data-search="<?php echo $searchData; ?>"
-                                                            onclick="selecionarOnibusContagem(<?php echo $v['idVeiculo']; ?>, '<?php echo addslashes($pref); ?>')"
-                                                            style="display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid <?php echo $isVeicAtivo ? '#2563eb' : '#cbd5e1'; ?>; background: <?php echo $isVeicAtivo ? '#eff6ff' : '#ffffff'; ?>; cursor: pointer; text-align: left; transition: all 0.2s; position: relative;">
-                                                        <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 3px;">
-                                                            <span style="font-weight: 800; font-size: 0.95rem; color: <?php echo $isVeicAtivo ? '#1d4ed8' : '#0f172a'; ?>;">
-                                                                🚌 <?php echo $pref; ?>
-                                                            </span>
+                                    <!-- Grade de cards com os ônibus registrados para ser escolhidos -->
+                                    <div id="grid-onibus-registrados" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-height: 240px; overflow-y: auto; padding: 6px; background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 12px;">
+                                        <?php 
+                                            $qtdVeiculosSessao = count($veiculosSessao);
+                                            $temMultiplosVeiculos = ($qtdVeiculosSessao > 1);
+                                            $idVeicAtivoInicial = ($qtdVeiculosSessao === 1) ? (int)$veiculosSessao[0]['idVeiculo'] : 0;
+                                        ?>
+                                        <?php if ($qtdVeiculosSessao > 0): ?>
+                                            <?php foreach ($veiculosSessao as $v): ?>
+                                                <?php 
+                                                    $isVeicAtivo = (!$temMultiplosVeiculos && $qtdVeiculosSessao === 1 && (int)$v['idVeiculo'] === $idVeicAtivoInicial);
+                                                    $numFmt = htmlspecialchars(formatarNumeroVeiculo($v['prefixo']));
+                                                    $pref = htmlspecialchars($v['prefixo']);
+                                                    $plc = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
+                                                    $searchData = strtolower($v['prefixo'] . ' ' . $numFmt . ' ' . $plc);
+                                                ?>
+                                                <button type="button" 
+                                                        class="btn-opcao-onibus <?php echo $isVeicAtivo ? 'onibus-ativo' : ''; ?>" 
+                                                        id="btn-veiculo-opt-<?php echo $v['idVeiculo']; ?>" 
+                                                        data-id-veiculo="<?php echo $v['idVeiculo']; ?>" 
+                                                        data-prefixo="<?php echo $pref; ?>" 
+                                                        data-placa="<?php echo $plc; ?>" 
+                                                        data-search="<?php echo $searchData; ?>" 
+                                                        onclick="selecionarOnibusContagem(<?php echo $v['idVeiculo']; ?>, '<?php echo addslashes($pref); ?>')"
+                                                        style="display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid <?php echo $isVeicAtivo ? '#2563eb' : '#cbd5e1'; ?>; background: <?php echo $isVeicAtivo ? '#eff6ff' : '#ffffff'; ?>; cursor: pointer; text-align: left; transition: all 0.2s; position: relative;">
+                                                    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 3px;">
+                                                        <span style="font-weight: 800; font-size: 0.95rem; color: <?php echo $isVeicAtivo ? '#1d4ed8' : '#0f172a'; ?>;">
+                                                            🚌 <?php echo $numFmt; ?>
+                                                        </span>
+                                                        <div style="display: flex; align-items: center; gap: 4px;">
                                                             <span class="badge-onibus-status" style="font-size: 0.68rem; font-weight: 800; color: #16a34a; background: #dcfce7; padding: 2px 6px; border-radius: 4px; display: <?php echo $isVeicAtivo ? 'inline-block' : 'none'; ?>;">
                                                                 ✓ ATIVO
                                                             </span>
+                                                            <span onclick="removerOnibusDiretoContagem(<?php echo (int)$v['idVeiculo']; ?>, event)" title="Remover da contagem" style="font-size: 1.15rem; line-height: 1; color: #94a3b8; padding: 0 4px; border-radius: 4px; cursor: pointer; transition: color 0.15s;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color='#94a3b8'">&times;</span>
                                                         </div>
-                                                        <?php if ($plc): ?>
-                                                            <div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">
-                                                                Placa: <?php echo $plc; ?>
-                                                            </div>
-                                                        <?php endif; ?>
-                                                    </button>
-                                                <?php endforeach; ?>
-                                            <?php else: ?>
-                                                <div style="grid-column: 1 / -1; padding: 18px; text-align: center; color: #64748b; font-size: 0.88rem; background: #ffffff; border-radius: 10px; border: 1px dashed #cbd5e1;">
-                                                    Nenhum ônibus selecionado para esta sessão de contagem.
-                                                </div>
-                                            <?php endif; ?>
-                                        </div>
-                                        <div id="aviso-onibus-nao-encontrado" style="display: none; padding: 16px; text-align: center; color: #94a3b8; font-size: 0.88rem; font-style: italic; background: #ffffff; border-radius: 10px; margin-top: 6px; border: 1px dashed #cbd5e1;">
-                                            Nenhum ônibus encontrado correspondente ao filtro.
-                                        </div>
+                                                    </div>
+                                                    <?php if ($plc): ?>
+                                                        <div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">
+                                                            Placa: <?php echo $plc; ?>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </button>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
+                                            <div id="msg-sem-veiculos-painel" style="grid-column: 1 / -1; padding: 16px; text-align: center; color: #64748b; font-size: 0.85rem; background: #ffffff; border-radius: 8px; border: 1px dashed #cbd5e1;">
+                                                Nenhum veículo registrado ainda. Digite os números do prefixo acima para adicionar.
+                                            </div>
+                                        <?php endif; ?>
                                     </div>
+                                </div>
+
+                                <!-- BOTÃO SALVAR CONTAGEM (LOGO ABAIXO DOS VEÍCULOS) -->
+                                <div style="margin-bottom: 20px;">
+                                    <button type="button" class="btn-count btn-save-action" onclick="salvarContagemAtiva()" id="btn-salvar-contagem" style="width: 100%; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; border: none; padding: 16px; border-radius: 14px; font-weight: 800; font-size: 1.1rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 4px 14px rgba(37,99,235,0.3); transition: all 0.2s;">
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="22" height="22">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c.11.128.19.278.234.442l.7 2.622A2.25 2.25 0 0 1 16.34 9H7.66a2.25 2.25 0 0 1-2.187-2.616l.7-2.622a2.25 2.25 0 0 1 .476-.884l1.5-1.5A2.25 2.25 0 0 1 9.75 1h4.5c.597 0 1.17.238 1.591.659l1.752 1.663zM12 12a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" />
+                                        </svg>
+                                        <span>Salvar Contagem</span>
+                                    </button>
                                 </div>
                             </div>
 
@@ -2089,7 +2213,7 @@ if ($canViewSolicitacoes) {
                                         <thead>
                                             <tr style="border-bottom: 2px solid #e2e8f0; color: #64748b; font-size: 0.78rem; text-transform: uppercase;">
                                                 <th style="padding: 10px 12px;">Horário</th>
-                                                <th style="padding: 10px 12px;">Operação</th>
+                                                <th style="padding: 10px 12px;">Veículo</th>
                                                 <th style="padding: 10px 12px;">Quantidade</th>
                                                 <th style="padding: 10px 12px;">Observação / Justificativa</th>
                                             </tr>
@@ -2108,12 +2232,16 @@ if ($canViewSolicitacoes) {
                                                             <?php echo htmlspecialchars($reg['horaFormatada']); ?>
                                                         </td>
                                                         <td style="padding: 12px;">
-                                                            <?php if ($reg['tipo'] === 'incremento'): ?>
-                                                                <span class="badge-reg badge-inc">+ Entrada</span>
-                                                            <?php elseif ($reg['tipo'] === 'salvamento'): ?>
-                                                                <span class="badge-reg badge-salvo">💾 Salvo</span>
+                                                            <?php if (!empty($reg['veiculoPrefixo'])): ?>
+                                                                <span style="display: inline-flex; align-items: center; gap: 5px; background: #eff6ff; color: #1e40af; border: 1px solid #dbeafe; padding: 3px 8px; border-radius: 6px; font-size: 0.84rem; font-weight: 700;">
+                                                                    🚌 <?php echo htmlspecialchars(formatarNumeroVeiculo($reg['veiculoPrefixo'])); ?>
+                                                                </span>
+                                                            <?php elseif (!empty($reg['veiculoPlaca'])): ?>
+                                                                <span style="display: inline-flex; align-items: center; gap: 5px; background: #f8fafc; color: #475569; border: 1px solid #cbd5e1; padding: 3px 8px; border-radius: 6px; font-size: 0.82rem; font-weight: 600;">
+                                                                    <?php echo htmlspecialchars($reg['veiculoPlaca']); ?>
+                                                                </span>
                                                             <?php else: ?>
-                                                                <span class="badge-reg badge-corr">- Correção</span>
+                                                                <span style="color: #94a3b8; font-size: 0.82rem;">Não informado</span>
                                                             <?php endif; ?>
                                                         </td>
                                                         <td style="padding: 12px; font-weight: 800; font-size: 1.05rem; color: <?php echo $reg['tipo'] === 'salvamento' ? '#2563eb' : ($reg['quantidade'] > 0 ? '#16a34a' : '#dc2626'); ?>;">
@@ -2446,7 +2574,7 @@ if ($canViewSolicitacoes) {
                                                     <?php echo htmlspecialchars($row['linhaNumero']); ?>
                                                 </td>
                                                 <td style="padding: 12px 10px; font-weight: 600; color: #334155;">
-                                                    <?php echo htmlspecialchars($row['veiculoPrefixo']); ?>
+                                                    <?php echo htmlspecialchars(formatarNumeroVeiculo($row['veiculoPrefixo'])); ?>
                                                 </td>
                                                 <td style="padding: 12px 10px; text-align: center;">
                                                     <span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; <?php echo (strtolower($row['sentido']) === 'volta') ? 'background: #fef3c7; color: #b45309; border: 1px solid #fde68a;' : 'background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;'; ?>">
@@ -2900,9 +3028,16 @@ if ($canViewSolicitacoes) {
                                                 </td>
 
                                                 <!-- Justificativa do Fiscal -->
-                                                <td style="padding: 14px 16px; vertical-align: middle; max-width: 240px;">
+                                                <td style="padding: 14px 16px; vertical-align: middle; max-width: 260px;">
                                                     <div style="color: #334155; font-size: 0.86rem; line-height: 1.4; word-break: break-word;">
-                                                        <?php echo nl2br(htmlspecialchars($sol['justificativa'])); ?>
+                                                        <?php 
+                                                            $justifTxt = $sol['justificativa'];
+                                                            if (preg_match('/^\[(?:Alvo|Contagem a alterar):\s*([^\]]+)\]\s*(.*)$/si', $justifTxt, $mAlvo)) {
+                                                                echo '<div style="margin-bottom: 5px;"><span style="display: inline-flex; align-items: center; gap: 4px; background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; padding: 2px 8px; border-radius: 6px; font-size: 0.76rem; font-weight: 700;">🎯 ' . htmlspecialchars($mAlvo[1]) . '</span></div>';
+                                                                $justifTxt = $mAlvo[2];
+                                                            }
+                                                            echo nl2br(htmlspecialchars($justifTxt));
+                                                        ?>
                                                     </div>
                                                 </td>
 
@@ -3016,31 +3151,46 @@ if ($canViewSolicitacoes) {
                             <circle cx="11" cy="11" r="8"></circle>
                             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                         </svg>
-                        <input type="text" id="inputBuscaVeiculoModal" placeholder="Digite o prefixo ou placa do veículo..." oninput="filtrarVeiculosModal(this.value)" style="width: 100%; padding: 10px 14px 10px 40px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.92rem; outline: none; box-sizing: border-box; transition: all 0.2s;">
+                        <input type="text" id="inputBuscaVeiculoModal" inputmode="numeric" placeholder="Digite os números do prefixo..." oninput="filtrarVeiculosModal(this.value)" autocomplete="off" style="width: 100%; padding: 10px 14px 10px 40px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.92rem; outline: none; box-sizing: border-box; transition: all 0.2s;">
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 0.8rem; color: #64748b; flex-wrap: wrap; gap: 6px;">
-                        <span>Selecione os veículos da frota abaixo:</span>
+                        <span>Pesquisar veículos por prefixo:</span>
                         <div style="display: flex; gap: 10px; align-items: center;">
-                            <button type="button" onclick="cadastrarNovoVeiculoModalInline()" style="background: none; border: none; color: #16a34a; font-size: 0.8rem; font-weight: 700; cursor: pointer; text-decoration: underline;">+ Cadastrar Novo Ônibus</button>
-                            <button type="button" onclick="desmarcarTodosVeiculosModal()" style="background: none; border: none; color: #dc2626; font-size: 0.8rem; font-weight: 600; cursor: pointer; text-decoration: underline;">Desmarcar todos</button>
+                            <button type="button" onclick="desmarcarTodosVeiculosModal()" style="background: none; border: none; color: #dc2626; font-size: 0.8rem; font-weight: 600; cursor: pointer; text-decoration: underline;">Limpar Seleção</button>
                         </div>
                     </div>
                 </div>
 
                 <!-- Lista Rolável de Veículos para Seleção -->
                 <div id="lista-veiculos-modal" style="padding: 12px 20px; overflow-y: auto; flex: 1; max-height: 380px; display: flex; flex-direction: column; gap: 8px; background: #ffffff;">
+                    <!-- Aviso exibido quando a busca está vazia (nenhum veículo exibido até o usuário digitar) -->
+                    <div id="aviso-veiculos-digite" style="text-align: center; padding: 45px 15px; color: #64748b; font-size: 0.92rem;">
+                        <div style="font-size: 2.5rem; margin-bottom: 10px; opacity: 0.85;">🔍</div>
+                        <div style="font-weight: 700; color: #1e293b; font-size: 1rem; margin-bottom: 4px;">Digite os números do prefixo</div>
+                        <p style="margin: 0; font-size: 0.82rem; color: #94a3b8;">Digite os números do prefixo para pesquisar o veículo.</p>
+                    </div>
+
                     <?php foreach ($veiculosDisponiveis as $v): ?>
                         <?php 
+                            $numFmt = htmlspecialchars(formatarNumeroVeiculo($v['prefixo']));
                             $pStr = htmlspecialchars($v['prefixo']);
                             $plStr = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
-                            $buscaData = strtolower($v['prefixo'] . ' ' . $plStr);
+                            $digitosPrefixo = preg_replace('/\D/', '', formatarNumeroVeiculo($v['prefixo']));
                         ?>
-                        <label class="item-veiculo-modal" data-id="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $pStr; ?>" data-placa="<?php echo $plStr; ?>" data-search="<?php echo htmlspecialchars($buscaData); ?>" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px; cursor: pointer; transition: all 0.15s; background: #ffffff; user-select: none;">
+                        <div class="item-veiculo-modal" 
+                             data-id="<?php echo $v['idVeiculo']; ?>" 
+                             data-prefixo="<?php echo $pStr; ?>" 
+                             data-placa="<?php echo $plStr; ?>" 
+                             data-prefixo-digitos="<?php echo $digitosPrefixo; ?>" 
+                             data-search="<?php echo $digitosPrefixo; ?>" 
+                             onclick="selecionarVeiculoCandidato(this)"
+                             ondblclick="salvarVeiculoItemDireto(this)"
+                             style="display: none; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px; cursor: pointer; transition: all 0.15s; background: #ffffff; user-select: none;">
                             <div style="display: flex; align-items: center; gap: 12px;">
-                                <input type="checkbox" class="chk-veiculo-modal" value="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $pStr; ?>" data-placa="<?php echo $plStr; ?>" onchange="atualizarItemVeiculoVisual(this)" style="width: 19px; height: 19px; accent-color: #2563eb; cursor: pointer;">
+                                <input type="radio" name="radio_veiculo_candidato" class="radio-veiculo-modal" value="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $pStr; ?>" data-placa="<?php echo $plStr; ?>" style="width: 19px; height: 19px; accent-color: #2563eb; cursor: pointer;">
                                 <div>
-                                    <div style="font-weight: 700; font-size: 0.92rem; color: #1e293b;">
-                                        Prefixo: <?php echo $pStr; ?>
+                                    <div style="font-weight: 700; font-size: 0.94rem; color: #1e293b;">
+                                        <span class="prefixo-destaque" style="color: #2563eb;"><?php echo $numFmt; ?></span>
                                     </div>
                                     <?php if ($plStr): ?>
                                         <div style="font-size: 0.78rem; color: #64748b;">
@@ -3049,57 +3199,120 @@ if ($canViewSolicitacoes) {
                                     <?php endif; ?>
                                 </div>
                             </div>
-                            <span class="badge-veiculo-checked" style="display: none; font-size: 0.75rem; font-weight: 700; color: #2563eb; background: #eff6ff; padding: 3px 8px; border-radius: 6px; border: 1px solid #bfdbfe;">
-                                ✓ Selecionado
-                            </span>
-                        </label>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span class="badge-veiculo-checked" style="display: none; font-size: 0.75rem; font-weight: 700; color: #16a34a; background: #dcfce7; padding: 4px 9px; border-radius: 6px; border: 1px solid #bbf7d0;">
+                                    ✓ Na Fila
+                                </span>
+                                <button type="button" 
+                                        class="btn-salvar-item-modal" 
+                                        onclick="event.stopPropagation(); salvarVeiculoItemDireto(this);" 
+                                        style="padding: 5px 12px; background: #eff6ff; color: #2563eb; border: 1.5px solid #bfdbfe; border-radius: 7px; font-weight: 700; font-size: 0.8rem; cursor: pointer; transition: all 0.15s;"
+                                        onmouseover="this.style.background='#2563eb'; this.style.color='#ffffff';"
+                                        onmouseout="this.style.background='#eff6ff'; this.style.color='#2563eb';">
+                                    Salvar
+                                </button>
+                            </div>
+                        </div>
                     <?php endforeach; ?>
-                    <div id="aviso-veiculos-nenhum" style="display: none; text-align: center; padding: 30px 10px; color: #94a3b8; font-size: 0.88rem;">
-                        Nenhum veículo encontrado correspondente à pesquisa.
+                    <div id="aviso-veiculos-nenhum" style="display: none; text-align: center; padding: 35px 10px; color: #94a3b8; font-size: 0.88rem;">
+                        Nenhum veículo encontrado com esses números no prefixo.
                     </div>
                 </div>
 
                 <!-- Rodapé do Modal Principal -->
-                <div style="padding: 14px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 10px; background: #f8fafc;">
-                    <button type="button" onclick="closeModalVeiculos()" style="padding: 9px 18px; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
-                        Cancelar
-                    </button>
-                    <button type="button" onclick="confirmarSelecaoVeiculosModal()" style="padding: 9px 20px; background: #2563eb; color: #ffffff; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.3); transition: all 0.2s;">
-                        Confirmar Seleção
-                    </button>
+                <div style="padding: 14px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: #f8fafc; flex-wrap: wrap; gap: 10px;">
+                    <div id="info-veiculo-escolhido" style="font-size: 0.85rem; color: #64748b; font-weight: 600;">
+                        Digite apenas os números do prefixo no campo de busca acima
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <button type="button" onclick="cancelarSalvarVeiculosModal()" style="padding: 9px 16px; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
+                            Cancelar
+                        </button>
+                        <button type="button" id="btn-registrar-veiculo-modal" onclick="registrarVeiculoEscolhidoModal()" style="padding: 9px 18px; background: #2563eb; color: #ffffff; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.3); transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                            <span>Salvar Veículo</span>
+                        </button>
+                    </div>
                 </div>
             </div>
 
-            <!-- JANELA 2: JANELA EXTERNA AO LADO DO MODAL COM OS VEÍCULOS ESCOLHIDOS -->
-            <div id="janela-externa-veiculos-selecionados" style="width: 300px; max-height: 85vh; background: #ffffff; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; overflow: hidden; border: 1.5px solid #bfdbfe; flex-shrink: 0;">
+            <!-- JANELA 2: JANELA EXTERNA AO LADO DO MODAL COM OS VEÍCULOS REGISTRADOS -->
+            <div id="janela-externa-veiculos-selecionados" style="width: 320px; max-height: 85vh; background: #ffffff; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; overflow: hidden; border: 1.5px solid #bfdbfe; flex-shrink: 0;">
                 
                 <!-- Cabeçalho da Janela Externa -->
                 <div style="padding: 16px 18px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);">
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 1.25rem;">📋</span>
                         <div>
-                            <div style="font-weight: 800; font-size: 0.94rem; color: #1e3a8a;">Veículos Escolhidos</div>
-                            <div style="font-size: 0.74rem; color: #3b82f6;">Janela de conferência em tempo real</div>
+                            <div style="font-weight: 800; font-size: 0.94rem; color: #1e3a8a;">Veículos Registrados</div>
+                            <div style="font-size: 0.74rem; color: #3b82f6;">Conferência antes de salvar</div>
                         </div>
                     </div>
                     <span id="badge-lateral-qtd" style="background: #2563eb; color: #ffffff; padding: 3px 9px; border-radius: 9999px; font-size: 0.78rem; font-weight: 800; box-shadow: 0 1px 3px rgba(37,99,235,0.3);">0</span>
                 </div>
 
-                <!-- Lista dos Veículos Escolhidos na Janela Externa -->
-                <div id="lista-veiculos-selecionados-lateral" style="padding: 12px 14px; overflow-y: auto; flex: 1; max-height: 380px; display: flex; flex-direction: column; gap: 8px; background: #f8fafc;">
-                    <div id="vazio-lateral-hint" style="text-align: center; padding: 40px 15px; color: #94a3b8; font-size: 0.84rem;">
+                <!-- Lista dos Veículos Registrados na Janela Externa -->
+                <div id="lista-veiculos-selecionados-lateral" style="padding: 12px 14px; overflow-y: auto; flex: 1; max-height: 290px; display: flex; flex-direction: column; gap: 8px; background: #f8fafc;">
+                    <div id="vazio-lateral-hint" style="text-align: center; padding: 35px 15px; color: #94a3b8; font-size: 0.84rem;">
                         <div style="font-size: 2.2rem; margin-bottom: 8px; opacity: 0.6;">📋</div>
-                        <strong style="color: #64748b;">Nenhum veículo escolhido</strong>
+                        <strong style="color: #64748b;">Nenhum veículo registrado</strong>
                         <p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">
-                            Marque os veículos no modal de pesquisa ao lado para vê-los reunidos aqui fora.
+                            Pesquise o veículo e clique em "Salvar Veículo" para adicioná-lo à fila aqui.
                         </p>
                     </div>
                 </div>
 
+                <!-- ÁREA DE CONFIRMAÇÃO: LOGO ABAIXO DOS VEÍCULOS REGISTRADOS -->
+                <div id="box-confirmar-salvar-veiculos" style="padding: 14px 16px; background: #ffffff; border-top: 1.5px solid #bfdbfe; box-shadow: 0 -4px 12px rgba(0,0,0,0.03);">
+                    <div style="text-align: center; margin-bottom: 10px;">
+                        <div style="font-size: 0.88rem; font-weight: 800; color: #1e3a8a; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                            </svg>
+                            <span>Deseja salvar os veículos registrados?</span>
+                        </div>
+                        <div id="subtitulo-confirmar-salvar" style="font-size: 0.74rem; color: #64748b; margin-top: 3px;">
+                            Confirme para gravar os veículos ou cancele o registro
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 8px;">
+                        <button type="button" 
+                                onclick="cancelarSalvarVeiculosModal()" 
+                                id="btn-cancelar-salvar-modal" 
+                                style="flex: 1; padding: 10px 8px; background: #fef2f2; color: #dc2626; border: 1.5px solid #fecaca; border-radius: 9px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; transition: all 0.2s;" 
+                                onmouseover="this.style.background='#fee2e2'; this.style.borderColor='#f87171';" 
+                                onmouseout="this.style.background='#fef2f2'; this.style.borderColor='#fecaca';">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                            <span>Não, Cancelar</span>
+                        </button>
+
+                        <button type="button" 
+                                onclick="salvarVeiculosRegistradosModal()" 
+                                id="btn-confirmar-salvar-modal" 
+                                style="flex: 1.2; padding: 10px 8px; background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); color: #ffffff; border: none; border-radius: 9px; font-weight: 800; font-size: 0.84rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; box-shadow: 0 2px 6px rgba(22,163,74,0.3); transition: all 0.2s;" 
+                                onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 10px rgba(22,163,74,0.4)';" 
+                                onmouseout="this.style.transform='none'; this.style.boxShadow='0 2px 6px rgba(22,163,74,0.3)';">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                            <span>Sim, Salvar</span>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Rodapé da Janela Externa -->
-                <div style="padding: 12px 16px; border-top: 1px solid #e2e8f0; background: #f1f5f9; display: flex; justify-content: space-between; align-items: center;">
-                    <button type="button" onclick="desmarcarTodosVeiculosModal()" style="background: none; border: none; color: #dc2626; font-size: 0.78rem; font-weight: 700; cursor: pointer; text-decoration: underline;">Limpar Seleção</button>
-                    <span id="txt-modal-veiculos-selecionados" style="font-size: 0.78rem; font-weight: 700; color: #2563eb;">0 escolhido(s)</span>
+                <div style="padding: 10px 16px; border-top: 1px solid #e2e8f0; background: #f8fafc; display: flex; justify-content: space-between; align-items: center;">
+                    <button type="button" onclick="limparFilaVeiculosTempModal()" style="background: none; border: none; color: #dc2626; font-size: 0.76rem; font-weight: 700; cursor: pointer; text-decoration: underline;">Limpar Fila</button>
+                    <span id="txt-modal-veiculos-selecionados" style="font-size: 0.76rem; font-weight: 700; color: #2563eb;">0 registrado(s)</span>
                 </div>
             </div>
 
@@ -3124,13 +3337,13 @@ if ($canViewSolicitacoes) {
 
                 <div style="margin-bottom: 16px;">
                     <label style="font-weight: 600; font-size: 0.88rem; color: #334155; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                        <span>Veículo (Prefixo) <span style="color: #dc2626;">*</span>:</span>
+                        <span>Veículo <span style="color: #dc2626;">*</span>:</span>
                     </label>
-                    <select id="editIdVeiculo" required class="form-select-custom cb-searchable-select" data-maxlength="5" data-placeholder="Digite o prefixo do veículo (até 5 dígitos)...">
+                    <select id="editIdVeiculo" required class="form-select-custom cb-searchable-select" data-maxlength="5" data-placeholder="Digite o número do veículo (até 5 dígitos)...">
                         <option value="">-- Selecione o Veículo --</option>
                         <?php foreach ($veiculosDisponiveis as $v): ?>
                             <option value="<?php echo $v['idVeiculo']; ?>" <?php echo ($sessaoAtiva && $sessaoAtiva['idVeiculo'] == $v['idVeiculo']) ? 'selected' : ''; ?>>
-                                Prefixo: <?php echo htmlspecialchars($v['prefixo']); ?> <?php echo !empty($v['placa']) ? '('.htmlspecialchars($v['placa']).')' : ''; ?>
+                                <?php echo htmlspecialchars(formatarNumeroVeiculo($v['prefixo'])); ?> <?php echo !empty($v['placa']) ? '('.htmlspecialchars($v['placa']).')' : ''; ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -3202,6 +3415,17 @@ if ($canViewSolicitacoes) {
                             </option>
                         <?php endforeach; ?>
                     </select>
+                </div>
+
+                <!-- 1.1. ESCOLHER DE QUAL CONTAGEM DEVE TER O VALOR ALTERADO -->
+                <div style="margin-bottom: 16px;">
+                    <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: block; margin-bottom: 6px;">
+                        De qual contagem deve ter o valor alterado? <span style="color: #dc2626;">*</span>
+                    </label>
+                    <select id="corrContagemAlvo" required class="form-select-custom" onchange="atualizarInfoContagemAlvo(this)" style="width: 100%; padding: 11px 14px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-family: inherit; font-size: 0.92rem; font-weight: 600; color: #1e293b; background-color: #ffffff;">
+                        <option value="atual">⏱️ Contagem atual em andamento</option>
+                    </select>
+                    <div id="corrContagemAlvoFeedback" style="margin-top: 6px; font-size: 0.82rem; color: #2563eb; font-weight: 600; display: none;"></div>
                 </div>
 
                 <!-- 2A. QUANTIDADE A SUBTRAIR (MODO QUANTIDADE PADRÃO) -->
@@ -3371,9 +3595,9 @@ if ($canViewSolicitacoes) {
                 <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.92rem;">
                     <thead style="position: sticky; top: 0; background: #f8fafc; z-index: 1;">
                         <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px;">
-                            <th style="padding: 14px 16px; width: 110px;">Horário</th>
-                            <th style="padding: 14px 16px; width: 140px;">Operação</th>
-                            <th style="padding: 14px 16px; width: 130px;">Quantidade</th>
+                            <th style="padding: 14px 16px; width: 120px;">Horário</th>
+                            <th style="padding: 14px 16px; width: 160px;">Veículo</th>
+                            <th style="padding: 14px 16px; width: 140px;">Quantidade</th>
                             <th style="padding: 14px 16px;">Observação / Status</th>
                         </tr>
                     </thead>
@@ -3391,12 +3615,16 @@ if ($canViewSolicitacoes) {
                                         <?php echo htmlspecialchars($reg['horaFormatada']); ?>
                                     </td>
                                     <td style="padding: 14px 16px;">
-                                        <?php if ($reg['tipo'] === 'incremento'): ?>
-                                            <span class="badge-reg badge-inc" style="font-size: 0.85rem; padding: 6px 12px;">+ Entrada</span>
-                                        <?php elseif ($reg['tipo'] === 'salvamento'): ?>
-                                            <span class="badge-reg badge-salvo" style="font-size: 0.85rem; padding: 6px 12px;">💾 Salvo</span>
+                                        <?php if (!empty($reg['veiculoPrefixo'])): ?>
+                                            <span style="display: inline-flex; align-items: center; gap: 6px; background: #eff6ff; color: #1e40af; border: 1px solid #dbeafe; padding: 4px 10px; border-radius: 6px; font-size: 0.88rem; font-weight: 700;">
+                                                🚌 <?php echo htmlspecialchars(formatarNumeroVeiculo($reg['veiculoPrefixo'])); ?>
+                                            </span>
+                                        <?php elseif (!empty($reg['veiculoPlaca'])): ?>
+                                            <span style="display: inline-flex; align-items: center; gap: 5px; background: #f8fafc; color: #475569; border: 1px solid #cbd5e1; padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; font-weight: 600;">
+                                                <?php echo htmlspecialchars($reg['veiculoPlaca']); ?>
+                                            </span>
                                         <?php else: ?>
-                                            <span class="badge-reg badge-corr" style="font-size: 0.85rem; padding: 6px 12px;">- Correção</span>
+                                            <span style="color: #94a3b8; font-size: 0.84rem;">Não informado</span>
                                         <?php endif; ?>
                                     </td>
                                     <td style="padding: 14px 16px; font-weight: 800; font-size: 1.1rem; color: <?php echo $reg['tipo'] === 'salvamento' ? '#2563eb' : ($reg['quantidade'] > 0 ? '#16a34a' : '#dc2626'); ?>;">
@@ -3488,10 +3716,30 @@ if ($canViewSolicitacoes) {
         // Variáveis da sessão ativa para chamadas AJAX
         const activeContagemId = <?php echo ($sessaoAtiva ? (int)$sessaoAtiva['idContagem'] : 0); ?>;
         const activeTipoContagem = '<?php echo ($sessaoAtiva && !empty($sessaoAtiva['tipoContagem'])) ? strtolower(trim($sessaoAtiva['tipoContagem'])) : 'quantidade'; ?>';
+        window.frotaVeiculosDisponiveis = <?php echo json_encode(array_values(array_map(function($v) {
+            return [
+                'idVeiculo' => (int)$v['idVeiculo'],
+                'prefixo'   => (string)$v['prefixo'],
+                'placa'     => (string)(isset($v['placa']) ? $v['placa'] : '')
+            ];
+        }, $veiculosDisponiveis))); ?>;
+        window.registrosSessaoAtual = <?php echo json_encode(array_values($registrosSessao)); ?>;
 
         // Salvar progresso da contagem ativa via AJAX (Manter sessão aberta)
         function salvarContagemAtiva() {
             if (!activeContagemId) return;
+
+            // Validação: caso tenha mais de 1 veículo registrado e nenhum esteja ativo
+            const totalVeiculos = document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus').length;
+            const onibusAtivo = document.querySelector('#grid-onibus-registrados .btn-opcao-onibus.onibus-ativo');
+            if (totalVeiculos > 1 && !onibusAtivo) {
+                alert('Atenção: Há mais de um veículo registrado para esta contagem. Por favor, clique no veículo desejado antes de salvar a contagem.');
+                const containerVeic = document.querySelector('.onibus-selection-container') || document.getElementById('grid-onibus-registrados');
+                if (containerVeic) {
+                    containerVeic.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                return;
+            }
 
             const btns = document.querySelectorAll('.btn-save-action, #btn-salvar-contagem, #btn-salvar-contagem-grid');
             btns.forEach(b => {
@@ -3502,6 +3750,12 @@ if ($canViewSolicitacoes) {
             const formData = new FormData();
             formData.append('action', 'salvar_contagem');
             formData.append('idContagem', activeContagemId);
+            const onibusAtivoBtn = document.querySelector('#grid-onibus-registrados .btn-opcao-onibus.onibus-ativo');
+            const editVeicInput = document.getElementById('editIdVeiculo');
+            const idVeicAtivo = onibusAtivoBtn ? onibusAtivoBtn.getAttribute('data-id-veiculo') : (editVeicInput ? editVeicInput.value : '');
+            if (idVeicAtivo) {
+                formData.append('idVeiculo', idVeicAtivo);
+            }
             formData.append('ajax', '1');
 
             fetch('index.php', {
@@ -3518,8 +3772,9 @@ if ($canViewSolicitacoes) {
                 if (data.success) {
                     showToastNotification(data.message || '✓ Contagem salva com sucesso!');
                     if (data.logs) renderLogs(data.logs);
+                    limparPainelNumerosContagem();
                 } else {
-                    alert(data.message || 'Por favor, selecione um ônibus antes de salvar a contagem.');
+                    alert(data.message || 'Por favor, selecione um veículo antes de salvar a contagem.');
                     const busSec = document.querySelector('.onibus-selection-container');
                     if (busSec) {
                         busSec.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -3532,6 +3787,41 @@ if ($canViewSolicitacoes) {
                     b.style.opacity = '1';
                 });
                 console.error('Erro ao salvar contagem:', err);
+            });
+        }
+
+        // Limpa o painel que mostra os números após salvar a contagem
+        function limparPainelNumerosContagem() {
+            const counterEl = document.getElementById('counterTotal');
+            const percentEl = document.getElementById('counterTotalPercent');
+            const numEl = document.getElementById('counterTotalNum');
+
+            if (counterEl) {
+                counterEl.textContent = '0';
+                counterEl.classList.add('bounce');
+                setTimeout(function() { counterEl.classList.remove('bounce'); }, 200);
+            }
+            if (percentEl) {
+                percentEl.textContent = '0%';
+                percentEl.classList.add('bounce');
+                setTimeout(function() { percentEl.classList.remove('bounce'); }, 200);
+            }
+            if (numEl) {
+                numEl.textContent = '0';
+            }
+
+            // Desmarca botões de porcentagem ativos e seleciona 0%
+            document.querySelectorAll('.btn-count-percent').forEach(function(b) {
+                const qtd = parseInt(b.getAttribute('data-qtd') || '0', 10);
+                if (qtd === 0) {
+                    b.classList.add('active-percent');
+                    b.style.boxShadow = '0 6px 16px rgba(0,0,0,0.15)';
+                    b.style.transform = 'translateY(-2px) scale(1.03)';
+                } else {
+                    b.classList.remove('active-percent');
+                    b.style.boxShadow = 'none';
+                    b.style.transform = 'none';
+                }
             });
         }
 
@@ -3581,16 +3871,28 @@ if ($canViewSolicitacoes) {
                     }
 
                     // Atualiza badges e textos na tela
+                    const numFmt = formatarNumeroVeiculo(data.veiculoText || prefixo);
                     const badgeV = document.getElementById('badge-veiculo-ativo-mini');
-                    if (badgeV) badgeV.textContent = 'Ônibus: ' + (data.veiculoText || prefixo);
+                    if (badgeV) {
+                        badgeV.textContent = numFmt;
+                        badgeV.style.color = '#15803d';
+                    }
+
+                    const destaqueBox = document.getElementById('destaque-selecao-ativa');
+                    if (destaqueBox) {
+                        destaqueBox.style.background = '#f0fdf4';
+                        destaqueBox.style.borderColor = '#bbf7d0';
+                        const spanLabel = destaqueBox.querySelector('span');
+                        if (spanLabel) spanLabel.style.color = '#166534';
+                    }
 
                     const sessV = document.getElementById('session-veiculo-text');
-                    if (sessV) sessV.textContent = data.veiculoText || prefixo;
+                    if (sessV) sessV.textContent = numFmt;
 
                     const editV = document.getElementById('editIdVeiculo');
                     if (editV) editV.value = idVeiculo;
 
-                    showToastNotification('✓ Ônibus ' + prefixo + ' selecionado para a contagem!');
+                    showToastNotification('✓ Ônibus ' + numFmt + ' selecionado para a contagem!');
                 } else {
                     alert(data.message || 'Erro ao selecionar o veículo.');
                 }
@@ -3599,62 +3901,6 @@ if ($canViewSolicitacoes) {
                 if (btnOpt) btnOpt.style.opacity = '1';
                 console.error('Erro ao selecionar ônibus:', err);
             });
-        }
-
-        // Seleção rápida de Linha para direcionar a contagem
-        function selecionarLinhaContagem(idLinha, textoLinha) {
-            if (!activeContagemId) return;
-
-            const formData = new FormData();
-            formData.append('action', 'alterar_linha_veiculo');
-            formData.append('idContagem', activeContagemId);
-            formData.append('idLinha', idLinha);
-            formData.append('ajax', '1');
-
-            fetch('index.php', {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    const badgeL = document.getElementById('badge-linha-ativa-mini');
-                    if (badgeL) badgeL.textContent = 'Linha: ' + (data.linhaText || textoLinha);
-
-                    const sessL = document.getElementById('session-linha-text');
-                    if (sessL) sessL.textContent = data.linhaText || textoLinha;
-
-                    const editL = document.getElementById('editIdLinha');
-                    if (editL) editL.value = idLinha;
-
-                    showToastNotification('✓ Linha atualizada para a contagem!');
-                } else {
-                    alert(data.message || 'Erro ao alterar a linha.');
-                }
-            })
-            .catch(err => console.error('Erro ao alterar linha:', err));
-        }
-
-        // Filtro em tempo real na grade de ônibus
-        function filtrarOnibusGrid(termo) {
-            termo = (termo || '').toLowerCase().trim();
-            const btns = document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus');
-            let visiveis = 0;
-            btns.forEach(btn => {
-                const search = btn.getAttribute('data-search') || '';
-                if (!termo || search.indexOf(termo) !== -1) {
-                    btn.style.display = 'flex';
-                    visiveis++;
-                } else {
-                    btn.style.display = 'none';
-                }
-            });
-
-            const aviso = document.getElementById('aviso-onibus-nao-encontrado');
-            if (aviso) {
-                aviso.style.display = (visiveis === 0) ? 'block' : 'none';
-            }
         }
 
         let toastTimeoutId = null;
@@ -3995,6 +4241,15 @@ if ($canViewSolicitacoes) {
             .catch(err => console.error('Erro na contagem:', err));
         }
 
+        // Zera a contagem quando o tipo de contagem é Quantidade
+        function zerarContagemQuantidade(btnEl) {
+            if (!activeContagemId) return;
+            sendIncrement(0, 'substituir', btnEl);
+            if (typeof showToastNotification === 'function') {
+                showToastNotification('✓ Quantidade zerada (0 passageiros).', 2000);
+            }
+        }
+
         // 5. MODAL DE SOLICITAÇÃO DE CORREÇÃO AO SUPERVISOR
         const percentToPasMap = {
             '15': 13,
@@ -4033,6 +4288,47 @@ if ($canViewSolicitacoes) {
 
             modal.classList.add('active');
 
+            // Preenche dinamicamente o select com as contagens disponíveis na sessão
+            const selectAlvo = document.getElementById('corrContagemAlvo');
+            if (selectAlvo) {
+                selectAlvo.innerHTML = '';
+
+                // Opção 1: Contagem atual em andamento
+                const optAtual = document.createElement('option');
+                optAtual.value = 'atual';
+                const counterEl = document.getElementById('counterTotal');
+                const percentEl = document.getElementById('counterTotalPercent');
+                const totalAtualTxt = (activeTipoContagem === 'percentual' && percentEl) ? percentEl.textContent.trim() : (counterEl ? counterEl.textContent.trim() + ' pas.' : '');
+                optAtual.textContent = '⏱️ Contagem atual em andamento' + (totalAtualTxt ? ' (' + totalAtualTxt + ')' : '');
+                selectAlvo.appendChild(optAtual);
+
+                // Opções dos registros salvos na sessão
+                const listaLogs = (window.registrosSessaoAtual && window.registrosSessaoAtual.length > 0)
+                    ? window.registrosSessaoAtual
+                    : [];
+
+                listaLogs.forEach(function(reg, idx) {
+                    const opt = document.createElement('option');
+                    opt.value = reg.idRegistro || ('reg_' + idx);
+                    const veic = reg.veiculoPrefixo ? formatarNumeroVeiculo(reg.veiculoPrefixo) : (reg.veiculoPlaca ? reg.veiculoPlaca : 'Veículo não informado');
+                    const isSalvo = (reg.tipo === 'salvamento');
+                    const qtdFmt = isSalvo
+                        ? ((activeTipoContagem === 'percentual' || (typeof activeTipoContagem === 'string' && activeTipoContagem.includes('perc')))
+                            ? (getPercentualLabel(reg.quantidade) + ' / ' + parseInt(reg.quantidade, 10) + ' pas.')
+                            : (reg.quantidade + ' pas.'))
+                        : (reg.quantidade + ' pas.');
+
+                    const tagTipo = isSalvo ? '💾 Salvo' : 'Ajuste';
+                    opt.textContent = `${tagTipo} às ${reg.horaFormatada || ''} — Veículo: ${veic} (${qtdFmt})`;
+                    opt.dataset.veiculo = veic;
+                    opt.dataset.hora = reg.horaFormatada || '';
+                    opt.dataset.qtd = reg.quantidade;
+                    selectAlvo.appendChild(opt);
+                });
+
+                atualizarInfoContagemAlvo(selectAlvo);
+            }
+
             const containerQtd = document.getElementById('containerCorrQtd');
             const containerPercent = document.getElementById('containerCorrPercent');
             const inputQtd = document.getElementById('corrQtd');
@@ -4060,6 +4356,26 @@ if ($canViewSolicitacoes) {
             if (destino && activeTipoContagem === 'percentual') destino.focus();
         }
 
+        function atualizarInfoContagemAlvo(selectEl) {
+            const feedback = document.getElementById('corrContagemAlvoFeedback');
+            if (!feedback || !selectEl) return;
+            const selIdx = selectEl.selectedIndex;
+            if (selIdx < 0) {
+                feedback.style.display = 'none';
+                return;
+            }
+            const opt = selectEl.options[selIdx];
+            if (opt.value === 'atual') {
+                feedback.textContent = 'ℹ️ A correção será aplicada sobre o lançamento em andamento.';
+                feedback.style.color = '#0284c7';
+                feedback.style.display = 'block';
+            } else {
+                feedback.textContent = '✓ Lançamento selecionado: ' + opt.textContent;
+                feedback.style.color = '#15803d';
+                feedback.style.display = 'block';
+            }
+        }
+
         function closeCorrectionModal() {
             const modal = document.getElementById('correctionModal');
             if (modal) modal.classList.remove('active');
@@ -4081,6 +4397,17 @@ if ($canViewSolicitacoes) {
             const idUsuarioDestino = destinoSelect ? destinoSelect.value : '';
             const justificativa = document.getElementById('corrJustificativa') ? document.getElementById('corrJustificativa').value.trim() : '';
 
+            const alvoSelect = document.getElementById('corrContagemAlvo');
+            let textoAlvo = '';
+            if (alvoSelect && alvoSelect.selectedIndex >= 0) {
+                const selectedOpt = alvoSelect.options[alvoSelect.selectedIndex];
+                if (selectedOpt.value === 'atual') {
+                    textoAlvo = 'Contagem atual em andamento';
+                } else {
+                    textoAlvo = selectedOpt.textContent.trim();
+                }
+            }
+
             let qtd = 1;
             let percentualSubtrair = '';
             let justifFinal = justificativa;
@@ -4089,9 +4416,10 @@ if ($canViewSolicitacoes) {
                 const selectPercent = document.getElementById('corrPercentSelect');
                 percentualSubtrair = selectPercent ? selectPercent.value : '15';
                 qtd = percentToPasMap[percentualSubtrair] || 13;
-                justifFinal = `[Estorno de ${percentualSubtrair}%] ` + justificativa;
+                justifFinal = (textoAlvo ? `[Alvo: ${textoAlvo}] ` : '') + `[Estorno de ${percentualSubtrair}%] ` + justificativa;
             } else {
                 qtd = document.getElementById('corrQtd') ? document.getElementById('corrQtd').value : 1;
+                justifFinal = (textoAlvo ? `[Alvo: ${textoAlvo}] ` : '') + justificativa;
             }
 
             if (!idUsuarioDestino) {
@@ -4117,6 +4445,7 @@ if ($canViewSolicitacoes) {
             formData.append('action', 'solicitar_correcao');
             formData.append('idContagem', activeContagemId);
             formData.append('idUsuarioDestino', idUsuarioDestino);
+            formData.append('contagem_alvo', textoAlvo);
             formData.append('qtd_subtrair', qtd);
             formData.append('percentual_subtrair', percentualSubtrair);
             formData.append('justificativa', justifFinal);
@@ -4536,6 +4865,7 @@ if ($canViewSolicitacoes) {
         function renderLogs(logs) {
             const tbody = document.getElementById('logsTableBody');
             const expandTbody = document.getElementById('expandLogsTableBody');
+            window.registrosSessaoAtual = logs || [];
 
             if (!logs || logs.length === 0) {
                 const emptyRow = `<tr><td colspan="4" style="padding: 24px; text-align: center; color: #94a3b8;">Nenhum registro efetuado ainda nesta sessão.</td></tr>`;
@@ -4578,10 +4908,19 @@ if ($canViewSolicitacoes) {
                     ? '<span style="color: #15803d; font-weight: 600;">✓ Contagem salva</span>'
                     : (reg.justificativa ? escapeHtml(reg.justificativa) : '<em style="color:#a1a1aa;">Contagem direta</em>');
 
+                const veicNum = reg.veiculoPrefixo ? formatarNumeroVeiculo(reg.veiculoPrefixo) : (reg.veiculoPlaca || '');
+                const veicNormal = veicNum 
+                    ? `<span style="display: inline-flex; align-items: center; gap: 5px; background: #eff6ff; color: #1e40af; border: 1px solid #dbeafe; padding: 3px 8px; border-radius: 6px; font-size: 0.84rem; font-weight: 700;">🚌 ${escapeHtml(veicNum)}</span>`
+                    : `<span style="color: #94a3b8; font-size: 0.82rem;">Não informado</span>`;
+
+                const veicExpand = veicNum 
+                    ? `<span style="display: inline-flex; align-items: center; gap: 6px; background: #eff6ff; color: #1e40af; border: 1px solid #dbeafe; padding: 4px 10px; border-radius: 6px; font-size: 0.88rem; font-weight: 700;">🚌 ${escapeHtml(veicNum)}</span>`
+                    : `<span style="color: #94a3b8; font-size: 0.84rem;">Não informado</span>`;
+
                 htmlNormal += `
                     <tr style="border-bottom: 1px solid #f1f5f9;">
                         <td style="padding: 12px; font-weight: 600; color: #475569;">${reg.horaFormatada || ''}</td>
-                        <td style="padding: 12px;"><span class="badge-reg ${badgeClass}">${badgeText}</span></td>
+                        <td style="padding: 12px;">${veicNormal}</td>
                         <td style="padding: 12px; font-weight: 800; font-size: 1.05rem; color: ${qtyColor};">${qtyText}</td>
                         <td style="padding: 12px; color: #334155;">${obsLimpa}</td>
                     </tr>
@@ -4590,7 +4929,7 @@ if ($canViewSolicitacoes) {
                 htmlExpand += `
                     <tr style="border-bottom: 1px solid #f1f5f9;">
                         <td style="padding: 14px 16px; font-weight: 600; color: #475569; white-space: nowrap;">${reg.horaFormatada || ''}</td>
-                        <td style="padding: 14px 16px;"><span class="badge-reg ${badgeClass}" style="font-size: 0.85rem; padding: 6px 12px;">${badgeText}</span></td>
+                        <td style="padding: 14px 16px;">${veicExpand}</td>
                         <td style="padding: 14px 16px; font-weight: 800; font-size: 1.1rem; color: ${qtyColor};">${qtyText}</td>
                         <td style="padding: 14px 16px; color: #1e293b; line-height: 1.5; font-size: 0.92rem;">${obsLimpa}</td>
                     </tr>
@@ -4728,18 +5067,77 @@ if ($canViewSolicitacoes) {
             }
         }
 
+        var veiculoCandidatoSelecionado = null;
+        var veiculosTempModal = []; // Fila temporária no modal - só salva no banco/estado quando usuário confirma
+
         function openModalVeiculos() {
             var modal = document.getElementById('modalSelecaoVeiculos');
             if (modal) {
                 modal.classList.add('active');
                 modal.style.display = 'flex';
-                sincronizarCheckboxesModal();
+                veiculoCandidatoSelecionado = null;
+
+                // Inicializa a fila temporária com cópia dos veículos já salvos
+                veiculosTempModal = JSON.parse(JSON.stringify(veiculosSelecionadosState || []));
+
+                var info = document.getElementById('info-veiculo-escolhido');
+                if (info) {
+                    info.innerHTML = 'Digite os números do prefixo no campo acima';
+                }
                 var inputBusca = document.getElementById('inputBuscaVeiculoModal');
                 if (inputBusca) {
                     inputBusca.value = '';
                     filtrarVeiculosModal('');
                     setTimeout(function() { inputBusca.focus(); }, 120);
+
+                    if (!inputBusca.dataset.hasEnterHandler) {
+                        inputBusca.dataset.hasEnterHandler = 'true';
+                        inputBusca.addEventListener('keydown', function(e) {
+                            if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (veiculoCandidatoSelecionado && veiculoCandidatoSelecionado.id) {
+                                    adicionarVeiculoNaFilaTemp(veiculoCandidatoSelecionado);
+                                    return;
+                                }
+                                var primeiroVisivel = document.querySelector('#lista-veiculos-modal .item-veiculo-modal:not([style*="display: none"])');
+                                if (primeiroVisivel) {
+                                    var cand = {
+                                        id: primeiroVisivel.getAttribute('data-id'),
+                                        prefixo: primeiroVisivel.getAttribute('data-prefixo'),
+                                        placa: primeiroVisivel.getAttribute('data-placa')
+                                    };
+                                    adicionarVeiculoNaFilaTemp(cand);
+                                } else {
+                                    var termoDigitos = (inputBusca.value || '').replace(/\D/g, '');
+                                    if (!termoDigitos) {
+                                        showToastNotification('⚠️ Digite os números do prefixo do veículo primeiro.');
+                                    } else {
+                                        showToastNotification('⚠️ Nenhum veículo encontrado com prefixo "' + termoDigitos + '".');
+                                    }
+                                }
+                            } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                                var visiveis = Array.from(document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal:not([style*="display: none"])'));
+                                if (visiveis.length > 0) {
+                                    e.preventDefault();
+                                    var idxAtual = visiveis.findIndex(function(it) {
+                                        return veiculoCandidatoSelecionado && String(it.getAttribute('data-id')) === String(veiculoCandidatoSelecionado.id);
+                                    });
+                                    var novoIdx = 0;
+                                    if (e.key === 'ArrowDown') {
+                                        novoIdx = (idxAtual + 1) % visiveis.length;
+                                    } else {
+                                        novoIdx = (idxAtual - 1 + visiveis.length) % visiveis.length;
+                                    }
+                                    selecionarVeiculoCandidato(visiveis[novoIdx]);
+                                    visiveis[novoIdx].scrollIntoView({ block: 'nearest' });
+                                }
+                            }
+                        });
+                    }
                 }
+                sincronizarStatusVeiculosModal();
+                atualizarPainelLateralSelecionados();
+                atualizarContadorModal();
             }
         }
 
@@ -4751,160 +5149,422 @@ if ($canViewSolicitacoes) {
             }
         }
 
+        // Filtra os veículos no modal utilizando EXCLUSIVAMENTE os números do prefixo
         function filtrarVeiculosModal(termo) {
-            termo = (termo || '').toLowerCase().trim();
+            var termoDigitos = String(termo || '').replace(/\D/g, '');
+            var avisoDigite = document.getElementById('aviso-veiculos-digite');
+            var avisoNenhum = document.getElementById('aviso-veiculos-nenhum');
             var items = document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal');
+
+            // Se o usuário não digitou números, oculta todos e exibe aviso
+            if (!termoDigitos || termoDigitos.length === 0) {
+                items.forEach(function(item) {
+                    item.style.display = 'none';
+                });
+                if (avisoDigite) avisoDigite.style.display = 'block';
+                if (avisoNenhum) avisoNenhum.style.display = 'none';
+                veiculoCandidatoSelecionado = null;
+                var infoV = document.getElementById('info-veiculo-escolhido');
+                if (infoV) infoV.innerHTML = 'Digite os números do prefixo no campo de busca acima';
+                return;
+            }
+
+            if (avisoDigite) avisoDigite.style.display = 'none';
+
             var visiveis = 0;
+            var tNum = parseInt(termoDigitos, 10);
+            var itensCorrespondentes = [];
+
             items.forEach(function(item) {
-                var search = item.getAttribute('data-search') || '';
-                if (!termo || search.indexOf(termo) !== -1) {
-                    item.style.display = 'flex';
-                    visiveis++;
+                var prefDigitos = String(item.getAttribute('data-prefixo-digitos') || '').replace(/\D/g, '');
+                if (!prefDigitos) return;
+                var pNum = parseInt(prefDigitos, 10);
+
+                var score = 999999;
+                // 1. Igualdade exata nos números do prefixo
+                if (prefDigitos === termoDigitos) {
+                    score = 0;
+                }
+                // 2. Prefixo começa com os números digitados (ex: digitou 10 -> prefixo 1001, 1023...)
+                else if (prefDigitos.indexOf(termoDigitos) === 0) {
+                    score = 10 + (prefDigitos.length - termoDigitos.length);
+                }
+                // 3. Prefixo contém os números digitados em outra posição
+                else if (prefDigitos.indexOf(termoDigitos) > 0) {
+                    score = 100 + prefDigitos.indexOf(termoDigitos);
+                }
+
+                // O veículo SÓ é exibido se contiver os números do prefixo pesquisado
+                if (score < 999999) {
+                    itensCorrespondentes.push({
+                        elem: item,
+                        score: score,
+                        pNum: !isNaN(pNum) ? pNum : 0
+                    });
                 } else {
                     item.style.display = 'none';
                 }
             });
-            var aviso = document.getElementById('aviso-veiculos-nenhum');
-            if (aviso) {
-                aviso.style.display = (visiveis === 0) ? 'block' : 'none';
+
+            // Ordena os itens pelos números de prefixo mais próximos e depois em ordem numérica
+            itensCorrespondentes.sort(function(a, b) {
+                if (a.score !== b.score) return a.score - b.score;
+                return a.pNum - b.pNum;
+            });
+
+            var containerLista = document.getElementById('lista-veiculos-modal');
+            var primeiroVisivel = null;
+
+            itensCorrespondentes.forEach(function(obj, idx) {
+                obj.elem.style.display = 'flex';
+                if (containerLista) {
+                    containerLista.appendChild(obj.elem);
+                }
+                visiveis++;
+                if (idx === 0) {
+                    primeiroVisivel = obj.elem;
+                }
+            });
+
+            if (avisoNenhum) {
+                if (visiveis === 0) {
+                    avisoNenhum.innerHTML = 'Nenhum veículo encontrado com os números "<strong>' + escapeHtml(termoDigitos) + '</strong>" no prefixo.';
+                    avisoNenhum.style.display = 'block';
+                    veiculoCandidatoSelecionado = null;
+                } else {
+                    avisoNenhum.style.display = 'none';
+                }
+            }
+
+            // Seleciona automaticamente o veículo de prefixo mais próximo para salvar diretamente ao apertar Enter
+            if (primeiroVisivel) {
+                selecionarVeiculoCandidato(primeiroVisivel);
             }
         }
 
-        function atualizarItemVeiculoVisual(chk) {
-            var item = chk.closest('.item-veiculo-modal');
-            if (!item) return;
-            var badge = item.querySelector('.badge-veiculo-checked');
-            if (chk.checked) {
-                item.style.borderColor = '#2563eb';
-                item.style.background = '#f0f7ff';
-                if (badge) badge.style.display = 'inline-block';
-            } else {
-                item.style.borderColor = '#e2e8f0';
-                item.style.background = '#ffffff';
-                if (badge) badge.style.display = 'none';
+        function formatarNumeroVeiculo(val) {
+            if (!val) return '';
+            var s = String(val).trim();
+            var limpo = s.replace(/^prefixo[:\s-]*/i, '').trim();
+            return limpo !== '' ? limpo : s;
+        }
+
+        function selecionarVeiculoCandidato(elem) {
+            if (!elem) return;
+            var id = elem.getAttribute('data-id');
+            var prefixo = elem.getAttribute('data-prefixo');
+            var placa = elem.getAttribute('data-placa');
+
+            veiculoCandidatoSelecionado = {
+                id: id,
+                prefixo: prefixo,
+                placa: placa
+            };
+
+            // Remove destaque de seleção dos outros itens que não estão na fila
+            document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal').forEach(function(item) {
+                var itemId = String(item.getAttribute('data-id'));
+                var estaNaFila = veiculosTempModal.some(function(v) { return String(v.id) === itemId; });
+                if (!estaNaFila) {
+                    item.style.borderColor = '#e2e8f0';
+                    item.style.background = '#ffffff';
+                }
+            });
+
+            var radio = elem.querySelector('.radio-veiculo-modal');
+            if (radio) {
+                radio.checked = true;
             }
+            elem.style.borderColor = '#2563eb';
+            elem.style.background = '#eff6ff';
+
+            var numFmt = formatarNumeroVeiculo(prefixo);
+            var info = document.getElementById('info-veiculo-escolhido');
+            if (info) {
+                info.innerHTML = 'Veículo selecionado: <strong style="color: #1e3a8a;">' + escapeHtml(numFmt) + '</strong>' + (placa ? ' (' + escapeHtml(placa) + ')' : '') + '. Clique em <strong>Salvar Veículo</strong>.';
+            }
+        }
+
+        function registrarVeiculoEscolhidoModal() {
+            if (!veiculoCandidatoSelecionado || !veiculoCandidatoSelecionado.id) {
+                var checkedRadio = document.querySelector('#lista-veiculos-modal .radio-veiculo-modal:checked');
+                if (checkedRadio) {
+                    veiculoCandidatoSelecionado = {
+                        id: checkedRadio.value,
+                        prefixo: checkedRadio.getAttribute('data-prefixo') || checkedRadio.value,
+                        placa: checkedRadio.getAttribute('data-placa') || ''
+                    };
+                } else {
+                    alert('Por favor, digite os números do prefixo do veículo antes de salvar.');
+                    return;
+                }
+            }
+            adicionarVeiculoNaFilaTemp(veiculoCandidatoSelecionado);
+        }
+
+        // Salva diretamente o item clicado para os veículos registrados
+        function salvarVeiculoItemDireto(btnOrElem) {
+            if (!btnOrElem) return;
+            var item = (btnOrElem.classList && btnOrElem.classList.contains('item-veiculo-modal')) ? btnOrElem : btnOrElem.closest('.item-veiculo-modal');
+            if (!item) return;
+            var cand = {
+                id: item.getAttribute('data-id'),
+                prefixo: item.getAttribute('data-prefixo'),
+                placa: item.getAttribute('data-placa')
+            };
+            adicionarVeiculoNaFilaTemp(cand);
+        }
+
+        // Adiciona à fila de conferência no modal SEM salvar no banco/sessão
+        function adicionarVeiculoNaFilaTemp(veiculo) {
+            if (!veiculo || !veiculo.id) return;
+            var numFmt = formatarNumeroVeiculo(veiculo.prefixo);
+
+            // Verificar se o veículo já está na fila temporária
+            var jaExiste = veiculosTempModal.some(function(v) {
+                return String(v.id) === String(veiculo.id);
+            });
+
+            if (jaExiste) {
+                showToastNotification('⚠️ O veículo ' + numFmt + ' já está registrado na fila!', 2500);
+                return;
+            }
+
+            // Registra na fila temporária (NÃO salva na contagem ainda)
+            veiculosTempModal.push({
+                id: String(veiculo.id),
+                prefixo: String(veiculo.prefixo),
+                placa: String(veiculo.placa || '')
+            });
+
+            // Atualiza a visualização da fila
+            atualizarPainelLateralSelecionados();
             atualizarContadorModal();
+            sincronizarStatusVeiculosModal();
+
+            // Notifica e chama a atenção para o botão de confirmação "Sim, Salvar" no quadrado de veículos registrados
+            showToastNotification('✓ Veículo ' + numFmt + ' adicionado à fila! Clique em "Sim, Salvar" ao lado.', 2800);
+            destacarBoxConfirmacao();
+
+            // Limpa o termo de busca para a próxima pesquisa
+            var inputBusca = document.getElementById('inputBuscaVeiculoModal');
+            if (inputBusca) {
+                inputBusca.value = '';
+                filtrarVeiculosModal('');
+                setTimeout(function() { inputBusca.focus(); }, 100);
+            }
+            veiculoCandidatoSelecionado = null;
+            var info = document.getElementById('info-veiculo-escolhido');
+            if (info) {
+                info.innerHTML = 'Veículo <strong style="color: #1e3a8a;">' + escapeHtml(numFmt) + '</strong> adicionado à fila. Salve em "Sim, Salvar" ou pesquise mais.';
+            }
+        }
+
+        // Destaca suavemente a caixa de confirmação abaixo dos veículos registrados
+        function destacarBoxConfirmacao() {
+            var box = document.getElementById('box-confirmar-salvar-veiculos');
+            if (box) {
+                box.style.transition = 'all 0.3s ease';
+                box.style.background = '#eff6ff';
+                box.style.borderTopColor = '#2563eb';
+                box.style.transform = 'scale(1.02)';
+                setTimeout(function() {
+                    box.style.background = '#ffffff';
+                    box.style.borderTopColor = '#bfdbfe';
+                    box.style.transform = 'scale(1)';
+                }, 500);
+            }
+        }
+
+        // CONFIRMAÇÃO: Salva os veículos registrados de forma definitiva (apenas quando clica em 'Sim, Salvar')
+        function salvarVeiculosRegistradosModal() {
+            if (veiculosTempModal.length === 0) {
+                if (!confirm('Nenhum veículo está registrado na fila. Deseja realmente salvar a contagem sem nenhum veículo informado?')) {
+                    return;
+                }
+            }
+
+            // EFETIVA O SALVAMENTO OFICIAL: transfere da fila temporária para o estado ativo
+            veiculosSelecionadosState = JSON.parse(JSON.stringify(veiculosTempModal));
+
+            // Atualiza os chips e inputs na tela principal
+            renderVeiculosChips();
+            atualizarInputsVeiculos();
+
+            // Se for sessão de contagem em andamento, persiste no banco de dados via AJAX
+            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
+                persistirVeiculosSessaoAtiva();
+            }
+
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
+
+            closeModalVeiculos();
+            showToastNotification('✓ ' + veiculosSelecionadosState.length + ' veículo(s) salvo(s) com sucesso!', 3000);
+        }
+
+        // CANCELAMENTO: Descarta as adições sem salvar
+        function cancelarSalvarVeiculosModal() {
+            var houveAlteracao = JSON.stringify(veiculosTempModal) !== JSON.stringify(veiculosSelecionadosState);
+            if (houveAlteracao) {
+                if (!confirm('Deseja realmente cancelar? Os veículos registrados nesta janela que ainda não foram salvos serão descartados.')) {
+                    return;
+                }
+            }
+            veiculosTempModal = JSON.parse(JSON.stringify(veiculosSelecionadosState));
+            closeModalVeiculos();
+            showToastNotification('Operação cancelada. Nenhuma alteração foi salva.', 2500);
+        }
+
+        // Remove um veículo da fila temporária antes de salvar
+        function removerVeiculoTempModal(id) {
+            veiculosTempModal = veiculosTempModal.filter(function(v) {
+                return String(v.id) !== String(id);
+            });
+            atualizarPainelLateralSelecionados();
+            atualizarContadorModal();
+            sincronizarStatusVeiculosModal();
+        }
+
+        // Limpa todos os veículos da fila temporária
+        function limparFilaVeiculosTempModal() {
+            if (veiculosTempModal.length === 0) return;
+            if (confirm('Deseja limpar todos os veículos registrados da lista?')) {
+                veiculosTempModal = [];
+                atualizarPainelLateralSelecionados();
+                atualizarContadorModal();
+                sincronizarStatusVeiculosModal();
+                showToastNotification('Fila temporária limpa.', 2000);
+            }
+        }
+
+        function persistirVeiculosSessaoAtiva() {
+            if (typeof activeContagemId === 'undefined' || activeContagemId <= 0) return;
+            const ids = veiculosSelecionadosState.map(function(v) { return v.id; }).join(',');
+            const formData = new FormData();
+            formData.append('action', 'atualizar_veiculos_sessao');
+            formData.append('idContagem', activeContagemId);
+            formData.append('veiculosSelecionados', ids);
+            formData.append('ajax', '1');
+
+            fetch('index.php', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    renderGridOnibusSessao(data.veiculos || []);
+                }
+            })
+            .catch(err => console.error('Erro ao persistir veículos da contagem:', err));
+        }
+
+        function sincronizarStatusVeiculosModal() {
+            var idsTemp = veiculosTempModal.map(function(v) { return String(v.id); });
+            document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal').forEach(function(item) {
+                var id = String(item.getAttribute('data-id'));
+                var badge = item.querySelector('.badge-veiculo-checked');
+                var radio = item.querySelector('.radio-veiculo-modal');
+                var btnSalvar = item.querySelector('.btn-salvar-item-modal');
+                if (idsTemp.indexOf(id) !== -1) {
+                    if (badge) badge.style.display = 'inline-block';
+                    if (btnSalvar) btnSalvar.style.display = 'none';
+                    if (radio) {
+                        radio.checked = true;
+                    }
+                    item.style.borderColor = '#86efac';
+                    item.style.background = '#f0fdf4';
+                } else {
+                    if (badge) badge.style.display = 'none';
+                    if (btnSalvar) btnSalvar.style.display = 'inline-flex';
+                    if (radio) {
+                        radio.checked = false;
+                    }
+                    item.style.borderColor = '#e2e8f0';
+                    item.style.background = '#ffffff';
+                }
+            });
         }
 
         function atualizarContadorModal() {
-            var checked = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal:checked');
             var txt = document.getElementById('txt-modal-veiculos-selecionados');
             if (txt) {
-                txt.textContent = checked.length + ' veículo(s) selecionado(s)';
+                txt.textContent = veiculosTempModal.length + ' registrado(s)';
             }
-            atualizarPainelLateralSelecionados();
+            var badgeLateral = document.getElementById('badge-lateral-qtd');
+            if (badgeLateral) {
+                badgeLateral.textContent = veiculosTempModal.length;
+            }
+            var subtitulo = document.getElementById('subtitulo-confirmar-salvar');
+            var btnSim = document.getElementById('btn-confirmar-salvar-modal');
+            if (subtitulo && btnSim) {
+                if (veiculosTempModal.length > 0) {
+                    subtitulo.innerHTML = '<strong>' + veiculosTempModal.length + ' veículo(s)</strong> pronto(s) para salvar';
+                    btnSim.style.opacity = '1';
+                } else {
+                    subtitulo.textContent = 'Pesquise e registre os veículos antes de salvar';
+                    btnSim.style.opacity = '0.7';
+                }
+            }
         }
 
         function atualizarPainelLateralSelecionados() {
-            var checked = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal:checked');
             var container = document.getElementById('lista-veiculos-selecionados-lateral');
             var badgeQtd = document.getElementById('badge-lateral-qtd');
-            if (badgeQtd) badgeQtd.textContent = checked.length;
+            if (badgeQtd) badgeQtd.textContent = veiculosTempModal.length;
             if (!container) return;
 
-            if (checked.length === 0) {
-                container.innerHTML = '<div id="vazio-lateral-hint" style="text-align: center; padding: 40px 15px; color: #94a3b8; font-size: 0.84rem;">' +
+            if (veiculosTempModal.length === 0) {
+                container.innerHTML = '<div id="vazio-lateral-hint" style="text-align: center; padding: 35px 15px; color: #94a3b8; font-size: 0.84rem;">' +
                     '<div style="font-size: 2.2rem; margin-bottom: 8px; opacity: 0.6;">📋</div>' +
-                    '<strong style="color: #64748b;">Nenhum veículo selecionado</strong>' +
-                    '<p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">Marque os veículos na lista de pesquisa ao lado para visualizá-los reunidos aqui.</p>' +
+                    '<strong style="color: #64748b;">Nenhum veículo registrado</strong>' +
+                    '<p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">Pesquise o veículo e clique em "Salvar Veículo" para adicioná-lo à fila aqui.</p>' +
                     '</div>';
                 return;
             }
 
             var html = '';
-            checked.forEach(function(chk) {
-                var id = chk.value;
-                var prefixo = chk.getAttribute('data-prefixo') || id;
-                var placa = chk.getAttribute('data-placa') || '';
+            veiculosTempModal.forEach(function(v) {
+                var id = v.id;
+                var prefixo = v.prefixo || id;
+                var numFmt = formatarNumeroVeiculo(prefixo);
+                var placa = v.placa || '';
 
                 html += '<div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; background: #ffffff; border: 1.5px solid #bfdbfe; border-left: 4px solid #2563eb; border-radius: 8px; box-shadow: 0 1px 3px rgba(37,99,235,0.06); transition: all 0.15s;">';
                 html += '  <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">';
                 html += '    <span style="font-size: 1.1rem; line-height: 1;">🚌</span>';
                 html += '    <div style="min-width: 0;">';
-                html += '      <div style="font-weight: 700; font-size: 0.88rem; color: #1e3a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Prefixo: ' + escapeHtml(prefixo) + '</div>';
+                html += '      <div style="font-weight: 700; font-size: 0.88rem; color: #1e3a8a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + escapeHtml(numFmt) + '</div>';
                 if (placa) {
                     html += '  <div style="font-size: 0.75rem; color: #64748b;">Placa: ' + escapeHtml(placa) + '</div>';
                 }
                 html += '    </div>';
                 html += '  </div>';
-                html += '  <button type="button" onclick="desmarcarVeiculoPeloId(\'' + escapeHtml(id) + '\')" title="Desmarcar este veículo" style="background: none; border: none; color: #94a3b8; font-size: 1.3rem; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: 4px; transition: color 0.15s;" onmouseover="this.style.color=\'#dc2626\'" onmouseout="this.style.color=\'#94a3b8\'">&times;</button>';
+                html += '  <button type="button" onclick="removerVeiculoTempModal(\'' + escapeHtml(id) + '\')" title="Remover da fila" style="background: none; border: none; color: #94a3b8; font-size: 1.3rem; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: 4px; transition: color 0.15s;" onmouseover="this.style.color=\'#dc2626\'" onmouseout="this.style.color=\'#94a3b8\'">&times;</button>';
                 html += '</div>';
             });
 
             container.innerHTML = html;
         }
 
-        function desmarcarVeiculoPeloId(id) {
-            var chk = document.querySelector('#lista-veiculos-modal .chk-veiculo-modal[value="' + id + '"]');
-            if (chk) {
-                chk.checked = false;
-                atualizarItemVeiculoVisual(chk);
-            }
-        }
-
         function desmarcarTodosVeiculosModal() {
-            var chks = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal');
-            chks.forEach(function(c) {
-                c.checked = false;
-                atualizarItemVeiculoVisual(c);
-            });
-        }
-
-        function sincronizarCheckboxesModal() {
-            var chks = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal');
-            var idsSelecionados = veiculosSelecionadosState.map(function(v) { return String(v.id); });
-            chks.forEach(function(c) {
-                c.checked = (idsSelecionados.indexOf(String(c.value)) !== -1);
-                atualizarItemVeiculoVisual(c);
-            });
+            veiculosSelecionadosState = [];
+            veiculosTempModal = [];
+            renderVeiculosChips();
+            atualizarInputsVeiculos();
+            atualizarPainelLateralSelecionados();
             atualizarContadorModal();
-        }
-
-        function confirmarSelecaoVeiculosModal() {
-            var chks = document.querySelectorAll('#lista-veiculos-modal .chk-veiculo-modal:checked');
-            var novos = [];
-            chks.forEach(function(c) {
-                novos.push({
-                    id: c.value,
-                    prefixo: c.getAttribute('data-prefixo') || c.value,
-                    placa: c.getAttribute('data-placa') || ''
-                });
-            });
-            veiculosSelecionadosState = novos;
-
-            // Se estiver em uma sessão de contagem ativa, salva imediatamente no banco via AJAX
+            sincronizarStatusVeiculosModal();
             if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
-                const ids = novos.map(function(v) { return v.id; }).join(',');
-                const formData = new FormData();
-                formData.append('action', 'atualizar_veiculos_sessao');
-                formData.append('idContagem', activeContagemId);
-                formData.append('veiculosSelecionados', ids);
-                formData.append('ajax', '1');
-
-                fetch('index.php', {
-                    method: 'POST',
-                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                    body: formData
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        renderGridOnibusSessao(data.veiculos || []);
-                        showToastNotification('✓ ' + data.message);
-                    } else {
-                        alert(data.message || 'Erro ao atualizar veículos da contagem.');
-                    }
-                })
-                .catch(err => console.error('Erro ao atualizar veículos:', err));
-            } else {
-                renderVeiculosChips();
-                atualizarInputsVeiculos();
-                if (typeof atualizarBotaoIniciar === 'function') {
-                    atualizarBotaoIniciar();
-                }
+                persistirVeiculosSessaoAtiva();
             }
-
-            closeModalVeiculos();
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
+            showToastNotification('Lista de veículos selecionados limpa.', 2000);
         }
 
         // Abre o modal para gerenciar os veículos selecionados da sessão ativa
@@ -4925,31 +5585,372 @@ if ($canViewSolicitacoes) {
             openModalVeiculos();
         }
 
+        // Busca os veículos com prefixos mais próximos do termo digitado (EXCLUSIVAMENTE números do prefixo)
+        function buscarPrefixosMaisProximos(termo, limite) {
+            if (!limite) limite = 10;
+            const frota = window.frotaVeiculosDisponiveis || [];
+            const tDigits = String(termo || '').replace(/\D/g, '');
+
+            if (!tDigits) return [];
+
+            const idsRegistrados = [];
+            document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus').forEach(btn => {
+                const id = parseInt(btn.getAttribute('data-id-veiculo'));
+                if (id) idsRegistrados.push(id);
+            });
+
+            const resultados = [];
+
+            frota.forEach(v => {
+                const pDigits = String(v.prefixo || '').replace(/\D/g, '');
+                if (!pDigits) return;
+
+                let score = 999999;
+
+                // 1. Igualdade exata nos números do prefixo
+                if (pDigits === tDigits) {
+                    score = 0;
+                }
+                // 2. Prefixo começa com os números digitados (ex: digitou 10 -> prefixo 1001, 1023...)
+                else if (pDigits.indexOf(tDigits) === 0) {
+                    score = 10 + (pDigits.length - tDigits.length);
+                }
+                // 3. Prefixo contém a sequência de números digitada
+                else if (pDigits.indexOf(tDigits) > 0) {
+                    score = 100 + pDigits.indexOf(tDigits);
+                }
+
+                // SÓ inclui se contiver os dígitos do prefixo pesquisado
+                if (score < 999999) {
+                    const pNum = parseInt(pDigits, 10);
+                    resultados.push({
+                        veiculo: v,
+                        score: score,
+                        pNum: !isNaN(pNum) ? pNum : 0,
+                        jaRegistrado: idsRegistrados.includes(parseInt(v.idVeiculo))
+                    });
+                }
+            });
+
+            resultados.sort((a, b) => {
+                if (a.score !== b.score) return a.score - b.score;
+                return a.pNum - b.pNum;
+            });
+
+            return resultados.slice(0, limite).map(r => ({
+                idVeiculo: r.veiculo.idVeiculo,
+                prefixo: r.veiculo.prefixo,
+                placa: r.veiculo.placa,
+                jaRegistrado: r.jaRegistrado
+            }));
+        }
+
+        // Inicializa interatividade do browser de busca de ônibus
+        function inicializarBrowserOnibusPainel() {
+            const input = document.getElementById('input-busca-onibus-painel');
+            const dropdown = document.getElementById('dropdown-sugestoes-onibus-painel');
+            if (!input) return;
+
+            let sugestoesAtuais = [];
+            let indiceSelecionado = -1;
+
+            function fecharDropdown() {
+                if (dropdown) {
+                    dropdown.style.display = 'none';
+                    dropdown.innerHTML = '';
+                }
+                indiceSelecionado = -1;
+            }
+
+            function atualizarDestaqueSugestao(novoIdx) {
+                if (!dropdown) return;
+                indiceSelecionado = novoIdx;
+                const itens = dropdown.querySelectorAll('.item-sugestao-painel');
+                itens.forEach((el, idx) => {
+                    if (idx === indiceSelecionado) {
+                        el.style.background = '#eff6ff';
+                        el.scrollIntoView({ block: 'nearest' });
+                    } else {
+                        el.style.background = '#ffffff';
+                    }
+                });
+            }
+
+            function renderizarDropdown(termo) {
+                if (!dropdown) return;
+                const digitos = String(termo || '').replace(/\D/g, '');
+
+                if (!digitos) {
+                    fecharDropdown();
+                    return;
+                }
+
+                sugestoesAtuais = buscarPrefixosMaisProximos(digitos, 10);
+
+                if (sugestoesAtuais.length === 0) {
+                    dropdown.innerHTML = '<div style="padding: 12px 14px; color: #94a3b8; font-size: 0.84rem; text-align: center;">Nenhum ônibus com os números "' + escapeHtml(digitos) + '" no prefixo</div>';
+                    dropdown.style.display = 'block';
+                    indiceSelecionado = -1;
+                    return;
+                }
+
+                let html = '';
+                sugestoesAtuais.forEach((v, idx) => {
+                    const numFmt = formatarNumeroVeiculo(v.prefixo);
+                    const isSel = (idx === 0);
+                    html += '<div class="item-sugestao-painel" data-idx="' + idx + '" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f1f5f9; background: ' + (isSel ? '#eff6ff' : '#ffffff') + '; transition: background 0.15s;">' +
+                        '<div style="display: flex; align-items: center; gap: 9px;">' +
+                            '<span style="font-size: 1.1rem;">🚌</span>' +
+                            '<div>' +
+                                '<div style="font-weight: 700; font-size: 0.92rem; color: #1e3a8a;">' + escapeHtml(numFmt) + '</div>' +
+                                (v.placa ? '<div style="font-size: 0.74rem; color: #64748b;">Placa: ' + escapeHtml(v.placa) + '</div>' : '') +
+                            '</div>' +
+                        '</div>' +
+                        '<div style="display: flex; align-items: center; gap: 6px;">' +
+                            (v.jaRegistrado 
+                                ? '<span style="font-size: 0.72rem; font-weight: 700; color: #15803d; background: #dcfce7; padding: 2px 7px; border-radius: 4px;">Já registrado (Ativar)</span>'
+                                : '<span style="font-size: 0.72rem; font-weight: 700; color: #2563eb; background: #dbeafe; padding: 2px 7px; border-radius: 4px;">Registrar</span>') +
+                        '</div>' +
+                    '</div>';
+                });
+
+                dropdown.innerHTML = html;
+                dropdown.style.display = 'block';
+                indiceSelecionado = 0;
+
+                dropdown.querySelectorAll('.item-sugestao-painel').forEach(el => {
+                    el.addEventListener('mousedown', function(e) {
+                        e.preventDefault();
+                        const idx = parseInt(this.getAttribute('data-idx'));
+                        if (!isNaN(idx) && sugestoesAtuais[idx]) {
+                            adicionarOnibusDiretoContagem(sugestoesAtuais[idx]);
+                            fecharDropdown();
+                        }
+                    });
+                    el.addEventListener('mouseenter', function() {
+                        const idx = parseInt(this.getAttribute('data-idx'));
+                        atualizarDestaqueSugestao(idx);
+                    });
+                });
+            }
+
+            input.oninput = function() {
+                renderizarDropdown(this.value);
+            };
+
+            input.onkeydown = function(e) {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (sugestoesAtuais.length > 0) {
+                        const prox = (indiceSelecionado + 1) % sugestoesAtuais.length;
+                        atualizarDestaqueSugestao(prox);
+                    }
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    if (sugestoesAtuais.length > 0) {
+                        const ant = (indiceSelecionado - 1 + sugestoesAtuais.length) % sugestoesAtuais.length;
+                        atualizarDestaqueSugestao(ant);
+                    }
+                } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (indiceSelecionado >= 0 && sugestoesAtuais[indiceSelecionado]) {
+                        adicionarOnibusDiretoContagem(sugestoesAtuais[indiceSelecionado]);
+                        fecharDropdown();
+                    } else {
+                        executarAdicionarOnibusPainel();
+                    }
+                } else if (e.key === 'Escape') {
+                    fecharDropdown();
+                }
+            };
+
+            input.onblur = function() {
+                setTimeout(fecharDropdown, 250);
+            };
+        }
+
+        // Executa a busca e adição do veículo digitado no input ao pressionar Enter
+        function executarAdicionarOnibusPainel() {
+            const input = document.getElementById('input-busca-onibus-painel');
+            if (!input) return;
+            const termo = (input.value || '').trim();
+            const digitos = termo.replace(/\D/g, '');
+            if (!digitos) {
+                showToastNotification('⚠️ Digite apenas os números do prefixo do ônibus.');
+                input.focus();
+                return;
+            }
+
+            const maisProximos = buscarPrefixosMaisProximos(digitos, 1);
+            if (!maisProximos || maisProximos.length === 0) {
+                showToastNotification('⚠️ Nenhum ônibus encontrado com os números "' + digitos + '" no prefixo.');
+                input.focus();
+                return;
+            }
+
+            adicionarOnibusDiretoContagem(maisProximos[0]);
+        }
+
+        // Adiciona um veículo diretamente aos registros da contagem atual
+        function adicionarOnibusDiretoContagem(candidato) {
+            if (!candidato || !candidato.idVeiculo) return;
+            const novoId = parseInt(candidato.idVeiculo);
+
+            const input = document.getElementById('input-busca-onibus-painel');
+            if (input) {
+                input.value = '';
+            }
+
+            const idsAtuais = [];
+            let jaRegistrado = false;
+            document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus').forEach(btn => {
+                const id = parseInt(btn.getAttribute('data-id-veiculo'));
+                if (id) {
+                    if (!idsAtuais.includes(id)) idsAtuais.push(id);
+                    if (id === novoId) jaRegistrado = true;
+                }
+            });
+
+            if (jaRegistrado) {
+                selecionarOnibusContagem(novoId, candidato.prefixo);
+                showToastNotification('✓ Ônibus ' + formatarNumeroVeiculo(candidato.prefixo) + ' selecionado para a contagem!', 2000);
+                return;
+            }
+
+            idsAtuais.push(novoId);
+
+            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
+                const formData = new FormData();
+                formData.append('action', 'atualizar_veiculos_sessao');
+                formData.append('idContagem', activeContagemId);
+                formData.append('veiculosSelecionados', idsAtuais.join(','));
+                formData.append('ajax', '1');
+
+                fetch('index.php', {
+                    method: 'POST',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        renderGridOnibusSessao(data.veiculos || []);
+                        selecionarOnibusContagem(candidato.idVeiculo, candidato.prefixo);
+                        showToastNotification('✓ Ônibus ' + formatarNumeroVeiculo(candidato.prefixo) + ' registrado com sucesso!', 2500);
+                    } else {
+                        alert(data.message || 'Erro ao registrar ônibus.');
+                    }
+                })
+                .catch(err => {
+                    console.error('Erro ao adicionar veículo:', err);
+                    alert('Falha na comunicação ao registrar o ônibus.');
+                });
+            }
+        }
+
+        // Remove um veículo diretamente da grade de contagem
+        function removerOnibusDiretoContagem(idVeiculo, event) {
+            if (event) {
+                event.stopPropagation();
+                event.preventDefault();
+            }
+            idVeiculo = parseInt(idVeiculo);
+            if (!idVeiculo) return;
+
+            if (!confirm('Deseja remover este ônibus dos registros desta contagem?')) {
+                return;
+            }
+
+            const idsAtuais = [];
+            document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus').forEach(btn => {
+                const id = parseInt(btn.getAttribute('data-id-veiculo'));
+                if (id && id !== idVeiculo && !idsAtuais.includes(id)) {
+                    idsAtuais.push(id);
+                }
+            });
+
+            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
+                const formData = new FormData();
+                formData.append('action', 'atualizar_veiculos_sessao');
+                formData.append('idContagem', activeContagemId);
+                formData.append('veiculosSelecionados', idsAtuais.join(','));
+                formData.append('ajax', '1');
+
+                fetch('index.php', {
+                    method: 'POST',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        renderGridOnibusSessao(data.veiculos || []);
+                        if (data.veiculos && data.veiculos.length === 1) {
+                            selecionarOnibusContagem(data.veiculos[0].idVeiculo, data.veiculos[0].prefixo);
+                        } else if (!data.veiculos || data.veiculos.length === 0) {
+                            const editV = document.getElementById('editIdVeiculo');
+                            if (editV) editV.value = '';
+                            const destaqueBox = document.getElementById('destaque-selecao-ativa');
+                            const badgeV = document.getElementById('badge-veiculo-ativo-mini');
+                            if (destaqueBox) {
+                                destaqueBox.style.background = '#fff7ed';
+                                destaqueBox.style.borderColor = '#fed7aa';
+                                const spanLabel = destaqueBox.querySelector('span');
+                                if (spanLabel) spanLabel.style.color = '#c2410c';
+                            }
+                            if (badgeV) {
+                                badgeV.textContent = 'Nenhum veículo selecionado';
+                                badgeV.style.color = '#ea580c';
+                            }
+                        }
+                        showToastNotification('Ônibus removido dos registros da contagem.');
+                    }
+                })
+                .catch(err => console.error('Erro ao remover ônibus:', err));
+            }
+        }
+
         // Renderiza a grade de ônibus selecionados em tempo real na tela do contador
         function renderGridOnibusSessao(veiculos) {
             const grid = document.getElementById('grid-onibus-registrados');
             const badgeTotal = document.getElementById('badge-total-onibus-cadastrados');
             if (badgeTotal) {
-                badgeTotal.textContent = veiculos.length + ' selecionado(s)';
+                badgeTotal.textContent = veiculos.length + ' registrado(s)';
             }
             if (!grid) return;
 
             if (veiculos.length === 0) {
-                grid.innerHTML = '<div style="grid-column: 1 / -1; padding: 18px; text-align: center; color: #64748b; font-size: 0.88rem; background: #ffffff; border-radius: 10px; border: 1px dashed #cbd5e1;">Nenhum ônibus selecionado para esta sessão de contagem.</div>';
+                grid.innerHTML = '<div id="msg-sem-veiculos-painel" style="grid-column: 1 / -1; padding: 16px; text-align: center; color: #64748b; font-size: 0.85rem; background: #ffffff; border-radius: 8px; border: 1px dashed #cbd5e1;">Nenhum veículo registrado ainda. Digite o número do prefixo acima para registrar.</div>';
+                const editVeic = document.getElementById('editIdVeiculo');
+                if (editVeic) editVeic.value = '';
+                const destaqueBox = document.getElementById('destaque-selecao-ativa');
+                const badgeV = document.getElementById('badge-veiculo-ativo-mini');
+                if (destaqueBox) {
+                    destaqueBox.style.background = '#fff7ed';
+                    destaqueBox.style.borderColor = '#fed7aa';
+                    const spanLabel = destaqueBox.querySelector('span');
+                    if (spanLabel) spanLabel.style.color = '#c2410c';
+                }
+                if (badgeV) {
+                    badgeV.textContent = 'Nenhum veículo selecionado';
+                    badgeV.style.color = '#ea580c';
+                }
                 return;
             }
 
             const editVeic = document.getElementById('editIdVeiculo');
             const idAtivoAtual = editVeic ? parseInt(editVeic.value) : 0;
+            const temMultiplos = (veiculos.length > 1);
             let temAtivo = false;
 
             let html = '';
             veiculos.forEach(v => {
-                const isAtivo = (idAtivoAtual && parseInt(v.idVeiculo) === idAtivoAtual);
+                const isAtivo = (idAtivoAtual > 0 && parseInt(v.idVeiculo) === idAtivoAtual);
                 if (isAtivo) temAtivo = true;
+                const numFmt = escapeHtml(formatarNumeroVeiculo(v.prefixo));
                 const pref = escapeHtml(v.prefixo);
                 const plc = v.placa ? escapeHtml(v.placa) : '';
-                const searchData = (v.prefixo + ' ' + (v.placa || '')).toLowerCase();
+                const searchData = (v.prefixo + ' ' + numFmt + ' ' + (v.placa || '')).toLowerCase();
 
                 html += '<button type="button" ' +
                     'class="btn-opcao-onibus ' + (isAtivo ? 'onibus-ativo' : '') + '" ' +
@@ -4962,124 +5963,123 @@ if ($canViewSolicitacoes) {
                     'style="display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 2px solid ' + (isAtivo ? '#2563eb' : '#cbd5e1') + '; background: ' + (isAtivo ? '#eff6ff' : '#ffffff') + '; cursor: pointer; text-align: left; transition: all 0.2s; position: relative;">' +
                     '<div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 3px;">' +
                         '<span style="font-weight: 800; font-size: 0.95rem; color: ' + (isAtivo ? '#1d4ed8' : '#0f172a') + ';">' +
-                            '🚌 ' + pref +
+                            '🚌 ' + numFmt +
                         '</span>' +
-                        '<span class="badge-onibus-status" style="font-size: 0.68rem; font-weight: 800; color: #16a34a; background: #dcfce7; padding: 2px 6px; border-radius: 4px; display: ' + (isAtivo ? 'inline-block' : 'none') + ';">' +
-                            '✓ ATIVO' +
-                        '</span>' +
+                        '<div style="display: flex; align-items: center; gap: 4px;">' +
+                            '<span class="badge-onibus-status" style="font-size: 0.68rem; font-weight: 800; color: #16a34a; background: #dcfce7; padding: 2px 6px; border-radius: 4px; display: ' + (isAtivo ? 'inline-block' : 'none') + ';">' +
+                                '✓ ATIVO' +
+                            '</span>' +
+                            '<span onclick="removerOnibusDiretoContagem(' + v.idVeiculo + ', event)" title="Remover da contagem" style="font-size: 1.15rem; line-height: 1; color: #94a3b8; padding: 0 4px; border-radius: 4px; cursor: pointer; transition: color 0.15s;" onmouseover="this.style.color=\'#dc2626\'" onmouseout="this.style.color=\'#94a3b8\'">&times;</span>' +
+                        '</div>' +
                     '</div>' +
                     (plc ? '<div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">Placa: ' + plc + '</div>' : '') +
                 '</button>';
             });
+
             grid.innerHTML = html;
 
-            if (!temAtivo && veiculos.length > 0) {
-                selecionarOnibusContagem(veiculos[0].idVeiculo, veiculos[0].prefixo);
-            }
-        }
+            const destaqueBox = document.getElementById('destaque-selecao-ativa');
+            const badgeV = document.getElementById('badge-veiculo-ativo-mini');
 
-        // Permite cadastrar um novo prefixo na frota pelo próprio modal e já marcá-lo como selecionado
-        function cadastrarNovoVeiculoModalInline() {
-            const inputBusca = document.getElementById('inputBuscaVeiculoModal');
-            let sugestao = inputBusca ? inputBusca.value.trim() : '';
-            const prefixo = prompt('Digite o Prefixo do novo ônibus a registrar na frota:', sugestao);
-            if (!prefixo || !prefixo.trim()) return;
-
-            const placa = prompt('Digite a Placa do veículo (opcional):', '') || '';
-
-            const formData = new FormData();
-            formData.append('action', 'cadastrar_veiculo_frota_rapido');
-            formData.append('prefixo', prefixo.trim());
-            formData.append('placa', placa.trim());
-            formData.append('ajax', '1');
-
-            fetch('index.php', {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    // Verifica se já existia na lista
-                    let chkExistente = document.querySelector('#lista-veiculos-modal .chk-veiculo-modal[value="' + data.idVeiculo + '"]');
-                    if (!chkExistente) {
-                        const lista = document.getElementById('lista-veiculos-modal');
-                        if (lista) {
-                            const lbl = document.createElement('label');
-                            lbl.className = 'item-veiculo-modal';
-                            lbl.setAttribute('data-id', data.idVeiculo);
-                            lbl.setAttribute('data-prefixo', data.prefixo);
-                            lbl.setAttribute('data-placa', data.placa || '');
-                            lbl.setAttribute('data-search', (data.prefixo + ' ' + (data.placa || '')).toLowerCase());
-                            lbl.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1.5px solid #2563eb; border-radius: 10px; cursor: pointer; transition: all 0.15s; background: #eff6ff; user-select: none;';
-
-                            lbl.innerHTML = '<div style="display: flex; align-items: center; gap: 12px;">' +
-                                '<input type="checkbox" class="chk-veiculo-modal" value="' + data.idVeiculo + '" data-prefixo="' + escapeHtml(data.prefixo) + '" data-placa="' + escapeHtml(data.placa || '') + '" checked onchange="atualizarItemVeiculoVisual(this)" style="width: 19px; height: 19px; accent-color: #2563eb; cursor: pointer;">' +
-                                '<div>' +
-                                    '<div style="font-weight: 700; font-size: 0.92rem; color: #1e293b;">Prefixo: ' + escapeHtml(data.prefixo) + '</div>' +
-                                    (data.placa ? '<div style="font-size: 0.78rem; color: #64748b;">Placa: ' + escapeHtml(data.placa) + '</div>' : '') +
-                                '</div>' +
-                            '</div>' +
-                            '<span class="badge-veiculo-checked" style="font-size: 0.75rem; font-weight: 700; color: #2563eb; background: #eff6ff; padding: 3px 8px; border-radius: 6px; border: 1px solid #bfdbfe;">✓ Selecionado</span>';
-
-                            lista.prepend(lbl);
-                        }
-                    } else {
-                        chkExistente.checked = true;
-                        atualizarItemVeiculoVisual(chkExistente);
-                    }
-
-                    atualizarPainelLateralSelecionados();
-                    showToastNotification('✓ Ônibus ' + data.prefixo + ' registrado e marcado!');
-                } else {
-                    alert(data.message || 'Erro ao registrar veículo.');
+            if (veiculos.length === 1) {
+                // Apenas quando tiver 1 veículo registrado ele fica ativo imediatamente
+                if (!temAtivo) {
+                    selecionarOnibusContagem(veiculos[0].idVeiculo, veiculos[0].prefixo);
                 }
-            })
-            .catch(err => console.error('Erro ao registrar novo veículo:', err));
+            } else if (temMultiplos && !temAtivo) {
+                // Caso tenha mais de 1 veículo e nenhum ativo no momento, garante que nenhum fica ativo
+                if (editVeic) editVeic.value = '';
+                if (destaqueBox) {
+                    destaqueBox.style.background = '#fff7ed';
+                    destaqueBox.style.borderColor = '#fed7aa';
+                    const spanLabel = destaqueBox.querySelector('span');
+                    if (spanLabel) spanLabel.style.color = '#c2410c';
+                }
+                if (badgeV) {
+                    badgeV.textContent = 'Nenhum ativo (clique em um ônibus abaixo)';
+                    badgeV.style.color = '#ea580c';
+                }
+            }
         }
 
         function removerVeiculoSelecionado(id) {
             veiculosSelecionadosState = veiculosSelecionadosState.filter(function(v) {
                 return String(v.id) !== String(id);
             });
+            veiculosTempModal = JSON.parse(JSON.stringify(veiculosSelecionadosState));
             renderVeiculosChips();
             atualizarInputsVeiculos();
+            atualizarPainelLateralSelecionados();
+            atualizarContadorModal();
+            sincronizarStatusVeiculosModal();
+            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
+                persistirVeiculosSessaoAtiva();
+            }
             if (typeof atualizarBotaoIniciar === 'function') {
                 atualizarBotaoIniciar();
+            }
+        }
+
+        function limparVeiculosSalvosMain() {
+            if (confirm('Deseja remover todos os veículos selecionados desta contagem?')) {
+                veiculosSelecionadosState = [];
+                veiculosTempModal = [];
+                renderVeiculosChips();
+                atualizarInputsVeiculos();
+                atualizarPainelLateralSelecionados();
+                atualizarContadorModal();
+                sincronizarStatusVeiculosModal();
+                if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
+                    persistirVeiculosSessaoAtiva();
+                }
+                if (typeof atualizarBotaoIniciar === 'function') {
+                    atualizarBotaoIniciar();
+                }
+                showToastNotification('Veículos removidos.', 2000);
             }
         }
 
         function renderVeiculosChips() {
             var container = document.getElementById('container-veiculos-chips');
             var badgeTotal = document.getElementById('badge-contador-veiculos');
-            if (!container) return;
+            var boxMain = document.getElementById('box-confirmar-veiculos-main');
 
             if (badgeTotal) {
                 badgeTotal.textContent = veiculosSelecionadosState.length + ' selecionado(s)';
             }
 
+            if (!container) return;
+
             if (veiculosSelecionadosState.length === 0) {
                 container.innerHTML = '<span id="txt-sem-veiculo-hint" style="font-size: 0.82rem; color: #94a3b8; font-style: italic;">Nenhum veículo selecionado ainda. Clique no botão acima para escolher os veículos para a contagem.</span>';
+                if (boxMain) boxMain.style.display = 'none';
                 return;
             }
 
             var html = '';
             veiculosSelecionadosState.forEach(function(v) {
+                var numFmt = formatarNumeroVeiculo(v.prefixo);
                 html += '<span style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #eff6ff; border: 1.5px solid #bfdbfe; border-radius: 9999px; font-size: 0.84rem; font-weight: 700; color: #1d4ed8; box-shadow: 0 1px 2px rgba(37,99,235,0.1);">';
-                html += '🚌 Prefixo: ' + escapeHtml(v.prefixo);
+                html += '🚌 ' + escapeHtml(numFmt);
                 if (v.placa) html += ' <span style="font-weight: 500; font-size: 0.76rem; color: #64748b;">(' + escapeHtml(v.placa) + ')</span>';
                 html += '<button type="button" onclick="removerVeiculoSelecionado(\'' + escapeHtml(v.id) + '\')" title="Remover" style="background: none; border: none; color: #94a3b8; cursor: pointer; padding: 0 0 0 4px; font-size: 1.1rem; line-height: 1; display: inline-flex; align-items: center;">&times;</button>';
                 html += '</span>';
             });
             container.innerHTML = html;
+
+            if (boxMain) {
+                boxMain.style.display = 'flex';
+            }
         }
 
         function atualizarInputsVeiculos() {
             var inputId = document.getElementById('select_idVeiculo');
             var inputMulti = document.getElementById('input_veiculosSelecionados');
-            if (veiculosSelecionadosState.length > 0) {
+            if (veiculosSelecionadosState.length === 1) {
                 if (inputId) inputId.value = veiculosSelecionadosState[0].id;
+                if (inputMulti) inputMulti.value = veiculosSelecionadosState[0].id;
+            } else if (veiculosSelecionadosState.length > 1) {
+                if (inputId) inputId.value = ''; // Quando tiver mais de 1 veículo registrado, nenhum começa ativo
                 if (inputMulti) {
                     var ids = veiculosSelecionadosState.map(function(v) { return v.id; });
                     inputMulti.value = ids.join(',');
@@ -5148,54 +6148,94 @@ if ($canViewSolicitacoes) {
             };
         }
 
+        var popupTimerPendencias = null;
+
+        // Exibe popup no topo da tela com aviso de seleções obrigatórias pendentes
+        function exibirPopupSelecoesPendentes(status) {
+            var popup = document.getElementById('popup-selecoes-pendentes-topo');
+            if (!popup) return;
+
+            var primeiroElemento = null;
+
+            if (status.faltaLinha && !primeiroElemento) primeiroElemento = document.getElementById('select_idLinha');
+            if (status.faltaLocal && !primeiroElemento) primeiroElemento = document.getElementById('select_idLocal');
+            if (status.faltaVeiculo && !primeiroElemento) primeiroElemento = document.getElementById('veiculo-section-group');
+            if (status.faltaViagem && !primeiroElemento) primeiroElemento = document.getElementById('input_sentido');
+            if (status.faltaOperacao && !primeiroElemento) primeiroElemento = document.getElementById('input_tipoOperacao');
+            if (status.faltaContagem && !primeiroElemento) primeiroElemento = document.getElementById('input_tipoContagem');
+            if (status.faltaTempo && !primeiroElemento) primeiroElemento = document.getElementById('input_condicaoTempo');
+            if (status.faltaTransporte && !primeiroElemento) primeiroElemento = document.getElementById('input_tipoTransporte');
+
+            // Exibe o popup no topo da tela com transição suave
+            popup.style.display = 'block';
+            popup.style.opacity = '0';
+            popup.style.transform = 'translate(-50%, -20px)';
+            setTimeout(function() {
+                popup.style.transition = 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)';
+                popup.style.opacity = '1';
+                popup.style.transform = 'translate(-50%, 0)';
+            }, 10);
+
+            // Rola suavemente até o primeiro campo pendente e destaca visualmente
+            if (primeiroElemento) {
+                var elFoco = primeiroElemento.closest('.cb-searchable-container') || primeiroElemento.closest('.panel-card') || primeiroElemento;
+                elFoco.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                elFoco.style.transition = 'all 0.3s ease';
+                elFoco.style.boxShadow = '0 0 0 3px rgba(234, 88, 12, 0.4)';
+                setTimeout(function() {
+                    elFoco.style.boxShadow = '';
+                }, 2500);
+            }
+
+            // Fecha automaticamente após 8 segundos
+            if (popupTimerPendencias) clearTimeout(popupTimerPendencias);
+            popupTimerPendencias = setTimeout(function() {
+                fecharPopupSelecoesPendentes();
+            }, 8000);
+        }
+
+        // Fecha o popup de pendências no topo
+        function fecharPopupSelecoesPendentes() {
+            var popup = document.getElementById('popup-selecoes-pendentes-topo');
+            if (!popup || popup.style.display === 'none') return;
+            popup.style.transition = 'all 0.25s ease';
+            popup.style.opacity = '0';
+            popup.style.transform = 'translate(-50%, -20px)';
+            setTimeout(function() {
+                popup.style.display = 'none';
+            }, 250);
+            if (popupTimerPendencias) clearTimeout(popupTimerPendencias);
+        }
+
+        // Intercepta a tentativa de entrar no painel de contagem sem as seleções
+        function tentarEntrarPainelContagem(e) {
+            var status = checarStatusFormulario();
+            if (!status.valido) {
+                if (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                exibirPopupSelecoesPendentes(status);
+                return false;
+            }
+            fecharPopupSelecoesPendentes();
+            return true;
+        }
+
         function atualizarBotaoIniciar() {
             var btn = document.getElementById('btn-iniciar-contagem');
-            var statusBox = document.getElementById('status-validacao-contagem');
             if (!btn) return;
 
             var status = checarStatusFormulario();
 
+            // O botão permanece clicável para disparar o popup no topo caso o usuário tente entrar sem preencher tudo
+            btn.disabled = false;
             if (!status.valido) {
-                btn.disabled = true;
-                btn.classList.add('is-disabled');
-                btn.setAttribute('title', 'Complete todas as seleções obrigatórias para poder iniciar a contagem');
-
-                if (statusBox) {
-                    statusBox.style.display = 'block';
-                    statusBox.style.background = '#fff7ed';
-                    statusBox.style.borderColor = '#fed7aa';
-                    statusBox.style.color = '#c2410c';
-
-                    var pendencias = [];
-                    if (status.faltaLinha) pendencias.push('Linha');
-                    if (status.faltaLocal) pendencias.push('Local');
-                    if (status.faltaVeiculo) pendencias.push('Veículo (escolha ao menos um ou selecione "Não informado")');
-                    if (status.faltaViagem) pendencias.push('Viagem');
-                    if (status.faltaOperacao) pendencias.push('Tipo de Operação');
-                    if (status.faltaContagem) pendencias.push('Tipo de Contagem');
-                    if (status.faltaTempo) pendencias.push('Condição do Tempo');
-                    if (status.faltaTransporte) pendencias.push('Tipo de Transporte');
-
-                    statusBox.innerHTML = '<span style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;">' +
-                        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #ea580c; flex-shrink: 0;"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>' +
-                        '<span><strong>Seleções pendentes:</strong> Escolha <u>' + pendencias.join('</u>, <u>') + '</u> para iniciar.</span>' +
-                        '</span>';
-                }
+                btn.classList.add('is-pendente');
+                btn.removeAttribute('disabled');
             } else {
-                btn.disabled = false;
-                btn.classList.remove('is-disabled');
-                btn.removeAttribute('title');
-
-                if (statusBox) {
-                    statusBox.style.display = 'block';
-                    statusBox.style.background = '#f0fdf4';
-                    statusBox.style.borderColor = '#bbf7d0';
-                    statusBox.style.color = '#15803d';
-                    statusBox.innerHTML = '<span style="display: inline-flex; align-items: center; justify-content: center; gap: 8px;">' +
-                        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #16a34a; flex-shrink: 0;"><path d="M20 6 9 17l-5-5"></path></svg>' +
-                        '<span><strong>Tudo pronto!</strong> Todas as opções foram selecionadas. Clique em Iniciar Contagem para começar.</span>' +
-                        '</span>';
-                }
+                btn.classList.remove('is-pendente');
+                fecharPopupSelecoesPendentes();
             }
         }
 
@@ -5208,6 +6248,9 @@ if ($canViewSolicitacoes) {
                         closeModalVeiculos();
                     }
                 });
+            }
+            if (typeof inicializarBrowserOnibusPainel === 'function') {
+                inicializarBrowserOnibusPainel();
             }
         });
 
@@ -5966,49 +7009,16 @@ if ($canViewSolicitacoes) {
                 // Garantir todas as seleções obrigatórias sem nada escolhido
                 limparTodasSelecoesObrigatorias();
 
-                // Validação no submit (sem salvar seleções para a próxima contagem)
+                // Validação no submit: dispara o popup no topo se houver pendências
                 formInit.addEventListener('submit', function(e) {
                     var status = checarStatusFormulario();
                     if (!status.valido) {
                         e.preventDefault();
                         e.stopPropagation();
-
-                        if (status.faltaLinha) {
-                            var selL = document.getElementById('select_idLinha');
-                            var wrapL = selL ? selL.closest('.cb-searchable-container') : null;
-                            if (wrapL) {
-                                wrapL.classList.add('cb-has-error');
-                                wrapL.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                var inpL = wrapL.querySelector('.cb-searchable-input');
-                                if (inpL) inpL.focus();
-                            }
-                        } else if (status.faltaLocal) {
-                            var selLoc = document.getElementById('select_idLocal');
-                            var wrapLoc = selLoc ? selLoc.closest('.cb-searchable-container') : null;
-                            if (wrapLoc) {
-                                wrapLoc.classList.add('cb-has-error');
-                                wrapLoc.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                var inpLoc = wrapLoc.querySelector('.cb-searchable-input');
-                                if (inpLoc) inpLoc.focus();
-                            }
-                        } else if (status.faltaVeiculo) {
-                            var boxV = document.getElementById('veiculo-section-group');
-                            if (boxV) {
-                                boxV.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                boxV.style.outline = '2.5px solid #ef4444';
-                                boxV.style.outlineOffset = '4px';
-                                boxV.style.borderRadius = '12px';
-                                setTimeout(function() {
-                                    boxV.style.outline = '';
-                                    boxV.style.outlineOffset = '';
-                                }, 3000);
-                            }
-                            openModalVeiculos();
-                        }
-
-                        atualizarBotaoIniciar();
+                        exibirPopupSelecoesPendentes(status);
                         return false;
                     }
+                    fecharPopupSelecoesPendentes();
                 });
 
                 formInit.addEventListener('change', function() {

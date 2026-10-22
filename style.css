@@ -1742,6 +1742,10 @@ footer {
     background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
 }
 
+.btn-zero-count {
+    background: linear-gradient(135deg, #64748b 0%, #475569 100%) !important;
+}
+
 .btn-plus-10 {
     background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%) !important;
 }
@@ -1975,7 +1979,7 @@ table td:last-child {
         font-size: 3.8rem !important;
     }
     .counter-btn-grid {
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(4, 1fr);
         gap: 10px;
     }
     .btn-count {
@@ -2854,7 +2858,7 @@ button, .chip-btn, .tab-btn, .btn, .pg-btn, a {
     }
 
     .counter-btn-grid {
-        grid-template-columns: repeat(3, 1fr) !important;
+        grid-template-columns: repeat(4, 1fr) !important;
         gap: 8px !important;
     }
 
@@ -3234,8 +3238,8 @@ button, .chip-btn, .tab-btn, .btn, .pg-btn, a {
 
     /* 7. Botoeira Numérica */
     .counter-btn-grid {
-        grid-template-columns: repeat(3, 1fr) !important;
-        gap: 8px !important;
+        grid-template-columns: repeat(4, 1fr) !important;
+        gap: 6px !important;
     }
 
     .btn-count {

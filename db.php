@@ -5,21 +5,102 @@
 @ini_set('display_errors', '1');
 @ini_set('display_startup_errors', '1');
 
-$host    = '192.168.45.1';
-$db      = 'contaBuzu';
-$user    = 'root';
-$pass    = '';
-$charset = 'utf8mb4';
+// Carregador nativo de variáveis do arquivo .env (compatível com PHP 5.6+)
+if (!function_exists('carregarEnvContaBuzu')) {
+    function carregarEnvContaBuzu($caminhoEnv) {
+        if (!file_exists($caminhoEnv) || !is_readable($caminhoEnv)) {
+            return false;
+        }
+        $linhas = @file($caminhoEnv, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if ($linhas === false) return false;
+        foreach ($linhas as $linha) {
+            $linha = trim($linha);
+            if (empty($linha) || strpos($linha, '#') === 0 || strpos($linha, ';') === 0) {
+                continue;
+            }
+            if (strpos($linha, '=') !== false) {
+                list($chave, $valor) = explode('=', $linha, 2);
+                $chave = trim($chave);
+                $valor = trim($valor);
+                if (preg_match('/^(["\'])(.*)\1$/', $valor, $matches)) {
+                    $valor = $matches[2];
+                }
+                if (!empty($chave)) {
+                    putenv("{$chave}={$valor}");
+                    $_ENV[$chave] = $valor;
+                    $_SERVER[$chave] = $valor;
+                }
+            }
+        }
+        return true;
+    }
+}
 
-$dsn = "mysql:host=$host;dbname=$db;charset=$charset";
+// Carrega as credenciais a partir do arquivo .env local (se existir)
+carregarEnvContaBuzu(__DIR__ . '/.env');
+
+$charset = 'utf8mb4';
 $options = [
     PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES   => false,
 ];
 
+// Configurações de conexão: variáveis do .env ou ambiente
+$envHost = getenv('DB_HOST') ?: (isset($_ENV['DB_HOST']) ? $_ENV['DB_HOST'] : (isset($_SERVER['DB_HOST']) ? $_SERVER['DB_HOST'] : ''));
+$envName = getenv('DB_NAME') ?: (isset($_ENV['DB_NAME']) ? $_ENV['DB_NAME'] : (isset($_SERVER['DB_NAME']) ? $_SERVER['DB_NAME'] : 'contaBuzu'));
+$envUser = getenv('DB_USER') ?: (isset($_ENV['DB_USER']) ? $_ENV['DB_USER'] : (isset($_SERVER['DB_USER']) ? $_SERVER['DB_USER'] : 'root'));
+$envPass = getenv('DB_PASS') !== false ? getenv('DB_PASS') : (isset($_ENV['DB_PASS']) ? $_ENV['DB_PASS'] : (isset($_SERVER['DB_PASS']) ? $_SERVER['DB_PASS'] : ''));
+$envPort = getenv('DB_PORT') ?: (isset($_ENV['DB_PORT']) ? $_ENV['DB_PORT'] : (isset($_SERVER['DB_PORT']) ? $_SERVER['DB_PORT'] : '3306'));
+
+$dbConfigs = [];
+if (!empty($envHost)) {
+    $dbConfigs[] = [
+        'host' => $envHost,
+        'db'   => $envName,
+        'user' => $envUser,
+        'pass' => $envPass,
+        'port' => $envPort,
+    ];
+}
+
+// Fallbacks de conexão local padrão (sem credenciais sensíveis hardcoded)
+$dbConfigs[] = [
+    'host' => '127.0.0.1',
+    'db'   => $envName ?: 'contaBuzu',
+    'user' => $envUser ?: 'root',
+    'pass' => $envPass,
+    'port' => $envPort ?: '3306',
+];
+$dbConfigs[] = [
+    'host' => 'localhost',
+    'db'   => $envName ?: 'contaBuzu',
+    'user' => $envUser ?: 'root',
+    'pass' => $envPass,
+    'port' => $envPort ?: '3306',
+];
+
+$host = '127.0.0.1';
+$pdo = null;
+$lastException = null;
+
+foreach ($dbConfigs as $cfg) {
+    try {
+        $portStr = !empty($cfg['port']) ? ";port={$cfg['port']}" : '';
+        $dsn = "mysql:host={$cfg['host']}{$portStr};dbname={$cfg['db']};charset=$charset";
+        $opts = $options + [PDO::ATTR_TIMEOUT => 2];
+        $pdo = new PDO($dsn, $cfg['user'], $cfg['pass'], $opts);
+        $host = $cfg['host'];
+        break;
+    } catch (\PDOException $ex) {
+        $lastException = $ex;
+    }
+}
+
 try {
-    $pdo = new PDO($dsn, $user, $pass, $options);
+    if (!$pdo) {
+        throw $lastException ?: new \PDOException("Não foi possível estabelecer conexão com o banco de dados.");
+    }
     
     // Garantir que a coluna 'ativo' existe na tabela usuarios
     try {
@@ -105,18 +186,12 @@ try {
 
     // Garantir que a tabela empresas/empresa existe e possui as colunas necessárias
     try {
-        $targetEmpTable = 'empresas';
+        $targetEmpTable = 'empresa';
         $checkEmpSingular = $pdo->query("SHOW TABLES LIKE 'empresa'");
         if ($checkEmpSingular && count($checkEmpSingular->fetchAll()) > 0) {
             $targetEmpTable = 'empresa';
         } else {
-            $pdo->exec("CREATE TABLE IF NOT EXISTS empresas (
-                idEmpresa INT AUTO_INCREMENT PRIMARY KEY,
-                nome VARCHAR(255) NOT NULL,
-                cnpj VARCHAR(20) NULL,
-                telefone VARCHAR(20) NULL,
-                idSistema INT NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            $targetEmpTable = 'empresas';
         }
 
         $stmtEmpresaCols = $pdo->query("SHOW COLUMNS FROM `$targetEmpTable`");
@@ -128,12 +203,6 @@ try {
                 }
                 if (!in_array('nome', $colsE) && !in_array('empresa', $colsE)) {
                     $pdo->exec("ALTER TABLE `$targetEmpTable` ADD COLUMN nome VARCHAR(255) NOT NULL DEFAULT ''");
-                }
-                if (!in_array('cnpj', $colsE)) {
-                    $pdo->exec("ALTER TABLE `$targetEmpTable` ADD COLUMN cnpj VARCHAR(20) NULL");
-                }
-                if (!in_array('telefone', $colsE)) {
-                    $pdo->exec("ALTER TABLE `$targetEmpTable` ADD COLUMN telefone VARCHAR(20) NULL");
                 }
                 if (!in_array('idSistema', $colsE) && !in_array('id_sistema', $colsE) && !in_array('idsistema', $colsE) && !in_array('sistema', $colsE)) {
                     $pdo->exec("ALTER TABLE `$targetEmpTable` ADD COLUMN idSistema INT NULL");
@@ -205,8 +274,34 @@ try {
     } catch (\Exception $ex) {
     }
 
+
+    // Garantir que a tabela veiculoPesquisado existe
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS veiculoPesquisado (
+            idVeiculoPesquisado INT AUTO_INCREMENT PRIMARY KEY,
+            idPesquisa INT NOT NULL,
+            idVeiculo INT NOT NULL,
+            ordem INT NULL DEFAULT 0,
+            KEY idx_vp_pesquisa (idPesquisa),
+            KEY idx_vp_veiculo (idVeiculo)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    } catch (\Exception $ex) {}
+
     // Garantir colunas na tabela contagem (justificativa e idVeiculoPesquisado anulável)
     try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS contagem (
+            idContagem INT AUTO_INCREMENT PRIMARY KEY,
+            idPesquisa INT NOT NULL,
+            idVeiculoPesquisado INT NULL,
+            idUsuario INT NOT NULL,
+            tipo VARCHAR(50) NOT NULL DEFAULT 'incremento',
+            quantidade FLOAT NOT NULL DEFAULT 0,
+            justificativa TEXT NULL,
+            dataHora DATETIME NOT NULL,
+            KEY idx_contagem_pesquisa (idPesquisa),
+            KEY idx_contagem_usuario (idUsuario)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
         $stmtCont = $pdo->query("SHOW COLUMNS FROM contagem");
         if ($stmtCont) {
             $colsC = $stmtCont->fetchAll(PDO::FETCH_COLUMN);

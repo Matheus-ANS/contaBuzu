@@ -346,8 +346,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // --- TABELA: EMPRESAS / EMPRESA ---
         elseif ($action === 'create_empresa') {
             $nome      = trim($_POST['nome']);
-            $cnpj      = trim($_POST['cnpj']);
-            $telefone  = trim($_POST['telefone']);
             $idSistema = !empty($_POST['idSistema']) ? (int)$_POST['idSistema'] : null;
             if ($nome !== '') {
                 $empTable = $getRealTable('empresa', 'empresas');
@@ -359,8 +357,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } catch (\Exception $e) {}
 
                 $nameCol = in_array('nome', $colsEmpresa) ? 'nome' : (in_array('empresa', $colsEmpresa) ? 'empresa' : (!empty($colsEmpresa[1]) ? $colsEmpresa[1] : 'nome'));
-                $cnpjCol = in_array('cnpj', $colsEmpresa) ? 'cnpj' : null;
-                $telCol  = in_array('telefone', $colsEmpresa) ? 'telefone' : (in_array('tel', $colsEmpresa) ? 'tel' : null);
                 
                 $fkCol = null;
                 if (in_array('idSistema', $colsEmpresa)) $fkCol = 'idSistema';
@@ -378,16 +374,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $placeholders = [":nome"];
                 $params = [':nome' => $nome];
 
-                if ($cnpjCol) {
-                    $fields[] = "`$cnpjCol`";
-                    $placeholders[] = ":cnpj";
-                    $params[':cnpj'] = $cnpj;
-                }
-                if ($telCol) {
-                    $fields[] = "`$telCol`";
-                    $placeholders[] = ":telefone";
-                    $params[':telefone'] = $telefone;
-                }
                 if ($fkCol) {
                     $fields[] = "`$fkCol`";
                     $placeholders[] = ":idSistema";
@@ -404,8 +390,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'update_empresa') {
             $idEmpresa = (int)$_POST['idEmpresa'];
             $nome      = trim($_POST['nome']);
-            $cnpj      = trim($_POST['cnpj']);
-            $telefone  = trim($_POST['telefone']);
             $idSistema = !empty($_POST['idSistema']) ? (int)$_POST['idSistema'] : null;
             if ($idEmpresa > 0 && $nome !== '') {
                 $empTable = $getRealTable('empresa', 'empresas');
@@ -418,8 +402,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $idCol   = in_array('idEmpresa', $colsEmpresa) ? 'idEmpresa' : (in_array('id', $colsEmpresa) ? 'id' : (in_array('id_empresa', $colsEmpresa) ? 'id_empresa' : (!empty($colsEmpresa[0]) ? $colsEmpresa[0] : 'idEmpresa')));
                 $nameCol = in_array('nome', $colsEmpresa) ? 'nome' : (in_array('empresa', $colsEmpresa) ? 'empresa' : (!empty($colsEmpresa[1]) ? $colsEmpresa[1] : 'nome'));
-                $cnpjCol = in_array('cnpj', $colsEmpresa) ? 'cnpj' : null;
-                $telCol  = in_array('telefone', $colsEmpresa) ? 'telefone' : (in_array('tel', $colsEmpresa) ? 'tel' : null);
                 
                 $fkCol = null;
                 if (in_array('idSistema', $colsEmpresa)) $fkCol = 'idSistema';
@@ -436,14 +418,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $setParts = ["`$nameCol` = :nome"];
                 $params = [':nome' => $nome, ':id' => $idEmpresa];
 
-                if ($cnpjCol) {
-                    $setParts[] = "`$cnpjCol` = :cnpj";
-                    $params[':cnpj'] = $cnpj;
-                }
-                if ($telCol) {
-                    $setParts[] = "`$telCol` = :telefone";
-                    $params[':telefone'] = $telefone;
-                }
                 if ($fkCol) {
                     $setParts[] = "`$fkCol` = :idSistema";
                     $params[':idSistema'] = ($idSistema && $idSistema > 0) ? $idSistema : null;
@@ -1131,8 +1105,6 @@ foreach ($sistemas as $s) {
                 document.getElementById('empresa-action').value = 'create_empresa';
                 document.getElementById('empresa-id').value = '';
                 document.getElementById('empresa-nome').value = '';
-                document.getElementById('empresa-cnpj').value = '';
-                document.getElementById('empresa-telefone').value = '';
                 document.getElementById('modal-empresa-title').innerText = 'Nova Empresa';
                 openModal('modal-empresa');
             } else if (activeTabId === 'tab-sistemas') {
@@ -1213,8 +1185,6 @@ foreach ($sistemas as $s) {
             document.getElementById('empresa-action').value = 'update_empresa';
             document.getElementById('empresa-id').value = data.idEmpresa || data.idempresa || data.id || data.id_empresa || '';
             document.getElementById('empresa-nome').value = data.nome || data.empresa || '';
-            document.getElementById('empresa-cnpj').value = data.cnpj || '';
-            document.getElementById('empresa-telefone').value = data.telefone || '';
             var sysSelect = document.getElementById('empresa-idsistema');
             if (sysSelect) sysSelect.value = data.idSistema || data.idsistemas || data.id_sistema || '';
             document.getElementById('modal-empresa-title').innerText = 'Editar Empresa';
@@ -1712,8 +1682,6 @@ foreach ($sistemas as $s) {
                             <tr style="background: #f8fafc;">
                                 <th style="text-align: left; padding: 14px 20px; width: 90px;">ID</th>
                                 <th style="text-align: left; padding: 14px 20px;">Nome da Empresa</th>
-                                <th style="text-align: left; padding: 14px 20px;">CNPJ</th>
-                                <th style="text-align: left; padding: 14px 20px;">Telefone</th>
                                 <th style="text-align: left; padding: 14px 20px;">Sistema Utilizado</th>
                                 <th style="text-align: center; padding: 14px 20px; width: 130px;">Ações</th>
                             </tr>
@@ -1724,16 +1692,12 @@ foreach ($sistemas as $s) {
                                     <?php
                                         $eId       = isset($row['idEmpresa']) ? $row['idEmpresa'] : (isset($row['id']) ? $row['id'] : (isset($row['id_empresa']) ? $row['id_empresa'] : reset($row)));
                                         $eNome     = isset($row['nome']) ? $row['nome'] : (isset($row['empresa']) ? $row['empresa'] : '—');
-                                        $eCnpj     = isset($row['cnpj']) ? $row['cnpj'] : '—';
-                                        $eTelefone = isset($row['telefone']) ? $row['telefone'] : '—';
                                         $eSysId    = isset($row['idSistema']) ? $row['idSistema'] : (isset($row['id_sistema']) ? $row['id_sistema'] : null);
                                         $eSysNome  = ($eSysId && isset($sistemasMap[$eSysId])) ? $sistemasMap[$eSysId] : (isset($row['sistema']) ? $row['sistema'] : '—');
                                     ?>
                                     <tr>
                                         <td style="padding: 14px 20px;"><span class="badge-id">#<?php echo htmlspecialchars($eId); ?></span></td>
                                         <td style="padding: 14px 20px; font-weight: 600; color: #1e293b;"><?php echo htmlspecialchars($eNome); ?></td>
-                                        <td style="padding: 14px 20px; color: #475569;"><?php echo htmlspecialchars($eCnpj ?: '—'); ?></td>
-                                        <td style="padding: 14px 20px; color: #475569;"><?php echo htmlspecialchars($eTelefone ?: '—'); ?></td>
                                         <td style="padding: 14px 20px;">
                                             <?php if ($eSysNome !== '—' && !empty($eSysNome)): ?>
                                                 <span class="badge-system" style="background: #e0f2fe; color: #0369a1; font-weight: 600; padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; border: 1px solid #bae6fd; display: inline-block;">
@@ -2068,14 +2032,6 @@ foreach ($sistemas as $s) {
                     <div class="form-group">
                         <label for="empresa-nome" class="form-label">Nome da Empresa</label>
                         <input type="text" name="nome" id="empresa-nome" class="form-control" placeholder="Ex: Viação Salvador Ltda" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="empresa-cnpj" class="form-label">CNPJ</label>
-                        <input type="text" name="cnpj" id="empresa-cnpj" class="form-control" placeholder="Ex: 00.000.000/0001-00">
-                    </div>
-                    <div class="form-group">
-                        <label for="empresa-telefone" class="form-label">Telefone de Contato</label>
-                        <input type="text" name="telefone" id="empresa-telefone" class="form-control" placeholder="Ex: (71) 3333-4444">
                     </div>
                     <div class="form-group">
                         <label for="empresa-idsistema" class="form-label">Sistema Utilizado (Foreign Key)</label>

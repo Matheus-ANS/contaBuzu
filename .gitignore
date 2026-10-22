@@ -1,3 +1,8 @@
+# Variáveis de ambiente e credenciais sensíveis (NUNCA enviar ao GitHub)
+.env
+.env.local
+.env.*.local
+
 # Arquivos de sistema
 Thumbs.db
 desktop.ini
