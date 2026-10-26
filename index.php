@@ -58,6 +58,7 @@ $loggedCargo  = isset($_SESSION['cargo']) ? trim((string)$_SESSION['cargo']) : '
 $isAdmin   = ($loggedAcesso === 1) || (strcasecmp($loggedCargo, 'administrador') === 0) || (strcasecmp($loggedCargo, 'admin') === 0);
 $isGerente = ($loggedAcesso === 2) || (strcasecmp($loggedCargo, 'gerente') === 0) || (strcasecmp($loggedCargo, 'supervisor') === 0);
 $canViewSolicitacoes = ($isAdmin || $isGerente);
+$canViewAllContagens = ($isAdmin || $isGerente);
 
 // Inicial da foto / avatar
 $nameParts = explode(' ', trim((string)$loggedNome));
@@ -944,8 +945,20 @@ $filtroLinha      = !empty($_GET['idLinha']) ? (int)$_GET['idLinha'] : 0;
 $filtroVeiculo    = !empty($_GET['idVeiculo']) ? (int)$_GET['idVeiculo'] : 0;
 $filtroLocal      = !empty($_GET['idLocal']) ? (int)$_GET['idLocal'] : 0;
 $filtroTipoOp     = !empty($_GET['tipoOperacao']) ? trim($_GET['tipoOperacao']) : '';
+$filtroUsuario    = !empty($_GET['idUsuario']) ? (int)$_GET['idUsuario'] : 0;
 
-// Buscar Histórico Geral de Contagens do Usuário Logado
+// Usuários disponíveis para filtro do Dashboard (Gerente e Administrador)
+$usuariosPesquisadores = [];
+if ($canViewAllContagens) {
+    try {
+        $stmtUsersList = $pdo->query("SELECT idusuarios, nome, login, cargo FROM usuarios ORDER BY nome ASC");
+        if ($stmtUsersList) {
+            $usuariosPesquisadores = $stmtUsersList->fetchAll();
+        }
+    } catch (\Exception $e) {}
+}
+
+// Buscar Histórico Geral de Contagens
 $historicoUsuario = [];
 $totalSessoesUsuario = 0;
 $totalPassageirosUsuario = 0;
@@ -964,11 +977,16 @@ try {
     // Desconsidera contagens canceladas do Histórico, KPIs e Dashboard
     $whereClauses[] = "LOWER(COALESCE(c.status, '')) != 'cancelada'";
 
-    if (!$isAdmin) {
+    if (!$canViewAllContagens) {
         $whereClauses[] = "c.idUsuario = ?";
         $paramsHist[]   = $usuarioId;
     } else {
-        $whereClauses[] = "1=1";
+        if ($filtroUsuario > 0) {
+            $whereClauses[] = "c.idUsuario = ?";
+            $paramsHist[]   = $filtroUsuario;
+        } else {
+            $whereClauses[] = "1=1";
+        }
     }
 
     if ($filtroDataInicio !== '') {
@@ -1026,9 +1044,11 @@ try {
                l.numero as linhaNumero, l.descricao as linhaDescricao,
                v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca,
                loc.local as nomeLocal,
+               COALESCE(u.nome, u.login, 'Não informado') as usuarioNome,
                COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) as totalPassageiros,
                (SELECT COUNT(*) FROM contagem r WHERE r.idPesquisa = c.idPesquisa) as totalLancamentos
         FROM pesquisa c
+        LEFT JOIN usuarios u ON c.idUsuario = u.idusuarios
         LEFT JOIN linha l ON c.idLinha = l.idLinha
         LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
         LEFT JOIN locais loc ON c.idLocal = loc.idLocal
@@ -1082,9 +1102,15 @@ try {
         $qtdPercentContagens++;
     }
 
-    $stmtStatsCorr = $pdo->prepare("SELECT COUNT(*) FROM contagem WHERE idUsuario = ? AND tipo = 'correcao'");
-    $stmtStatsCorr->execute([$usuarioId]);
-    $totalCorrecoesUsuario = (int)$stmtStatsCorr->fetchColumn();
+    if ($canViewAllContagens && $filtroUsuario <= 0) {
+        $stmtStatsCorr = $pdo->query("SELECT COUNT(*) FROM contagem WHERE tipo = 'correcao'");
+        $totalCorrecoesUsuario = (int)$stmtStatsCorr->fetchColumn();
+    } else {
+        $targetUserCorr = ($filtroUsuario > 0) ? $filtroUsuario : $usuarioId;
+        $stmtStatsCorr = $pdo->prepare("SELECT COUNT(*) FROM contagem WHERE idUsuario = ? AND tipo = 'correcao'");
+        $stmtStatsCorr->execute([$targetUserCorr]);
+        $totalCorrecoesUsuario = (int)$stmtStatsCorr->fetchColumn();
+    }
 
     // --- HELPER DE OCUPAÇÃO PARA O DASHBOARD ---
     if (!function_exists('cbCalcularOcupacao')) {
@@ -1128,6 +1154,7 @@ try {
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
                 COALESCE(NULLIF(v_vp.prefixo, 0), v_vp.placa, NULLIF(v_c.prefixo, 0), v_c.placa, 'S/ Veículo') as veiculoPrefixo,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
+                COALESCE(u.nome, u.login, CONCAT('Pesquisador #', c.idUsuario)) as pesquisadorNome,
                 CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
                     COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
                 ELSE 0 END as embarques,
@@ -1142,6 +1169,7 @@ try {
                 ELSE NULL END as mediaPercentual,
                 1 as totalRegistros
             FROM pesquisa c
+            LEFT JOIN usuarios u ON c.idUsuario = u.idusuarios
             LEFT JOIN linha l ON c.idLinha = l.idLinha
             LEFT JOIN veiculo v_c ON c.idVeiculo = v_c.idVeiculo
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
@@ -1293,10 +1321,167 @@ try {
         $dadosTabelaPorEmpresa = $stmtT4->fetchAll();
     } catch (PDOException $e) {}
 
+    // 5. Total de passageiros por Pesquisador / Usuário (para Gerente e Administrador)
+    $dadosTabelaPorPesquisador = [];
+    if ($canViewAllContagens) {
+        try {
+            $stmtT5 = $pdo->prepare("
+                SELECT 
+                    c.idUsuario,
+                    COALESCE(u.nome, CONCAT('Pesquisador #', c.idUsuario)) as pesquisadorNome,
+                    COALESCE(u.cargo, 'Pesquisador') as pesquisadorCargo,
+                    COUNT(DISTINCT c.idPesquisa) as totalViagens,
+                    SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
+                        COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                    ELSE 0 END) as embarques,
+                    SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 
+                        COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                    ELSE 0 END) as desembarques,
+                    SUM(COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)) as totalPassageiros,
+                    AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN 
+                        COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                    ELSE NULL END) as mediaPercentual
+                FROM pesquisa c
+                LEFT JOIN usuarios u ON c.idUsuario = u.idusuarios
+                LEFT JOIN veiculoPesquisado vp ON c.idPesquisa = vp.idPesquisa
+                LEFT JOIN (
+                    SELECT 
+                        idPesquisa,
+                        idVeiculoPesquisado,
+                        MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
+                        SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
+                    FROM contagem
+                    GROUP BY idPesquisa, idVeiculoPesquisado
+                ) cnt_agg ON (
+                    (vp.idVeiculoPesquisado IS NOT NULL AND cnt_agg.idVeiculoPesquisado = vp.idVeiculoPesquisado)
+                    OR (vp.idVeiculoPesquisado IS NULL AND cnt_agg.idPesquisa = c.idPesquisa)
+                )
+                WHERE $whereSql
+                GROUP BY c.idUsuario, u.nome, u.cargo
+                ORDER BY totalPassageiros DESC, totalViagens DESC
+            ");
+            $stmtT5->execute($paramsHist);
+            $dadosTabelaPorPesquisador = $stmtT5->fetchAll();
+        } catch (\PDOException $e) {}
+    }
+
 } catch (PDOException $e) {}
 
 $mediaOcupacaoVal = ($qtdPercentContagens > 0) ? round($somaOcupacaoPercent / $qtdPercentContagens, 1) : 0;
 $mediaOcupacaoFmt = number_format($mediaOcupacaoVal, 1, ',', '.') . '%';
+
+// --- RESUMO CONSOLIDADO DE MÉTRICAS POR TABELA DO DASHBOARD PARA OS CARDS DE KPI ---
+// T1: Passageiros por Data / Hora / Linha / Veículo
+$t1_viag = count($dadosTabelaLinhaVeiculoDataHora);
+$t1_emb = 0; $t1_des = 0; $t1_somaOcup = 0;
+foreach ($dadosTabelaLinhaVeiculoDataHora as $r) {
+    $t1_emb += (int)$r['embarques'];
+    $t1_des += (int)$r['desembarques'];
+    $t1_somaOcup += cbCalcularOcupacao($r);
+}
+$t1_medOcup = ($t1_viag > 0) ? round($t1_somaOcup / $t1_viag, 1) : 0;
+$t1_pax = $t1_emb + $t1_des;
+
+// T2: Total de passageiros por Linha
+$t2_count = count($dadosTabelaTotalPorLinha);
+$t2_viag = 0; $t2_emb = 0; $t2_des = 0; $t2_somaOcup = 0;
+foreach ($dadosTabelaTotalPorLinha as $r) {
+    $t2_emb += (int)$r['embarques'];
+    $t2_des += (int)$r['desembarques'];
+    $t2_viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : 1;
+    $t2_somaOcup += cbCalcularOcupacao($r);
+}
+$t2_medOcup = ($t2_count > 0) ? round($t2_somaOcup / $t2_count, 1) : 0;
+$t2_pax = $t2_emb + $t2_des;
+
+// T3: Embarques / Desembarques / Ocupação por Local
+$t3_count = count($dadosTabelaPorLocal);
+$t3_viag = 0; $t3_emb = 0; $t3_des = 0; $t3_somaOcup = 0;
+foreach ($dadosTabelaPorLocal as $r) {
+    $t3_emb += (int)$r['embarques'];
+    $t3_des += (int)$r['desembarques'];
+    $t3_viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : 1;
+    $t3_somaOcup += cbCalcularOcupacao($r);
+}
+$t3_medOcup = ($t3_count > 0) ? round($t3_somaOcup / $t3_count, 1) : 0;
+$t3_pax = $t3_emb + $t3_des;
+
+// T4: Embarques / Desembarques / Ocupação por Empresa / Cooperativa
+$t4_count = count($dadosTabelaPorEmpresa);
+$t4_viag = 0; $t4_emb = 0; $t4_des = 0; $t4_somaOcup = 0;
+foreach ($dadosTabelaPorEmpresa as $r) {
+    $t4_emb += (int)$r['embarques'];
+    $t4_des += (int)$r['desembarques'];
+    $t4_viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : 1;
+    $t4_somaOcup += cbCalcularOcupacao($r);
+}
+$t4_medOcup = ($t4_count > 0) ? round($t4_somaOcup / $t4_count, 1) : 0;
+$t4_pax = $t4_emb + $t4_des;
+
+// T5: Total de passageiros por Pesquisador / Usuário
+$t5_count = count($dadosTabelaPorPesquisador);
+$t5_viag = 0; $t5_emb = 0; $t5_des = 0; $t5_pax = 0; $t5_somaOcup = 0;
+foreach ($dadosTabelaPorPesquisador as $r) {
+    $e = (int)$r['embarques'];
+    $d = (int)$r['desembarques'];
+    $t5_emb += $e;
+    $t5_des += $d;
+    $t5_viag += (int)$r['totalViagens'];
+    $t5_pax += (int)$r['totalPassageiros'];
+    $t5_somaOcup += !empty($r['mediaPercentual']) ? (float)$r['mediaPercentual'] : cbCalcularOcupacao(['embarques' => $e, 'desembarques' => $d]);
+}
+$t5_medOcup = ($t5_count > 0) ? round($t5_somaOcup / $t5_count, 1) : 0;
+
+$dashKpisMap = [
+    'dash-all' => [
+        'viagens' => number_format($totalSessoesUsuario, 0, ',', '.'),
+        'embarques' => number_format($totalEmbarquesPeriodo, 0, ',', '.'),
+        'desembarques' => number_format($totalDesembarquesPeriodo, 0, ',', '.'),
+        'ocupacao' => $mediaOcupacaoFmt,
+        'passageiros' => number_format($passageirosTotaisPeriodo, 0, ',', '.'),
+        'contextLabel' => 'Consolidado Geral'
+    ],
+    'dash-t1' => [
+        'viagens' => number_format($t1_viag, 0, ',', '.'),
+        'embarques' => number_format($t1_emb, 0, ',', '.'),
+        'desembarques' => number_format($t1_des, 0, ',', '.'),
+        'ocupacao' => number_format($t1_medOcup, 1, ',', '.') . '%',
+        'passageiros' => number_format($t1_pax, 0, ',', '.'),
+        'contextLabel' => 'Passageiros por Data / Linha'
+    ],
+    'dash-t2' => [
+        'viagens' => number_format($t2_viag, 0, ',', '.'),
+        'embarques' => number_format($t2_emb, 0, ',', '.'),
+        'desembarques' => number_format($t2_des, 0, ',', '.'),
+        'ocupacao' => number_format($t2_medOcup, 1, ',', '.') . '%',
+        'passageiros' => number_format($t2_pax, 0, ',', '.'),
+        'contextLabel' => 'Total por Linha'
+    ],
+    'dash-t3' => [
+        'viagens' => number_format($t3_viag, 0, ',', '.'),
+        'embarques' => number_format($t3_emb, 0, ',', '.'),
+        'desembarques' => number_format($t3_des, 0, ',', '.'),
+        'ocupacao' => number_format($t3_medOcup, 1, ',', '.') . '%',
+        'passageiros' => number_format($t3_pax, 0, ',', '.'),
+        'contextLabel' => 'Por Local'
+    ],
+    'dash-t4' => [
+        'viagens' => number_format($t4_viag, 0, ',', '.'),
+        'embarques' => number_format($t4_emb, 0, ',', '.'),
+        'desembarques' => number_format($t4_des, 0, ',', '.'),
+        'ocupacao' => number_format($t4_medOcup, 1, ',', '.') . '%',
+        'passageiros' => number_format($t4_pax, 0, ',', '.'),
+        'contextLabel' => 'Por Empresa / Cooperativa'
+    ],
+    'dash-t5' => [
+        'viagens' => number_format($t5_viag, 0, ',', '.'),
+        'embarques' => number_format($t5_emb, 0, ',', '.'),
+        'desembarques' => number_format($t5_des, 0, ',', '.'),
+        'ocupacao' => number_format($t5_medOcup, 1, ',', '.') . '%',
+        'passageiros' => number_format($t5_pax, 0, ',', '.'),
+        'contextLabel' => 'Por Pesquisador / Usuário'
+    ]
+];
 // Buscar opções para o formulário de início de contagem
 $linhasDisponiveis = [];
 try {
@@ -2405,6 +2590,23 @@ if ($canViewSolicitacoes) {
                                         </div>
                                     </div>
 
+                                    <?php if ($canViewAllContagens): ?>
+                                    <!-- GROUP 8: PESQUISADOR / USUÁRIO (GERENTE E ADMIN) -->
+                                    <div style="display: flex; flex-direction: column; gap: 4px; min-width: 170px; flex: 1;">
+                                        <span onclick="triggerInputPicker(this.nextElementSibling, event)" style="font-weight: 800; font-size: 0.82rem; color: #1e3a8a; cursor: pointer; user-select: none;">Pesquisador / Usuário</span>
+                                        <div onclick="triggerInputPicker(this, event)" class="filter-box-clickable" style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 0 10px; background: #ffffff; height: 42px; display: flex; align-items: center; cursor: pointer; position: relative; transition: all 0.2s ease;">
+                                            <select name="idUsuario" onchange="this.form.submit()" style="border: none; outline: none; background: transparent; font-size: 0.86rem; font-weight: 600; color: #1e293b; width: 100%; height: 100%; cursor: pointer;">
+                                                <option value="">Todos os Pesquisadores</option>
+                                                <?php foreach ($usuariosPesquisadores as $usr): ?>
+                                                    <option value="<?php echo $usr['idusuarios']; ?>" <?php echo ($filtroUsuario == $usr['idusuarios']) ? 'selected' : ''; ?>>
+                                                        <?php echo htmlspecialchars($usr['nome']) . ' (' . htmlspecialchars(!empty($usr['cargo']) ? $usr['cargo'] : 'Pesquisador') . ')'; ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <?php endif; ?>
+
                                     <!-- ACTIONS BUTTONS -->
                                     <div style="display: flex; gap: 8px; align-items: center;">
                                         <button type="submit" style="background: #2563eb; color: #ffffff; border: none; padding: 10px 18px; border-radius: 8px; font-weight: 700; font-size: 0.86rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(37,99,235,0.25); height: 42px;">
@@ -2436,11 +2638,11 @@ if ($canViewSolicitacoes) {
                             <div style="color: #475569; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
                                 <span>🚍 Total de Viagens</span>
                             </div>
-                            <div style="color: #0f172a; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo number_format($totalSessoesUsuario, 0, ',', '.'); ?>
+                            <div id="kpi-total-viagens" class="kpi-metric-val" style="color: #0f172a; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
+                                <?php echo $dashKpisMap['dash-t1']['viagens']; ?>
                             </div>
-                            <div style="color: #64748b; font-size: 0.78rem; font-weight: 600;">
-                                Total no período
+                            <div class="kpi-sub-label" style="color: #64748b; font-size: 0.78rem; font-weight: 600;">
+                                <?php echo $dashKpisMap['dash-t1']['contextLabel']; ?>
                             </div>
                         </div>
 
@@ -2449,11 +2651,11 @@ if ($canViewSolicitacoes) {
                             <div style="color: #15803d; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
                                 <span>↑ Total Embarques</span>
                             </div>
-                            <div style="color: #15803d; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo number_format($totalEmbarquesPeriodo, 0, ',', '.'); ?>
+                            <div id="kpi-total-embarques" class="kpi-metric-val" style="color: #15803d; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
+                                <?php echo $dashKpisMap['dash-t1']['embarques']; ?>
                             </div>
-                            <div style="color: #166534; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
-                                Total no período
+                            <div class="kpi-sub-label" style="color: #166534; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
+                                <?php echo $dashKpisMap['dash-t1']['contextLabel']; ?>
                             </div>
                         </div>
 
@@ -2462,11 +2664,11 @@ if ($canViewSolicitacoes) {
                             <div style="color: #be123c; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
                                 <span>↓ Total Desembarques</span>
                             </div>
-                            <div style="color: #be123c; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo number_format($totalDesembarquesPeriodo, 0, ',', '.'); ?>
+                            <div id="kpi-total-desembarques" class="kpi-metric-val" style="color: #be123c; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
+                                <?php echo $dashKpisMap['dash-t1']['desembarques']; ?>
                             </div>
-                            <div style="color: #9f1239; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
-                                Total no período
+                            <div class="kpi-sub-label" style="color: #9f1239; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
+                                <?php echo $dashKpisMap['dash-t1']['contextLabel']; ?>
                             </div>
                         </div>
 
@@ -2475,11 +2677,11 @@ if ($canViewSolicitacoes) {
                             <div style="color: #1d4ed8; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
                                 <span>🚌 Total Ocupação</span>
                             </div>
-                            <div style="color: #1d4ed8; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo $mediaOcupacaoFmt; ?>
+                            <div id="kpi-media-ocupacao" class="kpi-metric-val" style="color: #1d4ed8; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
+                                <?php echo $dashKpisMap['dash-t1']['ocupacao']; ?>
                             </div>
-                            <div style="color: #1e40af; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
-                                Média no período
+                            <div class="kpi-sub-label" style="color: #1e40af; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
+                                <?php echo $dashKpisMap['dash-t1']['contextLabel']; ?>
                             </div>
                         </div>
 
@@ -2488,15 +2690,57 @@ if ($canViewSolicitacoes) {
                             <div style="color: #7c3aed; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
                                 <span>👥 Passageiros Totais</span>
                             </div>
-                            <div style="color: #6d28d9; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo number_format($passageirosTotaisPeriodo, 0, ',', '.'); ?>
+                            <div id="kpi-total-passageiros" class="kpi-metric-val" style="color: #6d28d9; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
+                                <?php echo $dashKpisMap['dash-t1']['passageiros']; ?>
                             </div>
-                            <div style="color: #5b21b6; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
-                                Total no período
+                            <div class="kpi-sub-label" style="color: #5b21b6; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
+                                <?php echo $dashKpisMap['dash-t1']['contextLabel']; ?>
                             </div>
                         </div>
 
                     </div>
+
+                    <?php if ($canViewAllContagens): ?>
+                    <!-- PAINEL GERENCIAL: RELATÓRIO GERAL CONSOLIDADO DE TODAS AS CONTAGENS -->
+                    <div class="gerente-report-action-card" style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); color: #ffffff; border-radius: 16px; padding: 20px 24px; margin-bottom: 22px; box-shadow: 0 4px 14px rgba(15, 23, 42, 0.15); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+                        <div style="max-width: 620px;">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                                <span style="background: rgba(255,255,255,0.18); color: #93c5fd; font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; padding: 4px 10px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.2);">
+                                    📋 Central de Relatórios Gerenciais
+                                </span>
+                                <span style="font-size: 0.82rem; color: #cbd5e1; font-weight: 600;">
+                                    <?php echo ($filtroUsuario > 0) ? 'Filtrado por Pesquisador Específico' : 'Consolidado de Todos os Pesquisadores'; ?>
+                                </span>
+                            </div>
+                            <h3 style="margin: 0 0 6px; font-size: 1.2rem; font-weight: 800; color: #ffffff;">
+                                Exportar Relatório Geral Consolidado de Contagens
+                            </h3>
+                            <p style="margin: 0; font-size: 0.85rem; color: #94a3b8; line-height: 1.45;">
+                                Reúna todas as <strong><?php echo number_format($totalSessoesUsuario, 0, ',', '.'); ?></strong> contagens registradas no período filtrado em um arquivo profissional pronto para envio à diretoria ou órgãos reguladores.
+                            </p>
+                        </div>
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <!-- Botão PDF -->
+                            <button type="button" onclick="exportTable('tbl-t1', 'pdf', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="background: #e11d48; color: #ffffff; border: none; padding: 11px 18px; border-radius: 10px; font-weight: 700; font-size: 0.88rem; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 10px rgba(225,29,72,0.35); transition: transform 0.15s ease;" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                                <span>Exportar PDF</span>
+                            </button>
+
+                            <!-- Botão CSV -->
+                            <button type="button" onclick="exportTable('tbl-t1', 'csv', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="background: #16a34a; color: #ffffff; border: none; padding: 11px 18px; border-radius: 10px; font-weight: 700; font-size: 0.88rem; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 10px rgba(22,163,74,0.35); transition: transform 0.15s ease;" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                                <span>Exportar CSV</span>
+                            </button>
+
+                            <!-- Botão DOC -->
+                            <button type="button" onclick="exportTable('tbl-t1', 'doc', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="background: #2563eb; color: #ffffff; border: none; padding: 11px 18px; border-radius: 10px; font-weight: 700; font-size: 0.88rem; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 10px rgba(37,99,235,0.35); transition: transform 0.15s ease;" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>
+                                <span>Exportar DOC</span>
+                            </button>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+
                     <div class="dash-tables-nav" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; background: #ffffff; padding: 10px 14px; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.02);">
                         <button type="button" class="dash-nav-btn active" id="btn-dash-t1" onclick="switchDashTable('dash-t1', this)" style="background: #2563eb; color: #ffffff; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: none; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(37,99,235,0.25);">
                             📊 1. Passageiros por Data / Hora / Linha / Veículo
@@ -2510,6 +2754,11 @@ if ($canViewSolicitacoes) {
                         <button type="button" class="dash-nav-btn" id="btn-dash-t4" onclick="switchDashTable('dash-t4', this)" style="background: #f1f5f9; color: #475569; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease;">
                             🏢 4. Por Empresa / Cooperativa
                         </button>
+                        <?php if ($canViewAllContagens): ?>
+                        <button type="button" class="dash-nav-btn" id="btn-dash-t5" onclick="switchDashTable('dash-t5', this)" style="background: #f1f5f9; color: #475569; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease;">
+                            👥 5. Por Pesquisador / Usuário
+                        </button>
+                        <?php endif; ?>
                     </div>
 
                     <!-- TABELA 1: QUANTIDADE PASSAGEIROS POR DATA/ HORA/ LINHA/ VEÍCULO -->
@@ -2548,6 +2797,9 @@ if ($canViewSolicitacoes) {
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
                                         <th style="padding: 12px 10px; text-align: center;">Data</th>
                                         <th style="padding: 12px 10px; text-align: center;">Hora</th>
+                                        <?php if ($canViewAllContagens): ?>
+                                            <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
+                                        <?php endif; ?>
                                         <th style="padding: 12px 10px; text-align: left;">Linha</th>
                                         <th style="padding: 12px 10px; text-align: left;">Veículo</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
@@ -2558,7 +2810,7 @@ if ($canViewSolicitacoes) {
                                 </thead>
                                 <tbody>
                                     <?php if (empty($dadosTabelaLinhaVeiculoDataHora)): ?>
-                                        <tr><td colspan="8" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado para os filtros selecionados.</td></tr>
+                                        <tr><td colspan="<?php echo $canViewAllContagens ? 9 : 8; ?>" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado para os filtros selecionados.</td></tr>
                                     <?php else: ?>
                                         <?php foreach ($dadosTabelaLinhaVeiculoDataHora as $row): 
                                             $emb = (int)$row['embarques'];
@@ -2572,6 +2824,16 @@ if ($canViewSolicitacoes) {
                                                 <td style="padding: 12px 10px; text-align: center; font-weight: 700; color: #2563eb;">
                                                     <?php echo htmlspecialchars($row['horaFormatada']); ?>
                                                 </td>
+                                                <?php if ($canViewAllContagens): ?>
+                                                    <td style="padding: 12px 10px; font-weight: 600; color: #0f172a;">
+                                                        <span style="display: inline-flex; align-items: center; gap: 6px;">
+                                                            <span style="width: 24px; height: 24px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.72rem; font-weight: 700;">
+                                                                <?php echo strtoupper(substr($row['pesquisadorNome'], 0, 1)); ?>
+                                                            </span>
+                                                            <?php echo htmlspecialchars($row['pesquisadorNome']); ?>
+                                                        </span>
+                                                    </td>
+                                                <?php endif; ?>
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
                                                     <?php echo htmlspecialchars($row['linhaNumero']); ?>
                                                 </td>
@@ -2598,6 +2860,7 @@ if ($canViewSolicitacoes) {
                                 </tbody>
                             </table>
                         </div>
+                        <div id="tbl-t1-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
                     </div>
 
                     <!-- TABELA 2: TOTAL DE PASSAGEIROS POR LINHA -->
@@ -2678,6 +2941,7 @@ if ($canViewSolicitacoes) {
                                 </tbody>
                             </table>
                         </div>
+                        <div id="tbl-t2-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
                     </div>
 
                     <!-- TABELA 3: EMBARQUES/ DESEMBARQUES / OCUPAÇÃO POR LOCAL -->
@@ -2754,6 +3018,7 @@ if ($canViewSolicitacoes) {
                                 </tbody>
                             </table>
                         </div>
+                        <div id="tbl-t3-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
                     </div>
 
                     <!-- TABELA 4: EMBARQUES/ DESEMBARQUES / OCUPAÇÃO POR EMPRESA/COOPERATIVA -->
@@ -2830,8 +3095,102 @@ if ($canViewSolicitacoes) {
                                 </tbody>
                             </table>
                         </div>
+                        <div id="tbl-t4-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
                     </div>
 
+                    <?php if ($canViewAllContagens): ?>
+                    <!-- TABELA 5: TOTAL DE PASSAGEIROS POR PESQUISADOR / USUÁRIO -->
+                    <div id="container-dash-t5" class="dash-table-card panel-card" style="margin-bottom: 24px; display: none;">
+                        <div class="panel-card-header" style="background: #ffffff; padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <div>
+                                <h3 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+                                    <span>👥 Total de passageiros por pesquisador / usuário</span>
+                                </h3>
+                                <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de viagens, embarques, desembarques e passageiros registrados por cada pesquisador</p>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                <input type="text" oninput="filterTableRows('tbl-t5', this.value)" placeholder="Buscar pesquisador, cargo..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; width: 220px; outline: none; background: #ffffff;">
+                                <div class="export-dropdown-wrapper" style="position: relative; display: inline-block;">
+                                    <button type="button" onclick="toggleExportMenu('export-menu-t5', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2);">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                        <span>Exportar</span>
+                                    </button>
+                                    <div id="export-menu-t5" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 110%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 170px; z-index: 100; padding: 6px 0;">
+                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t5', 'pdf', 'Total_Passageiros_Por_Pesquisador')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none;">
+                                            📄 Exportar para PDF
+                                        </a>
+                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t5', 'csv', 'Total_Passageiros_Por_Pesquisador')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none;">
+                                            📊 Exportar para CSV
+                                        </a>
+                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t5', 'doc', 'Total_Passageiros_Por_Pesquisador')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none;">
+                                            📝 Exportar para DOC
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="overflow-x: auto; padding: 12px 20px 20px;">
+                            <table class="apps-table" id="tbl-t5" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+                                <thead>
+                                    <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
+                                        <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
+                                        <th style="padding: 12px 10px; text-align: left;">Função / Cargo</th>
+                                        <th style="padding: 12px 10px; text-align: center;">Total Viagens</th>
+                                        <th style="padding: 12px 10px; text-align: right;">Embarques</th>
+                                        <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
+                                        <th style="padding: 12px 10px; text-align: right;">Total Passageiros</th>
+                                        <th style="padding: 12px 10px; text-align: center;">Média Ocupação</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php if (empty($dadosTabelaPorPesquisador)): ?>
+                                        <tr><td colspan="7" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado.</td></tr>
+                                    <?php else: ?>
+                                        <?php foreach ($dadosTabelaPorPesquisador as $row): 
+                                            $emb = (int)$row['embarques'];
+                                            $des = (int)$row['desembarques'];
+                                            $totPax = (int)$row['totalPassageiros'];
+                                            $viag = (int)$row['totalViagens'];
+                                            $medOcup = !empty($row['mediaPercentual']) ? round((float)$row['mediaPercentual']) : cbCalcularOcupacao(['embarques' => $emb, 'desembarques' => $des]);
+                                        ?>
+                                            <tr style="border-bottom: 1px solid #f1f5f9;">
+                                                <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
+                                                    <span style="display: inline-flex; align-items: center; gap: 8px;">
+                                                        <span style="width: 28px; height: 28px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.78rem; font-weight: 800;">
+                                                            <?php echo strtoupper(substr($row['pesquisadorNome'], 0, 1)); ?>
+                                                        </span>
+                                                        <?php echo htmlspecialchars($row['pesquisadorNome']); ?>
+                                                    </span>
+                                                </td>
+                                                <td style="padding: 12px 10px; font-weight: 600; color: #475569;">
+                                                    <span style="background: #f1f5f9; padding: 3px 8px; border-radius: 6px; font-size: 0.78rem; border: 1px solid #e2e8f0;">
+                                                        <?php echo htmlspecialchars($row['pesquisadorCargo']); ?>
+                                                    </span>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; color: #0f172a;">
+                                                    <?php echo number_format($viag, 0, ',', '.'); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #15803d;">
+                                                    <?php echo number_format($emb, 0, ',', '.'); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
+                                                    <?php echo number_format($des, 0, ',', '.'); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; font-size: 0.95rem; color: #7c3aed;">
+                                                    <?php echo number_format($totPax, 0, ',', '.'); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; color: #2563eb;">
+                                                    <?php echo $medOcup; ?>%
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="tbl-t5-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
+                    </div>
+                    <?php endif; ?>
 
                 </div>
 
@@ -6257,15 +6616,234 @@ if ($canViewSolicitacoes) {
         });
 
 
+        // --- MOTOR DE PAGINAÇÃO DAS TABELAS DO DASHBOARD ---
+        const dashPaginationState = {
+            'tbl-t1': { currentPage: 1, pageSize: 10, query: '' },
+            'tbl-t2': { currentPage: 1, pageSize: 10, query: '' },
+            'tbl-t3': { currentPage: 1, pageSize: 10, query: '' },
+            'tbl-t4': { currentPage: 1, pageSize: 10, query: '' },
+            'tbl-t5': { currentPage: 1, pageSize: 10, query: '' }
+        };
+
         function filterTableRows(tableId, query) {
+            if (dashPaginationState[tableId]) {
+                dashPaginationState[tableId].query = (query || '').toLowerCase().trim();
+                dashPaginationState[tableId].currentPage = 1;
+                renderDashTablePagination(tableId);
+            } else {
+                const table = document.getElementById(tableId);
+                if (!table) return;
+                const q = (query || '').toLowerCase().trim();
+                const rows = table.querySelectorAll('tbody tr');
+                rows.forEach(row => {
+                    if (row.cells.length <= 1) return;
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(q) ? '' : 'none';
+                });
+            }
+        }
+
+        function changeDashTablePage(tableId, page) {
+            if (dashPaginationState[tableId]) {
+                dashPaginationState[tableId].currentPage = page;
+                renderDashTablePagination(tableId);
+                const tableContainer = document.getElementById('container-' + tableId.replace('tbl-', 'dash-'));
+                if (tableContainer) {
+                    tableContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }
+        }
+
+        function changeDashTablePageSize(tableId, newSize) {
+            if (dashPaginationState[tableId]) {
+                dashPaginationState[tableId].pageSize = (newSize === 'all') ? 'all' : parseInt(newSize, 10);
+                dashPaginationState[tableId].currentPage = 1;
+                renderDashTablePagination(tableId);
+            }
+        }
+
+        function renderDashTablePagination(tableId) {
             const table = document.getElementById(tableId);
             if (!table) return;
-            const q = query.toLowerCase().trim();
-            const rows = table.querySelectorAll('tbody tr');
-            rows.forEach(row => {
-                if (row.cells.length <= 1) return;
+
+            const state = dashPaginationState[tableId] || { currentPage: 1, pageSize: 10, query: '' };
+            const q = state.query;
+            const pageSize = state.pageSize;
+
+            const allRows = Array.from(table.querySelectorAll('tbody tr')).filter(r => {
+                return !(r.cells.length === 1 && r.cells[0].colSpan > 1) && !r.classList.contains('dash-empty-filter-row');
+            });
+
+            // 1. Filtrar linhas pelo campo de busca
+            const matchingRows = [];
+            allRows.forEach(row => {
                 const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(q) ? '' : 'none';
+                const matches = (q === '' || text.indexOf(q) !== -1);
+                if (matches) {
+                    row.removeAttribute('data-search-hidden');
+                    matchingRows.push(row);
+                } else {
+                    row.setAttribute('data-search-hidden', 'true');
+                    row.style.display = 'none';
+                }
+            });
+
+            const totalMatching = matchingRows.length;
+            const containerPg = document.getElementById(tableId + '-pagination');
+
+            // Linha de resultado vazio na busca
+            let emptyMsgRow = table.querySelector('.dash-empty-filter-row');
+            if (totalMatching === 0) {
+                if (!emptyMsgRow) {
+                    const colCount = table.querySelectorAll('thead th').length || 8;
+                    emptyMsgRow = document.createElement('tr');
+                    emptyMsgRow.className = 'dash-empty-filter-row';
+                    emptyMsgRow.innerHTML = `<td colspan="${colCount}" style="text-align: center; padding: 25px; color: #94a3b8; font-weight: 600;">Nenhum registro encontrado para os termos da busca.</td>`;
+                    table.querySelector('tbody').appendChild(emptyMsgRow);
+                }
+                emptyMsgRow.style.display = '';
+                if (containerPg) {
+                    containerPg.innerHTML = `<span style="font-size: 0.83rem; color: #94a3b8; font-weight: 600;">Nenhum registro localizado</span>`;
+                }
+                return;
+            } else if (emptyMsgRow) {
+                emptyMsgRow.style.display = 'none';
+            }
+
+            // 2. Calcular paginação
+            const effectivePageSize = (pageSize === 'all') ? totalMatching : pageSize;
+            const totalPages = Math.max(1, Math.ceil(totalMatching / effectivePageSize));
+
+            if (state.currentPage > totalPages) state.currentPage = totalPages;
+            if (state.currentPage < 1) state.currentPage = 1;
+
+            const startIndex = (state.currentPage - 1) * effectivePageSize;
+            const endIndex = Math.min(startIndex + effectivePageSize, totalMatching);
+
+            // 3. Exibir somente a fatia da página atual
+            matchingRows.forEach((row, idx) => {
+                if (idx >= startIndex && idx < endIndex) {
+                    row.style.display = '';
+                    row.removeAttribute('data-page-hidden');
+                } else {
+                    row.style.display = 'none';
+                    row.setAttribute('data-page-hidden', 'true');
+                }
+            });
+
+            if (!containerPg) return;
+
+            // 4. Texto informativo
+            const infoText = (pageSize === 'all' || totalMatching <= 10) 
+                ? `Total de <strong>${totalMatching}</strong> registro${totalMatching === 1 ? '' : 's'}`
+                : `Mostrando <strong>${startIndex + 1}</strong> a <strong>${endIndex}</strong> de <strong>${totalMatching}</strong> registros &nbsp;(Página <strong>${state.currentPage}</strong> de <strong>${totalPages}</strong>)`;
+
+            // 5. Seletor de tamanho da página
+            const sizeSelectorHtml = `
+                <div style="display: inline-flex; align-items: center; gap: 8px; font-size: 0.82rem; color: #64748b;">
+                    <span>Exibir:</span>
+                    <select onchange="changeDashTablePageSize('${tableId}', this.value)" style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 5px 9px; font-size: 0.82rem; font-weight: 700; color: #334155; background: #f8fafc; cursor: pointer; outline: none;">
+                        <option value="10" ${pageSize === 10 ? 'selected' : ''}>10 / pág</option>
+                        <option value="25" ${pageSize === 25 ? 'selected' : ''}>25 / pág</option>
+                        <option value="50" ${pageSize === 50 ? 'selected' : ''}>50 / pág</option>
+                        <option value="all" ${pageSize === 'all' ? 'selected' : ''}>Todos (${totalMatching})</option>
+                    </select>
+                </div>
+            `;
+
+            // 6. Botões de navegação das páginas
+            let buttonsHtml = '';
+            if (totalPages > 1 && pageSize !== 'all') {
+                buttonsHtml += `<div style="display: inline-flex; gap: 5px; align-items: center; flex-wrap: wrap;">`;
+
+                // Botão Anterior
+                const prevDisabled = (state.currentPage <= 1);
+                buttonsHtml += `<button type="button" class="dash-pg-btn" ${prevDisabled ? 'disabled' : ''} onclick="changeDashTablePage('${tableId}', ${state.currentPage - 1})" style="border: 1px solid #cbd5e1; background: ${prevDisabled ? '#f1f5f9' : '#ffffff'}; color: ${prevDisabled ? '#94a3b8' : '#334155'}; padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: ${prevDisabled ? 'not-allowed' : 'pointer'}; transition: all 0.2s;">&lsaquo; Anterior</button>`;
+
+                // Numeração das Páginas
+                const maxButtons = 5;
+                let startBtn = Math.max(1, state.currentPage - 2);
+                let endBtn = Math.min(totalPages, startBtn + maxButtons - 1);
+                if (endBtn - startBtn < maxButtons - 1) {
+                    startBtn = Math.max(1, endBtn - maxButtons + 1);
+                }
+
+                if (startBtn > 1) {
+                    buttonsHtml += `<button type="button" class="dash-pg-btn" onclick="changeDashTablePage('${tableId}', 1)" style="border: 1px solid #cbd5e1; background: #ffffff; color: #334155; padding: 6px 10px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer;">1</button>`;
+                    if (startBtn > 2) {
+                        buttonsHtml += `<span style="color: #94a3b8; padding: 0 4px; font-weight: 700;">...</span>`;
+                    }
+                }
+
+                for (let p = startBtn; p <= endBtn; p++) {
+                    const isActive = (p === state.currentPage);
+                    buttonsHtml += `<button type="button" class="dash-pg-btn" onclick="changeDashTablePage('${tableId}', ${p})" style="border: 1px solid ${isActive ? '#2563eb' : '#cbd5e1'}; background: ${isActive ? '#2563eb' : '#ffffff'}; color: ${isActive ? '#ffffff' : '#334155'}; padding: 6px 11px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; ${isActive ? 'box-shadow: 0 2px 6px rgba(37,99,235,0.25);' : ''}">${p}</button>`;
+                }
+
+                if (endBtn < totalPages) {
+                    if (endBtn < totalPages - 1) {
+                        buttonsHtml += `<span style="color: #94a3b8; padding: 0 4px; font-weight: 700;">...</span>`;
+                    }
+                    buttonsHtml += `<button type="button" class="dash-pg-btn" onclick="changeDashTablePage('${tableId}', ${totalPages})" style="border: 1px solid #cbd5e1; background: #ffffff; color: #334155; padding: 6px 10px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer;">${totalPages}</button>`;
+                }
+
+                // Botão Próximo
+                const nextDisabled = (state.currentPage >= totalPages);
+                buttonsHtml += `<button type="button" class="dash-pg-btn" ${nextDisabled ? 'disabled' : ''} onclick="changeDashTablePage('${tableId}', ${state.currentPage + 1})" style="border: 1px solid #cbd5e1; background: ${nextDisabled ? '#f1f5f9' : '#ffffff'}; color: ${nextDisabled ? '#94a3b8' : '#334155'}; padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: ${nextDisabled ? 'not-allowed' : 'pointer'}; transition: all 0.2s;">Próximo &rsaquo;</button>`;
+
+                buttonsHtml += `</div>`;
+            }
+
+            containerPg.innerHTML = `
+                <div style="font-size: 0.84rem; color: #64748b;">
+                    ${infoText}
+                </div>
+                <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+                    ${sizeSelectorHtml}
+                    ${buttonsHtml}
+                </div>
+            `;
+        }
+
+        function initDashTablesPagination() {
+            ['tbl-t1', 'tbl-t2', 'tbl-t3', 'tbl-t4', 'tbl-t5'].forEach(tableId => {
+                if (document.getElementById(tableId)) {
+                    renderDashTablePagination(tableId);
+                }
+            });
+        }
+
+        const dashKpisByTable = <?php echo json_encode($dashKpisMap, JSON_UNESCAPED_UNICODE); ?>;
+
+        function updateDashKpiCards(targetId) {
+            if (!dashKpisByTable) return;
+            const data = dashKpisByTable[targetId] || dashKpisByTable['dash-t1'];
+            if (!data) return;
+
+            const fields = [
+                { id: 'kpi-total-viagens', val: data.viagens },
+                { id: 'kpi-total-embarques', val: data.embarques },
+                { id: 'kpi-total-desembarques', val: data.desembarques },
+                { id: 'kpi-media-ocupacao', val: data.ocupacao },
+                { id: 'kpi-total-passageiros', val: data.passageiros }
+            ];
+
+            fields.forEach(f => {
+                const el = document.getElementById(f.id);
+                if (el) {
+                    el.style.opacity = '0.2';
+                    el.style.transform = 'translateY(-3px)';
+                    setTimeout(() => {
+                        el.innerText = f.val;
+                        el.style.opacity = '1';
+                        el.style.transform = 'translateY(0)';
+                    }, 120);
+                }
+            });
+
+            const subLabels = document.querySelectorAll('.kpi-sub-label');
+            subLabels.forEach(el => {
+                el.innerText = data.contextLabel || 'Total selecionado';
             });
         }
 
@@ -6287,6 +6865,9 @@ if ($canViewSolicitacoes) {
                 btnElement.classList.add('active');
             }
 
+            // Atualiza os cartões de KPI (Total de Viagens, Embarques, Desembarques, Ocupação e Passageiros) para a tabela selecionada
+            updateDashKpiCards(targetId);
+
             const containers = document.querySelectorAll('.dash-table-card');
             if (targetId === 'dash-all') {
                 containers.forEach(c => c.style.display = 'block');
@@ -6298,6 +6879,12 @@ if ($canViewSolicitacoes) {
                         c.style.display = 'none';
                     }
                 });
+            }
+
+            // Atualiza a paginação da tabela selecionada
+            const selectedTableId = targetId.replace('dash-', 'tbl-');
+            if (dashPaginationState[selectedTableId]) {
+                renderDashTablePagination(selectedTableId);
             }
         }
 
@@ -6382,7 +6969,9 @@ if ($canViewSolicitacoes) {
             const rows = table.querySelectorAll('tr');
             
             rows.forEach(row => {
-                if (row.style.display === 'none') return;
+                if (row.classList.contains('dash-empty-filter-row')) return;
+                if (row.getAttribute('data-search-hidden') === 'true') return;
+                if (row.style.display === 'none' && !row.hasAttribute('data-page-hidden')) return;
                 let rowData = [];
                 const cols = row.querySelectorAll('th, td');
                 
@@ -6412,8 +7001,18 @@ if ($canViewSolicitacoes) {
             if (!table) return;
             
             const clone = table.cloneNode(true);
-            const hiddenRows = clone.querySelectorAll('tr[style*="display: none"]');
+            const hiddenRows = clone.querySelectorAll('tr[data-search-hidden="true"], tr.dash-empty-filter-row');
             hiddenRows.forEach(r => r.remove());
+
+            // Garantir que as linhas de outras páginas fiquem visíveis no documento exportado
+            const pagedRows = clone.querySelectorAll('tr[data-page-hidden="true"]');
+            pagedRows.forEach(r => {
+                r.removeAttribute('data-page-hidden');
+                r.style.display = '';
+            });
+
+            const otherHidden = clone.querySelectorAll('tr[style*="display: none"]');
+            otherHidden.forEach(r => r.remove());
             
             clone.style.borderCollapse = 'collapse';
             clone.style.width = '100%';
@@ -6426,6 +7025,21 @@ if ($canViewSolicitacoes) {
 
             const headerTitle = filename.replace(/_/g, ' ');
 
+            // Resumo de métricas gerenciais para o documento
+            const kpiEmbDoc  = document.getElementById('kpi-total-embarques');
+            const kpiDesDoc  = document.getElementById('kpi-total-desembarques');
+            const kpiPaxDoc  = document.getElementById('kpi-total-passageiros');
+            const kpiOcupDoc = document.getElementById('kpi-media-ocupacao');
+            const totalLinhas = clone.querySelectorAll('tbody tr').length;
+
+            let resumoKpiHtml = `<p style="text-align: center; color: #475569; font-size: 10pt; margin: 0 0 15px;">
+                <strong>Gerado em:</strong> ${new Date().toLocaleString('pt-BR')} &nbsp;|&nbsp; 
+                <strong>Total Registros:</strong> ${totalLinhas}`;
+            if (kpiEmbDoc && kpiDesDoc && kpiPaxDoc) {
+                resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Embarques:</strong> ${kpiEmbDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Desembarques:</strong> ${kpiDesDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiPaxDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Ocupação Média:</strong> ${kpiOcupDoc ? kpiOcupDoc.innerText.trim() : '-'}`;
+            }
+            resumoKpiHtml += `</p>`;
+
             const htmlContent = `
                 <html xmlns:o='urn:schemas-microsoft-microsoft-com:office:office' 
                       xmlns:w='urn:schemas-microsoft-microsoft-com:office:word' 
@@ -6436,7 +7050,6 @@ if ($canViewSolicitacoes) {
                     <style>
                         body { font-family: Arial, sans-serif; margin: 20px; color: #0f172a; }
                         h2 { color: #0f172a; text-align: center; font-size: 18pt; margin-bottom: 5px; }
-                        p { text-align: center; color: #64748b; font-size: 10pt; margin-bottom: 20px; }
                         table { border-collapse: collapse; width: 100%; margin-top: 15px; }
                         th { background-color: #2563eb; color: #ffffff; font-weight: bold; font-size: 11pt; padding: 10px; border: 1px solid #1d4ed8; }
                         td { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 10.5pt; }
@@ -6444,7 +7057,7 @@ if ($canViewSolicitacoes) {
                 </head>
                 <body>
                     <h2>Relatório contaBuzu — ${headerTitle}</h2>
-                    <p>Gerado em: ${new Date().toLocaleString('pt-BR')}</p>
+                    ${resumoKpiHtml}
                     ${clone.outerHTML}
                 </body>
                 </html>
@@ -6479,7 +7092,7 @@ if ($canViewSolicitacoes) {
                     headerRow.push(txt);
 
                     const computedAlign = window.getComputedStyle(th).textAlign;
-                    if (computedAlign === 'right' || /embarque|desembarque/i.test(txt)) {
+                    if (computedAlign === 'right' || /embarque|desembarque|passageiro/i.test(txt)) {
                         columnAlignments[idx] = 'right';
                     } else if (computedAlign === 'center' || /data|hora|viagem|ocup/i.test(txt)) {
                         columnAlignments[idx] = 'center';
@@ -6492,7 +7105,9 @@ if ($canViewSolicitacoes) {
 
             const trs = table.querySelectorAll('tbody tr');
             trs.forEach(tr => {
-                if (tr.style.display === 'none') return;
+                if (tr.classList.contains('dash-empty-filter-row')) return;
+                if (tr.getAttribute('data-search-hidden') === 'true') return;
+                if (tr.style.display === 'none' && !tr.hasAttribute('data-page-hidden')) return;
                 const tds = tr.querySelectorAll('td');
                 if (tds.length === 0) return;
 
@@ -6509,6 +7124,17 @@ if ($canViewSolicitacoes) {
                 });
                 body.push(rowData);
             });
+
+            // Resumo Gerencial de Métricas para o Cabeçalho do PDF
+            const kpiEmbPdf  = document.getElementById('kpi-total-embarques');
+            const kpiDesPdf  = document.getElementById('kpi-total-desembarques');
+            const kpiPaxPdf  = document.getElementById('kpi-total-passageiros');
+            const kpiOcupPdf = document.getElementById('kpi-media-ocupacao');
+
+            let pdfSubtitle = generatedAt + '   |   Total de registros: ' + body.length;
+            if (kpiEmbPdf && kpiDesPdf && kpiPaxPdf) {
+                pdfSubtitle += '   |   Embarques: ' + kpiEmbPdf.innerText.trim() + '   |   Desembarques: ' + kpiDesPdf.innerText.trim() + '   |   Pax: ' + kpiPaxPdf.innerText.trim() + '   |   Ocupação: ' + (kpiOcupPdf ? kpiOcupPdf.innerText.trim() : '-');
+            }
 
             // MÉTODO 1: jsPDF + autoTable (Vetorizado, sem limite de canvas, paginação infinita e sem cortar colunas)
             if (window.jspdf && window.jspdf.jsPDF) {
@@ -6535,7 +7161,7 @@ if ($canViewSolicitacoes) {
                     doc.setFont('helvetica', 'normal');
                     doc.setFontSize(8.5);
                     doc.setTextColor(100, 116, 139);
-                    doc.text(generatedAt + '   |   Total de registros: ' + body.length, 35, 46);
+                    doc.text(pdfSubtitle, 35, 46);
 
                     // Geração da Tabela com AutoTable
                     doc.autoTable({
@@ -6625,7 +7251,7 @@ if ($canViewSolicitacoes) {
                     </head>
                     <body>
                         <h2>Relatório contaBuzu — ${titleText}</h2>
-                        <p class="sub">${generatedAt} | Total de registros: ${body.length}</p>
+                        <p class="sub">${pdfSubtitle}</p>
                         ${tableHtml}
                         <script>
                             window.onload = function() {
@@ -7145,6 +7771,9 @@ if ($canViewSolicitacoes) {
             // Inicializar a paginação da tabela de histórico de contagens
             renderHistoryPage();
 
+            // Inicializar a paginação das tabelas do dashboard
+            initDashTablesPagination();
+
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.get('tab') === 'solicitacoes') {
                 const solicBtn = document.getElementById('btn-tab-solicitacoes');
@@ -7154,10 +7783,16 @@ if ($canViewSolicitacoes) {
                     const contBtn = document.getElementById('btn-tab-contador');
                     if (contBtn) switchUserTab('tab-contador', contBtn);
                 }
-            } else if (urlParams.has('data_inicio') || urlParams.has('data_fim') || urlParams.has('hora_inicio') || urlParams.has('hora_fim') || urlParams.has('idEmpresa') || urlParams.has('idLinha') || urlParams.has('idVeiculo') || urlParams.has('idLocal') || urlParams.has('tipoOperacao') || urlParams.get('tab') === 'historico') {
+            } else if (urlParams.has('data_inicio') || urlParams.has('data_fim') || urlParams.has('hora_inicio') || urlParams.has('hora_fim') || urlParams.has('idEmpresa') || urlParams.has('idLinha') || urlParams.has('idVeiculo') || urlParams.has('idLocal') || urlParams.has('tipoOperacao') || urlParams.has('idUsuario') || urlParams.get('tab') === 'historico') {
                 const histBtn = document.getElementById('btn-tab-historico');
                 if (histBtn) switchUserTab('tab-historico', histBtn);
             }
+            <?php if ($isGerente && empty($contagemAtiva) && !isset($_GET['tab'])): ?>
+            else {
+                const defaultHistBtn = document.getElementById('btn-tab-historico');
+                if (defaultHistBtn) switchUserTab('tab-historico', defaultHistBtn);
+            }
+            <?php endif; ?>
 
             var alerts = document.querySelectorAll('.alert');
             alerts.forEach(function(alertEl) {
