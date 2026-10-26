@@ -1318,7 +1318,7 @@ if ($canViewSolicitacoes) {
                     </div>
                 </div>
 
-                <div class="header-right-actions" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <div class="header-right-actions" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
                     
                     <!-- Relógio Digital em Tempo Real com Opção de Exibir Data -->
                     <div class="realtime-clock-card" title="Data e Horário em Tempo Real" style="display: inline-flex; align-items: center; gap: 8px; background: #ffffff; padding: 7px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-weight: 600; font-size: 0.88rem; color: #1e293b; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
@@ -1328,6 +1328,25 @@ if ($canViewSolicitacoes) {
                             📅 Data: OFF
                         </button>
                     </div>
+
+                    <!-- Botão de Alternar Modo Escuro / Claro -->
+                    <button type="button" class="header-tool-btn" id="btn-toggle-theme" title="Alternar entre modo claro e modo escuro" aria-label="Alternar tema">
+                        <span class="theme-icon-light">☀️</span>
+                        <span class="theme-icon-dark" style="display: none;">🌙</span>
+                        <span id="theme-btn-label">Tema</span>
+                    </button>
+
+                    <!-- Botão de Som / Feedback Sonoro nos Cliques -->
+                    <button type="button" class="header-tool-btn" id="btn-toggle-sound" onclick="toggleSoundFeedback()" title="Alternar bip sonoro ao registrar contagens">
+                        <span id="sound-icon">🔊</span>
+                        <span id="sound-label">Som: ON</span>
+                    </button>
+
+                    <!-- Botão de Atalhos de Teclado -->
+                    <button type="button" class="header-tool-btn" onclick="openShortcutsModal()" title="Ver atalhos do teclado rápidos (tecla ?)">
+                        <span>⌨️</span>
+                        <span>Atalhos</span>
+                    </button>
 
                     <?php if ($isAdmin): ?>
                         <a href="admin_panel.php" class="btn-admin-link" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: #7c3aed; background-color: #faf5ff; padding: 9px 14px; border: 1px solid #f3e8ff; border-radius: 10px; font-size: 0.88rem;">
@@ -1977,6 +1996,11 @@ if ($canViewSolicitacoes) {
                                                     ?>
                                                 </span>
                                             </div>
+
+                                            <!-- Campo de Busca Rápida de Ônibus -->
+                                            <?php if ($qtdVeiculosSessao > 1): ?>
+                                                <input type="text" id="filtro-rapido-onibus" placeholder="🔍 Filtrar ônibus..." oninput="filtrarOnibusGrid(this.value)" style="padding: 6px 12px; border-radius: 8px; border: 1.5px solid #cbd5e1; font-size: 0.82rem; outline: none; width: 160px; max-width: 100%;" title="Digite para filtrar os ônibus cadastrados">
+                                            <?php endif; ?>
 
                                             <!-- Botão de Registrar / Escolher Mais Ônibus -->
                                             <button type="button" onclick="openModalGerenciarVeiculosSessao()" class="btn-gerenciar-veiculos-sessao" title="Registrar ou escolher mais ônibus para esta contagem" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; border: none; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.25); transition: all 0.2s; white-space: nowrap;">
@@ -3484,6 +3508,74 @@ if ($canViewSolicitacoes) {
         </div>
     </div>
 
+    <!-- MODAL DE ATALHOS DE TECLADO RÁPIDOS -->
+    <div class="modal-overlay" id="shortcutsModal">
+        <div class="modal-card" style="max-width: 520px;">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span style="font-size: 1.4rem;">⌨️</span>
+                    <span>Atalhos de Teclado Rápidos</span>
+                </div>
+                <button type="button" onclick="closeShortcutsModal()" style="background: none; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer;">&times;</button>
+            </div>
+
+            <div style="padding: 10px 0 16px;">
+                <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 16px;">
+                    Utilize estes atalhos para agilizar o registro de passageiros durante as vistorias de campo sem tirar a mão do teclado:
+                </p>
+
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--card-surface); border: 1px solid var(--card-border); border-radius: 10px;">
+                        <span style="font-weight: 600; font-size: 0.92rem; color: var(--text-primary);">Incrementar +1 passageiro</span>
+                        <div style="display: flex; gap: 4px;">
+                            <span class="shortcuts-badge-key">1</span>
+                            <span class="shortcuts-badge-key">+</span>
+                            <span class="shortcuts-badge-key">Espaço</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--card-surface); border: 1px solid var(--card-border); border-radius: 10px;">
+                        <span style="font-weight: 600; font-size: 0.92rem; color: var(--text-primary);">Incrementar +5 passageiros</span>
+                        <span class="shortcuts-badge-key">5</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--card-surface); border: 1px solid var(--card-border); border-radius: 10px;">
+                        <span style="font-weight: 600; font-size: 0.92rem; color: var(--text-primary);">Incrementar +10 passageiros</span>
+                        <span class="shortcuts-badge-key">0</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--card-surface); border: 1px solid var(--card-border); border-radius: 10px;">
+                        <span style="font-weight: 600; font-size: 0.92rem; color: var(--text-primary);">Salvar / Confirmar Contagem</span>
+                        <div style="display: flex; gap: 4px;">
+                            <span class="shortcuts-badge-key">S</span>
+                            <span style="font-size: 0.8rem; color: var(--text-muted); align-self: center;">ou</span>
+                            <span class="shortcuts-badge-key">Ctrl+S</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--card-surface); border: 1px solid var(--card-border); border-radius: 10px;">
+                        <span style="font-weight: 600; font-size: 0.92rem; color: var(--text-primary);">Alternar Tema Escuro / Claro</span>
+                        <span class="shortcuts-badge-key">T</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--card-surface); border: 1px solid var(--card-border); border-radius: 10px;">
+                        <span style="font-weight: 600; font-size: 0.92rem; color: var(--text-primary);">Alternar Som / Silencioso</span>
+                        <span class="shortcuts-badge-key">M</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--card-surface); border: 1px solid var(--card-border); border-radius: 10px;">
+                        <span style="font-weight: 600; font-size: 0.92rem; color: var(--text-primary);">Fechar Janelas / Modais</span>
+                        <span class="shortcuts-badge-key">Esc</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--card-surface); border: 1px solid var(--card-border); border-radius: 10px;">
+                        <span style="font-weight: 600; font-size: 0.92rem; color: var(--text-primary);">Exibir este Guia de Atalhos</span>
+                        <span class="shortcuts-badge-key">?</span>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; padding-top: 14px; border-top: 1px solid var(--card-border);">
+                <button type="button" onclick="closeShortcutsModal()" style="padding: 10px 22px; background: #2563eb; color: #ffffff; border: none; border-radius: 10px; font-weight: 700; cursor: pointer; transition: all 0.2s;">
+                    Entendido
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- JAVASCRIPT EM TEMPO REAL, NAVEGAÇÃO DE ABAS E AJAX -->
     <script>
         // 1. RELÓGIO EM TEMPO REAL E OPÇÃO DE EXIBIR DATA
@@ -3672,27 +3764,146 @@ if ($canViewSolicitacoes) {
             });
         }
 
-        let toastTimeoutId = null;
+        let toastContainer = null;
 
-        function showToastNotification(msg, duration = 2000) {
-            let toast = document.getElementById('global-toast-notification');
-            if (!toast) {
-                toast = document.createElement('div');
-                toast.id = 'global-toast-notification';
-                toast.style.cssText = 'position: fixed; bottom: 24px; right: 24px; z-index: 9999; background: #15803d; color: #ffffff; padding: 14px 20px; border-radius: 12px; font-weight: 700; font-size: 0.92rem; box-shadow: 0 10px 25px rgba(0,0,0,0.2); display: flex; align-items: center; gap: 8px; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); transform: translateY(100px); opacity: 0;';
-                document.body.appendChild(toast);
+        function showToastNotification(msg, duration = 2800, type = '') {
+            if (!toastContainer) {
+                toastContainer = document.getElementById('cb-toast-container');
+                if (!toastContainer) {
+                    toastContainer = document.createElement('div');
+                    toastContainer.id = 'cb-toast-container';
+                    document.body.appendChild(toastContainer);
+                }
             }
-            if (toastTimeoutId) {
-                clearTimeout(toastTimeoutId);
-            }
-            toast.textContent = msg;
-            toast.style.transform = 'translateY(0)';
-            toast.style.opacity = '1';
 
-            toastTimeoutId = setTimeout(() => {
-                toast.style.transform = 'translateY(100px)';
-                toast.style.opacity = '0';
+            const toast = document.createElement('div');
+            let toastType = type;
+            if (!toastType) {
+                const lower = msg.toLowerCase();
+                if (lower.includes('erro') || lower.includes('falha') || lower.includes('atenção')) {
+                    toastType = 'error';
+                } else if (msg.includes('⚠️') || lower.includes('pendente')) {
+                    toastType = 'warning';
+                } else if (msg.includes('🔊') || msg.includes('🔇') || msg.includes('🌙') || msg.includes('☀️')) {
+                    toastType = 'info';
+                } else {
+                    toastType = 'success';
+                }
+            }
+            toast.className = 'cb-toast toast-' + toastType;
+
+            let iconSvg = '';
+            if (toastType === 'success') {
+                iconSvg = '<svg width="20" height="20" fill="none" stroke="#10b981" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>';
+            } else if (toastType === 'error') {
+                iconSvg = '<svg width="20" height="20" fill="none" stroke="#ef4444" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"/></svg>';
+            } else if (toastType === 'warning') {
+                iconSvg = '<svg width="20" height="20" fill="none" stroke="#f59e0b" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>';
+            } else {
+                iconSvg = '<svg width="20" height="20" fill="none" stroke="#3b82f6" stroke-width="2.2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
+            }
+
+            toast.innerHTML = iconSvg + '<span>' + msg + '</span>';
+            toastContainer.appendChild(toast);
+
+            setTimeout(function() {
+                toast.classList.add('toast-hide');
+                setTimeout(function() {
+                    if (toast.parentNode) toast.parentNode.removeChild(toast);
+                }, 350);
             }, duration);
+        }
+
+        // Filtro em tempo real de ônibus registrados
+        function filtrarOnibusGrid(termo) {
+            termo = (termo || '').toLowerCase().trim();
+            const btns = document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus');
+            btns.forEach(btn => {
+                const s = (btn.getAttribute('data-search') || '').toLowerCase();
+                btn.style.display = (!termo || s.indexOf(termo) !== -1) ? 'flex' : 'none';
+            });
+        }
+
+        // Sistema de Feedback Sonoro com Web Audio API
+        let audioCtx = null;
+        let soundFeedbackEnabled = localStorage.getItem('contabuzu_sound') !== 'false';
+
+        function toggleSoundFeedback() {
+            soundFeedbackEnabled = !soundFeedbackEnabled;
+            localStorage.setItem('contabuzu_sound', soundFeedbackEnabled ? 'true' : 'false');
+            updateSoundButtonUI();
+            showToastNotification(soundFeedbackEnabled ? '🔊 Som ativado para contagens' : '🔇 Modo silencioso ativado', 2000, 'info');
+            if (soundFeedbackEnabled) playClickSound();
+        }
+
+        function updateSoundButtonUI() {
+            const icon = document.getElementById('sound-icon');
+            const label = document.getElementById('sound-label');
+            if (icon) icon.textContent = soundFeedbackEnabled ? '🔊' : '🔇';
+            if (label) label.textContent = soundFeedbackEnabled ? 'Som: ON' : 'Som: OFF';
+        }
+
+        function playClickSound() {
+            if (!soundFeedbackEnabled) return;
+            try {
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.08);
+                gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.08);
+                if (navigator.vibrate) {
+                    navigator.vibrate(25);
+                }
+            } catch(e) {}
+        }
+
+        function openShortcutsModal() {
+            const m = document.getElementById('shortcutsModal');
+            if (m) m.classList.add('active');
+        }
+
+        function closeShortcutsModal() {
+            const m = document.getElementById('shortcutsModal');
+            if (m) m.classList.remove('active');
+        }
+
+        // Gerenciamento de Tema (Modo Escuro / Claro)
+        function applyAppTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                document.body.setAttribute('data-theme', 'dark');
+                const iconL = document.querySelector('.theme-icon-light');
+                const iconD = document.querySelector('.theme-icon-dark');
+                if (iconL) iconL.style.display = 'none';
+                if (iconD) iconD.style.display = 'inline';
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+                document.body.removeAttribute('data-theme');
+                const iconL = document.querySelector('.theme-icon-light');
+                const iconD = document.querySelector('.theme-icon-dark');
+                if (iconL) iconL.style.display = 'inline';
+                if (iconD) iconD.style.display = 'none';
+            }
+        }
+
+        function toggleAppTheme() {
+            const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            const newTheme = isDark ? 'light' : 'dark';
+            localStorage.setItem('contabuzu_theme', newTheme);
+            applyAppTheme(newTheme);
+            showToastNotification(newTheme === 'dark' ? '🌙 Modo escuro ativado' : '☀️ Modo claro ativado', 2000, 'info');
         }
 
         // 2. ALTERNÂNCIA DE ABAS DO USUÁRIO (Contador vs Meu Histórico)
@@ -3957,17 +4168,28 @@ if ($canViewSolicitacoes) {
         function sendIncrement(qtd, modo, btnEl) {
             if (!activeContagemId) return;
 
+            // Feedback sonoro e tátil instantâneo
+            playClickSound();
+
             const counterEl = document.getElementById('counterTotal');
             const percentEl = document.getElementById('counterTotalPercent');
             const numEl = document.getElementById('counterTotalNum');
 
             if (counterEl) {
-                counterEl.classList.add('bounce');
-                setTimeout(() => counterEl.classList.remove('bounce'), 200);
+                counterEl.classList.remove('bounce', 'counter-pop-anim');
+                void counterEl.offsetWidth; // força reflow para reiniciar animação
+                counterEl.classList.add('bounce', 'counter-pop-anim');
+                setTimeout(() => counterEl.classList.remove('bounce', 'counter-pop-anim'), 260);
             }
             if (percentEl) {
-                percentEl.classList.add('bounce');
-                setTimeout(() => percentEl.classList.remove('bounce'), 200);
+                percentEl.classList.remove('bounce', 'counter-pop-anim');
+                void percentEl.offsetWidth;
+                percentEl.classList.add('bounce', 'counter-pop-anim');
+                setTimeout(() => percentEl.classList.remove('bounce', 'counter-pop-anim'), 260);
+            }
+            if (numEl) {
+                numEl.classList.add('counter-pop-anim');
+                setTimeout(() => numEl.classList.remove('counter-pop-anim'), 260);
             }
 
             // Destaque visual imediato no botão percentual clicado
@@ -6192,6 +6414,90 @@ if ($canViewSolicitacoes) {
 
         // Esconder alertas e gerenciar aba ativa na carga da página
         document.addEventListener("DOMContentLoaded", function() {
+            // Inicializar tema (Dark / Light)
+            var savedTheme = localStorage.getItem('contabuzu_theme');
+            if (!savedTheme) {
+                savedTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            applyAppTheme(savedTheme);
+
+            var btnTheme = document.getElementById('btn-toggle-theme');
+            if (btnTheme) {
+                btnTheme.addEventListener('click', toggleAppTheme);
+            }
+
+            // Inicializar estado do botão de som
+            if (typeof updateSoundButtonUI === 'function') {
+                updateSoundButtonUI();
+            }
+
+            // Atalhos de teclado globais
+            document.addEventListener('keydown', function(e) {
+                const tag = (e.target.tagName || '').toLowerCase();
+                const isInput = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+
+                // Tecla ESC sempre fecha modais
+                if (e.key === 'Escape') {
+                    closeShortcutsModal();
+                    if (typeof fecharModalVeiculos === 'function') fecharModalVeiculos();
+                    if (typeof closeCorrectionModal === 'function') closeCorrectionModal();
+                    if (typeof closeExpandLogsModal === 'function') closeExpandLogsModal();
+                    if (typeof fecharModalRejeitar === 'function') fecharModalRejeitar();
+                    return;
+                }
+
+                if (isInput) return;
+
+                // Salvar com Ctrl+S ou S
+                if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+                    e.preventDefault();
+                    if (activeContagemId && typeof salvarContagemAtiva === 'function') {
+                        salvarContagemAtiva();
+                    }
+                    return;
+                }
+
+                if (e.key === 's' || e.key === 'S') {
+                    if (activeContagemId && typeof salvarContagemAtiva === 'function') {
+                        salvarContagemAtiva();
+                    }
+                    return;
+                }
+
+                // Atalho '?' para abrir ajuda
+                if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+                    e.preventDefault();
+                    openShortcutsModal();
+                    return;
+                }
+
+                // Atalho 't' ou 'T' para tema
+                if (e.key === 't' || e.key === 'T') {
+                    toggleAppTheme();
+                    return;
+                }
+
+                // Atalho 'm' ou 'M' para som/mute
+                if (e.key === 'm' || e.key === 'M') {
+                    toggleSoundFeedback();
+                    return;
+                }
+
+                // Atalhos para incrementar se tiver contagem ativa por quantidade
+                if (activeContagemId && activeTipoContagem !== 'percentual') {
+                    if (e.key === '1' || e.key === '+' || e.key === ' ' || e.code === 'Space') {
+                        e.preventDefault();
+                        sendIncrement(1, 'increment');
+                    } else if (e.key === '5') {
+                        e.preventDefault();
+                        sendIncrement(5, 'increment');
+                    } else if (e.key === '0') {
+                        e.preventDefault();
+                        sendIncrement(10, 'increment');
+                    }
+                }
+            });
+
             // Inicializar todos os selects pesquisáveis na página
             document.querySelectorAll('.cb-searchable-select').forEach(initSearchableSelect);
 

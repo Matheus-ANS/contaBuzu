@@ -705,10 +705,10 @@ foreach ($sistemas as $s) {
 
         /* Restauração do Design Moderno SaaS do Painel Administrativo */
         body.admin-body {
-            background-color: #f8fafc !important;
-            background-image: none !important;
-            color: #1e293b !important;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            background-color: var(--bg-page, #f8fafc) !important;
+            color: var(--text-primary, #1e293b) !important;
+            font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            transition: background-color 0.2s ease, color 0.2s ease;
         }
 
         body.admin-body *, 
@@ -718,7 +718,7 @@ foreach ($sistemas as $s) {
         body.admin-body table, 
         body.admin-body th, 
         body.admin-body td {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         }
 
         body.admin-body .dashboard-container {
@@ -728,20 +728,20 @@ foreach ($sistemas as $s) {
         }
 
         body.admin-body .dashboard-card {
-            background: #ffffff !important;
-            border: 1px solid #e2e8f0 !important;
+            background: var(--card-bg, #ffffff) !important;
+            border: 1px solid var(--card-border, #e2e8f0) !important;
             border-radius: 16px !important;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03) !important;
             overflow: hidden !important;
         }
 
         body.admin-body .dashboard-header {
-            background: #ffffff !important;
-            border-bottom: 1px solid #e2e8f0 !important;
+            background: var(--card-bg, #ffffff) !important;
+            border-bottom: 1px solid var(--card-border, #e2e8f0) !important;
             padding: 20px 40px !important;
             margin-bottom: 32px !important;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03) !important;
-            color: #0f172a !important;
+            color: var(--text-primary, #0f172a) !important;
         }
 
         body.admin-body .dashboard-header h2 {
@@ -888,6 +888,128 @@ foreach ($sistemas as $s) {
             background: linear-gradient(135deg, #002D5E 0%, #004385 100%) !important;
             transform: translateY(-1px) !important;
         }
+
+        /* Suporte ao Modo Escuro no Painel Admin */
+        [data-theme="dark"] body.admin-body,
+        body.admin-body[data-theme="dark"] {
+            background-color: #0b1120 !important;
+            color: #f8fafc !important;
+        }
+
+        [data-theme="dark"] body.admin-body .dashboard-card {
+            background: #111827 !important;
+            border-color: #1f2e48 !important;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4) !important;
+        }
+
+        [data-theme="dark"] body.admin-body .dashboard-header {
+            background: #1e293b !important;
+            border-bottom-color: #334155 !important;
+            color: #f8fafc !important;
+        }
+
+        [data-theme="dark"] body.admin-body .dashboard-header h2,
+        [data-theme="dark"] body.admin-body h1,
+        [data-theme="dark"] body.admin-body h2,
+        [data-theme="dark"] body.admin-body h3 {
+            color: #f8fafc !important;
+        }
+
+        [data-theme="dark"] body.admin-body .table-wrapper {
+            background: #111827 !important;
+            border-color: #1f2e48 !important;
+        }
+
+        [data-theme="dark"] body.admin-body table th {
+            background: #1e293b !important;
+            color: #94a3b8 !important;
+            border-bottom-color: #334155 !important;
+            border-right-color: #334155 !important;
+        }
+
+        [data-theme="dark"] body.admin-body table td {
+            background: #111827 !important;
+            color: #cbd5e1 !important;
+            border-bottom-color: #1f2e48 !important;
+            border-right-color: #1f2e48 !important;
+        }
+
+        [data-theme="dark"] body.admin-body table tr:hover td {
+            background: #1e293b !important;
+        }
+
+        [data-theme="dark"] body.admin-body .tabs-navigation {
+            border-bottom-color: #334155 !important;
+        }
+
+        [data-theme="dark"] body.admin-body .tab-btn {
+            color: #94a3b8 !important;
+        }
+
+        [data-theme="dark"] body.admin-body .tab-btn:hover {
+            color: #60a5fa !important;
+            background: rgba(30, 41, 59, 0.6) !important;
+        }
+
+        [data-theme="dark"] body.admin-body .tab-btn.active {
+            color: #60a5fa !important;
+            border-bottom-color: #3b82f6 !important;
+            background: #111827 !important;
+        }
+
+        [data-theme="dark"] body.admin-body #search-input {
+            background: #1e293b !important;
+            color: #f8fafc !important;
+            border-color: #334155 !important;
+        }
+
+        [data-theme="dark"] body.admin-body #status-filter-trigger {
+            background: #1e293b !important;
+            border-color: #334155 !important;
+            color: #94a3b8 !important;
+        }
+
+        [data-theme="dark"] body.admin-body .dropdown-menu-card {
+            background: #1e293b !important;
+            border-color: #334155 !important;
+        }
+
+        [data-theme="dark"] body.admin-body .dropdown-item {
+            color: #cbd5e1 !important;
+        }
+
+        [data-theme="dark"] body.admin-body .dropdown-item:hover {
+            background-color: #334155 !important;
+            color: #ffffff !important;
+        }
+
+        [data-theme="dark"] body.admin-body .dropdown-item.selected {
+            background-color: #1e3a8a !important;
+            color: #93c5fd !important;
+        }
+
+        [data-theme="dark"] body.admin-body .modal-card {
+            background: #111827 !important;
+            color: #f8fafc !important;
+            border-color: #1f2e48 !important;
+        }
+
+        [data-theme="dark"] body.admin-body .form-control {
+            background: #1e293b !important;
+            border-color: #334155 !important;
+            color: #f8fafc !important;
+        }
+
+        [data-theme="dark"] body.admin-body .btn-secondary-action {
+            background: #1e293b !important;
+            border-color: #334155 !important;
+            color: #cbd5e1 !important;
+        }
+
+        [data-theme="dark"] body.admin-body .btn-secondary-action:hover {
+            background: #334155 !important;
+            color: #ffffff !important;
+        }
     </style>
     <script>
         var activeTabId = '<?php echo htmlspecialchars($activeTab); ?>';
@@ -1000,6 +1122,13 @@ foreach ($sistemas as $s) {
 
         // Salvar HTML original das células para termo destacado e aplicar filtro inicial
         document.addEventListener("DOMContentLoaded", function() {
+            // Sincronizar tema com localStorage
+            var currentTheme = localStorage.getItem('contabuzu_theme');
+            if (!currentTheme) {
+                currentTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            applyAdminTheme(currentTheme);
+
             // Ocultar mensagens de alerta (sucesso/erro) automaticamente após 2 segundos
             var alerts = document.querySelectorAll('.alert');
             alerts.forEach(function(alertEl) {
@@ -1021,6 +1150,73 @@ foreach ($sistemas as $s) {
             var searchInput = document.getElementById('search-input');
             handleSearch(searchInput ? searchInput.value : '');
         });
+
+        function applyAdminTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                document.body.setAttribute('data-theme', 'dark');
+                var iconL = document.querySelector('.theme-icon-light');
+                var iconD = document.querySelector('.theme-icon-dark');
+                if (iconL) iconL.style.display = 'none';
+                if (iconD) iconD.style.display = 'inline';
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+                document.body.removeAttribute('data-theme');
+                var iconL = document.querySelector('.theme-icon-light');
+                var iconD = document.querySelector('.theme-icon-dark');
+                if (iconL) iconL.style.display = 'inline';
+                if (iconD) iconD.style.display = 'none';
+            }
+        }
+
+        function toggleAdminTheme() {
+            var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+            var newTheme = isDark ? 'light' : 'dark';
+            localStorage.setItem('contabuzu_theme', newTheme);
+            applyAdminTheme(newTheme);
+        }
+
+        function exportActiveTableToCSV() {
+            var activeTab = document.getElementById(activeTabId);
+            if (!activeTab) return;
+
+            var table = activeTab.querySelector('table');
+            if (!table) return;
+
+            var rows = Array.from(table.querySelectorAll('tr'));
+            if (rows.length === 0) return;
+
+            var csvContent = [];
+            rows.forEach(function(row) {
+                if (row.style.display === 'none') return;
+                var cells = Array.from(row.querySelectorAll('th, td'));
+                var rowData = [];
+                cells.forEach(function(cell, idx) {
+                    if (idx === cells.length - 1 && (cell.querySelector('button') || cell.querySelector('.action-btn') || cell.innerText.trim() === 'Ações')) {
+                        return;
+                    }
+                    var text = cell.innerText.replace(/"/g, '""').trim();
+                    rowData.push('"' + text + '"');
+                });
+                if (rowData.length > 0) {
+                    csvContent.push(rowData.join(';'));
+                }
+            });
+
+            if (csvContent.length === 0) return;
+
+            var blob = new Blob(["\uFEFF" + csvContent.join("\r\n")], { type: 'text/csv;charset=utf-8;' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            var cleanTabName = activeTabId.replace('tab-', '');
+            var dateStr = new Date().toISOString().slice(0, 10);
+            a.href = url;
+            a.download = 'contaBuzu_' + cleanTabName + '_' + dateStr + '.csv';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
 
 
         // Pesquisa instantânea na aba ativa com filtro de status de usuário e destaque de termo
@@ -1233,20 +1429,20 @@ foreach ($sistemas as $s) {
         }
     </script>
 </head>
-<body class="admin-body" style="background-color: #f8fafc; color: #1e293b;">
+<body class="admin-body">
 
     <div class="dashboard-container">
         <div class="dashboard-card">
 
             <!-- Header do Painel mobiApps estilo SaaS -->
-            <div class="dashboard-header" style="background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 20px 40px; margin-bottom: 32px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);">
+            <div class="dashboard-header" style="border-bottom: 1px solid var(--card-border); padding: 20px 40px; margin-bottom: 32px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);">
                 <div class="dashboard-user">
                     <div class="user-avatar" style="width: 50px; height: 50px; border-radius: 14px; background: linear-gradient(135deg, #003B7A 0%, #0054A6 100%); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.1rem; box-shadow: 0 4px 12px rgba(0, 84, 166, 0.25);">
                         <?php echo htmlspecialchars($initials); ?>
                     </div>
                     <div class="user-info">
                         <div style="display: flex; align-items: center; gap: 8px;">
-                            <h2 style="font-size: 1.25rem; font-weight: 700; color: #0f172a; margin: 0;"><?php echo htmlspecialchars($loggedNome); ?></h2>
+                            <h2 style="font-size: 1.25rem; font-weight: 700; margin: 0;"><?php echo htmlspecialchars($loggedNome); ?></h2>
                             <span class="badge-admin">
                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="12" height="12">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 0 1-1.043 3.296 3.745 3.745 0 0 1-3.296 1.043A3.745 3.745 0 0 1 12 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 0 1-3.296-1.043 3.746 3.746 0 0 1-1.043-3.296A3.745 3.745 0 0 1 3 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 0 1 1.043-3.296 3.746 3.746 0 0 1 3.296-1.043A3.746 3.746 0 0 1 12 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 0 1 3.296 1.043 3.746 3.746 0 0 1 1.043 3.296A3.745 3.745 0 0 1 21 12Z" />
@@ -1254,13 +1450,20 @@ foreach ($sistemas as $s) {
                                 Administrador
                             </span>
                         </div>
-                        <p style="color: #64748b; font-size: 0.88rem; margin-top: 2px;">@<?php echo htmlspecialchars($loggedLogin); ?> • Painel de Gestão contaBuzu</p>
+                        <p style="color: var(--text-muted); font-size: 0.88rem; margin-top: 2px;">@<?php echo htmlspecialchars($loggedLogin); ?> • Painel de Gestão contaBuzu</p>
                     </div>
                 </div>
 
-                <div style="display: flex; gap: 12px; align-items: center;">
+                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <!-- Botão de Alternar Modo Escuro / Claro -->
+                    <button type="button" class="header-tool-btn" id="btn-toggle-theme" onclick="toggleAdminTheme()" title="Alternar entre modo claro e modo escuro" aria-label="Alternar tema">
+                        <span class="theme-icon-light">☀️</span>
+                        <span class="theme-icon-dark" style="display: none;">🌙</span>
+                        <span id="theme-btn-label">Tema</span>
+                    </button>
+
                     <!-- Botão Voltar para Início -->
-                    <a href="index.php" class="btn-secondary-action" style="text-decoration: none; border: 1px solid #cbd5e1; display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 10px; font-weight: 600; font-size: 0.9rem; transition: all 0.2s;">
+                    <a href="index.php" class="btn-secondary-action" style="text-decoration: none; border: 1px solid var(--card-border); display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 10px; font-weight: 600; font-size: 0.9rem; transition: all 0.2s;">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="18" height="18">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
                         </svg>
@@ -1375,6 +1578,16 @@ foreach ($sistemas as $s) {
                         </button>
                     </div>
                 </div>
+
+                <!-- Botão Exportar CSV -->
+                <button type="button" onclick="exportActiveTableToCSV()" title="Exportar dados visíveis da tabela ativa para planilha CSV (compatível com Excel)"
+                        class="btn-secondary-action"
+                        style="height: 49px; padding: 0 16px; border: 1px solid var(--card-border); border-radius: 10px; font-weight: 600; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; transition: all 0.2s ease;">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="18" height="18" style="color: #2563eb;">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    </svg>
+                    <span>Exportar CSV</span>
+                </button>
             </div>
 
             <!-- Mensagens Alerta -->
