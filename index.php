@@ -1447,7 +1447,7 @@ $dashKpisMap = [
         'desembarques' => number_format($t1_des, 0, ',', '.'),
         'ocupacao' => number_format($t1_medOcup, 1, ',', '.') . '%',
         'passageiros' => number_format($t1_pax, 0, ',', '.'),
-        'contextLabel' => 'Passageiros por Data / Linha'
+        'contextLabel' => 'Geral'
     ],
     'dash-t2' => [
         'viagens' => number_format($t2_viag, 0, ',', '.'),
@@ -1692,7 +1692,7 @@ if ($canViewSolicitacoes) {
             </div>
 
             <!-- Alertas e Notificações -->
-            <div style="padding: 0 24px;">
+            <div class="dashboard-alerts-wrapper" style="padding: 0 24px;">
                 <?php if ($mensagemSucesso): ?>
                     <div class="alert alert-success" style="margin-top: 16px;">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="20" height="20">
@@ -1713,7 +1713,7 @@ if ($canViewSolicitacoes) {
             </div>
 
             <!-- ÁREA PRINCIPAL DA APLICAÇÃO -->
-            <div style="padding: 24px;">
+            <div class="dashboard-main-area" style="padding: 24px;">
                 
                 <!-- ABA 1: PAINEL DO CONTADOR (SESSÃO ATIVA OU NOVO INÍCIO) -->
                 <div id="user-tab-contador" class="user-tab-content">
@@ -2474,12 +2474,12 @@ if ($canViewSolicitacoes) {
                             <form method="GET" action="index.php" id="form-filtros-historico">
                                 <input type="hidden" name="tab" value="historico">
                                 
-                                <div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;">
+                                <div class="dash-filters-grid" style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;">
                                     
                                     <!-- GROUP 1: PERÍODO -->
-                                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                                    <div class="dash-filter-col-periodo" style="display: flex; flex-direction: column; gap: 4px;">
                                         <span style="font-weight: 800; font-size: 0.82rem; color: #1e3a8a;">Período</span>
-                                        <div style="display: flex; gap: 8px; align-items: center;">
+                                        <div class="dash-filter-pair-inputs" style="display: flex; gap: 8px; align-items: center;">
                                             
                                             <!-- Data início -->
                                             <div onclick="triggerInputPicker(this, event)" class="filter-box-clickable" style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 6px 10px; background: #ffffff; min-width: 140px; display: flex; flex-direction: column; cursor: pointer; transition: all 0.2s ease;">
@@ -2497,9 +2497,9 @@ if ($canViewSolicitacoes) {
                                     </div>
 
                                     <!-- GROUP 2: HORÁRIO -->
-                                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                                    <div class="dash-filter-col-horario" style="display: flex; flex-direction: column; gap: 4px;">
                                         <span style="font-weight: 800; font-size: 0.82rem; color: #1e3a8a;">Horário</span>
-                                        <div style="display: flex; gap: 8px; align-items: center;">
+                                        <div class="dash-filter-pair-inputs" style="display: flex; gap: 8px; align-items: center;">
                                             
                                             <!-- Hora início -->
                                             <div onclick="triggerInputPicker(this, event)" class="filter-box-clickable" style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 6px 10px; background: #ffffff; width: 110px; display: flex; flex-direction: column; cursor: pointer; transition: all 0.2s ease;">
@@ -2608,7 +2608,7 @@ if ($canViewSolicitacoes) {
                                     <?php endif; ?>
 
                                     <!-- ACTIONS BUTTONS -->
-                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                    <div class="dash-filter-actions-group" style="display: flex; gap: 8px; align-items: center;">
                                         <button type="submit" style="background: #2563eb; color: #ffffff; border: none; padding: 10px 18px; border-radius: 8px; font-weight: 700; font-size: 0.86rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(37,99,235,0.25); height: 42px;">
                                             <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                                                 <circle cx="11" cy="11" r="8"></circle>
@@ -2743,7 +2743,7 @@ if ($canViewSolicitacoes) {
 
                     <div class="dash-tables-nav" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; background: #ffffff; padding: 10px 14px; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.02);">
                         <button type="button" class="dash-nav-btn active" id="btn-dash-t1" onclick="switchDashTable('dash-t1', this)" style="background: #2563eb; color: #ffffff; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: none; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(37,99,235,0.25);">
-                            📊 1. Passageiros por Data / Hora / Linha / Veículo
+                            📊 1. Geral
                         </button>
                         <button type="button" class="dash-nav-btn" id="btn-dash-t2" onclick="switchDashTable('dash-t2', this)" style="background: #f1f5f9; color: #475569; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease;">
                             🚍 2. Total por Linha
@@ -2761,12 +2761,12 @@ if ($canViewSolicitacoes) {
                         <?php endif; ?>
                     </div>
 
-                    <!-- TABELA 1: QUANTIDADE PASSAGEIROS POR DATA/ HORA/ LINHA/ VEÍCULO -->
+                    <!-- TABELA 1: GERAL -->
                     <div id="container-dash-t1" class="dash-table-card panel-card" style="margin-bottom: 24px;">
                         <div class="panel-card-header" style="background: #ffffff; padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                             <div>
                                 <h3 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                                    <span>📊 Quantidade passageiros por data/ hora/ linha/ veículo</span>
+                                    <span>📊 Geral</span>
                                 </h3>
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Detalhamento individual de contagens por data, horário, linha e veículo</p>
                             </div>

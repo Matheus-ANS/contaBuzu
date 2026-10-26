@@ -3365,6 +3365,449 @@ button, .chip-btn, .tab-btn, .btn, .pg-btn, a {
     }
 }
 
+/* ==========================================================================
+   SISTEMA DE RESPONSIVIDADE COMPLETO PARA CELULAR E DISPOSITIVOS MÓVEIS
+   (Garante usabilidade perfeita em smartphones de 320px a 768px)
+   ========================================================================== */
+
+/* Prevenção de quebra horizontal global */
+html, body {
+    overflow-x: hidden;
+    max-width: 100vw;
+    -webkit-text-size-adjust: 100%;
+}
+
+@media (max-width: 768px) {
+    /* 1. Containers Principais e Espaçamentos */
+    .dashboard-container,
+    body.admin-body .dashboard-container {
+        margin: 8px auto !important;
+        padding: 0 8px !important;
+        width: 100% !important;
+        max-width: 100vw !important;
+        box-sizing: border-box !important;
+    }
+
+    .dashboard-card,
+    body.admin-body .dashboard-card {
+        border-radius: 14px !important;
+        overflow: hidden !important;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04) !important;
+    }
+
+    .dashboard-main-area {
+        padding: 14px 10px !important;
+    }
+
+    .dashboard-alerts-wrapper {
+        padding: 0 10px !important;
+    }
+
+    /* 2. Header do Sistema e Admin */
+    .dashboard-header,
+    body.admin-body .dashboard-header {
+        padding: 14px 12px !important;
+        margin-bottom: 12px !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 12px !important;
+    }
+
+    .dashboard-user {
+        width: 100% !important;
+        justify-content: flex-start !important;
+        gap: 12px !important;
+    }
+
+    .dashboard-user .user-avatar {
+        width: 44px !important;
+        height: 44px !important;
+        font-size: 1rem !important;
+        border-radius: 12px !important;
+        flex-shrink: 0 !important;
+    }
+
+    .dashboard-user .user-info h2 {
+        font-size: 1.05rem !important;
+        margin-bottom: 2px !important;
+    }
+
+    .dashboard-user .user-info p {
+        font-size: 0.78rem !important;
+    }
+
+    .header-right-actions {
+        width: 100% !important;
+        display: flex !important;
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 8px !important;
+    }
+
+    .realtime-clock-card {
+        width: 100% !important;
+        justify-content: space-between !important;
+        padding: 8px 12px !important;
+        font-size: 0.82rem !important;
+        border-radius: 8px !important;
+    }
+
+    .btn-admin-link,
+    .btn-logout {
+        padding: 8px 12px !important;
+        font-size: 0.82rem !important;
+        min-height: 40px !important;
+        flex: 1 1 auto !important;
+        justify-content: center !important;
+        border-radius: 8px !important;
+    }
+
+    /* 3. Navegação por Abas (Horizontal Touch-Scroll Carrossel) */
+    .tabs-navigation,
+    body.admin-body .tabs-navigation {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        white-space: nowrap !important;
+        margin: 10px 8px 0 !important;
+        padding: 2px 2px 8px !important;
+        gap: 8px !important;
+        border-bottom: 2px solid #e2e8f0 !important;
+        scrollbar-width: none !important;
+    }
+
+    .tabs-navigation::-webkit-scrollbar,
+    body.admin-body .tabs-navigation::-webkit-scrollbar {
+        display: none !important;
+    }
+
+    .tab-btn,
+    body.admin-body .tab-btn {
+        flex-shrink: 0 !important;
+        white-space: nowrap !important;
+        padding: 9px 14px !important;
+        font-size: 0.84rem !important;
+        border-radius: 10px !important;
+    }
+
+    body.admin-body .tab-btn {
+        border-radius: 0 !important;
+        padding: 10px 14px !important;
+    }
+
+    /* 4. Formulário de Filtros do Dashboard */
+    .dash-filters-grid {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 12px !important;
+        width: 100% !important;
+    }
+
+    .dash-filters-grid > div {
+        width: 100% !important;
+        min-width: 0 !important;
+        flex: 1 1 100% !important;
+    }
+
+    .dash-filter-col-periodo .dash-filter-pair-inputs,
+    .dash-filter-col-horario .dash-filter-pair-inputs {
+        display: grid !important;
+        grid-template-columns: 1fr 1fr !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+
+    .dash-filter-pair-inputs > div {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+
+    .dash-filter-actions-group {
+        display: grid !important;
+        grid-template-columns: 1fr 1fr !important;
+        gap: 10px !important;
+        width: 100% !important;
+        margin-top: 4px !important;
+    }
+
+    .dash-filter-actions-group button,
+    .dash-filter-actions-group a {
+        width: 100% !important;
+        justify-content: center !important;
+        height: 44px !important;
+    }
+
+    /* 5. Quadro de KPIs em Telas de Celular */
+    .kpi-cards-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 10px !important;
+        margin-bottom: 16px !important;
+    }
+
+    .kpi-cards-grid > div {
+        padding: 14px 12px !important;
+        border-radius: 12px !important;
+    }
+
+    .kpi-cards-grid > div:last-child {
+        grid-column: span 2 !important;
+    }
+
+    .kpi-cards-grid .kpi-metric-val {
+        font-size: 1.45rem !important;
+    }
+
+    /* 6. Central de Relatórios Gerenciais (Card Azul) */
+    .gerente-report-action-card {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        padding: 16px 14px !important;
+        gap: 14px !important;
+        border-radius: 14px !important;
+    }
+
+    .gerente-report-action-card h3 {
+        font-size: 1.05rem !important;
+    }
+
+    .gerente-report-action-card p {
+        font-size: 0.8rem !important;
+    }
+
+    .gerente-report-action-card > div:last-child {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+
+    .gerente-report-action-card button {
+        width: 100% !important;
+        justify-content: center !important;
+        padding: 12px !important;
+        font-size: 0.86rem !important;
+    }
+
+    /* 7. Navegação de Tabelas do Dashboard (Carrossel Touch) */
+    .dash-tables-nav {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding: 8px 10px !important;
+        margin-bottom: 16px !important;
+        border-radius: 12px !important;
+        gap: 8px !important;
+        scrollbar-width: none !important;
+    }
+
+    .dash-tables-nav::-webkit-scrollbar {
+        display: none !important;
+    }
+
+    .dash-tables-nav .dash-nav-btn {
+        flex-shrink: 0 !important;
+        white-space: nowrap !important;
+        font-size: 0.8rem !important;
+        padding: 8px 12px !important;
+    }
+
+    /* 8. Cabeçalho das Tabelas e Ações de Exportação */
+    .panel-card-header {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        padding: 14px 12px !important;
+        gap: 12px !important;
+    }
+
+    .panel-card-header > div:first-child h3 {
+        font-size: 0.95rem !important;
+    }
+
+    .panel-card-header > div:last-child {
+        display: flex !important;
+        flex-direction: column !important;
+        width: 100% !important;
+        gap: 8px !important;
+    }
+
+    .panel-card-header input[type="text"] {
+        width: 100% !important;
+        box-sizing: border-box !important;
+        font-size: 16px !important;
+    }
+
+    .export-dropdown-wrapper {
+        width: 100% !important;
+    }
+
+    .export-dropdown-wrapper > button {
+        width: 100% !important;
+        justify-content: center !important;
+        padding: 10px 14px !important;
+    }
+
+    .export-menu-box {
+        left: 0 !important;
+        right: 0 !important;
+        width: 100% !important;
+    }
+
+    /* 9. Rolagem Suave das Tabelas com Feedback Visual */
+    .panel-card div[style*="overflow-x: auto"],
+    div[style*="overflow-x: auto"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        scrollbar-width: thin !important;
+        margin-bottom: 6px !important;
+        padding-left: 8px !important;
+        padding-right: 8px !important;
+    }
+
+    .apps-table,
+    body.admin-body table {
+        font-size: 0.8rem !important;
+        min-width: 580px !important;
+    }
+
+    .apps-table th,
+    .apps-table td {
+        padding: 9px 8px !important;
+    }
+
+    /* 10. Paginação das Tabelas do Dashboard no Mobile */
+    .dash-pagination-container {
+        flex-direction: column !important;
+        align-items: center !important;
+        text-align: center !important;
+        gap: 12px !important;
+        padding: 14px 10px !important;
+    }
+
+    .dash-pagination-container > div {
+        width: 100% !important;
+        justify-content: center !important;
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+    }
+
+    .dash-pg-btn {
+        padding: 6px 10px !important;
+        font-size: 0.78rem !important;
+    }
+
+    /* 11. Formulário de Início de Contagem (Tela do Pesquisador) */
+    .form-iniciar-grid,
+    .panel-layout-grid {
+        grid-template-columns: 1fr !important;
+        gap: 12px !important;
+    }
+
+    .btn-iniciar-contagem-verde,
+    #btn-iniciar-contagem {
+        width: 100% !important;
+        min-height: 52px !important;
+        font-size: 1.05rem !important;
+        border-radius: 12px !important;
+        justify-content: center !important;
+    }
+
+    .sentido-options-grid,
+    .tipo-contagem-options-grid {
+        grid-template-columns: 1fr 1fr !important;
+        gap: 8px !important;
+    }
+
+    /* 12. Painel Admin (Tabelas, Toolbar, Modais) */
+    body.admin-body .toolbar-card {
+        padding: 12px !important;
+        flex-direction: column !important;
+        gap: 10px !important;
+    }
+
+    body.admin-body .toolbar-search {
+        width: 100% !important;
+    }
+
+    body.admin-body .toolbar-search input {
+        width: 100% !important;
+        font-size: 16px !important;
+    }
+
+    body.admin-body .toolbar-actions {
+        width: 100% !important;
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 8px !important;
+    }
+
+    body.admin-body .toolbar-actions .btn-add-action,
+    body.admin-body .toolbar-actions .dropdown-menu-wrapper {
+        width: 100% !important;
+    }
+
+    body.admin-body .toolbar-actions .btn-add-action,
+    body.admin-body .toolbar-actions button {
+        width: 100% !important;
+        justify-content: center !important;
+        height: 44px !important;
+    }
+
+    /* 13. Modais do Sistema Adaptados ao Celular */
+    .modal-overlay {
+        padding: 8px !important;
+    }
+
+    .modal-card {
+        width: 96vw !important;
+        max-width: 96vw !important;
+        padding: 16px 14px !important;
+        max-height: 94vh !important;
+        overflow-y: auto !important;
+        border-radius: 14px !important;
+    }
+
+    .modal-footer {
+        flex-direction: column-reverse !important;
+        gap: 8px !important;
+    }
+
+    .modal-footer button,
+    .modal-footer .btn {
+        width: 100% !important;
+        justify-content: center !important;
+        height: 44px !important;
+    }
+}
+
+/* Telas Muito Estreitas (Abaixo de 420px) */
+@media (max-width: 420px) {
+    .kpi-cards-grid {
+        grid-template-columns: 1fr !important;
+    }
+
+    .kpi-cards-grid > div:last-child {
+        grid-column: span 1 !important;
+    }
+
+    .dash-filter-col-periodo .dash-filter-pair-inputs,
+    .dash-filter-col-horario .dash-filter-pair-inputs {
+        grid-template-columns: 1fr !important;
+    }
+
+    .counter-number {
+        font-size: 2.8rem !important;
+    }
+
+    .btn-count {
+        min-height: 48px !important;
+        font-size: 1.2rem !important;
+    }
+}
+
 
 
 
