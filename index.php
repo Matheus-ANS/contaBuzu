@@ -1421,6 +1421,8 @@ if ($canViewSolicitacoes) {
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body style="padding-bottom: 60px;">
@@ -6461,75 +6463,179 @@ if ($canViewSolicitacoes) {
             const table = document.getElementById(tableId);
             if (!table) return;
 
-            const element = document.createElement('div');
-            element.style.padding = '20px';
-            element.style.fontFamily = 'Arial, sans-serif';
-
             const titleText = filename.replace(/_/g, ' ');
-            
-            const title = document.createElement('h2');
-            title.style.color = '#0f172a';
-            title.style.fontSize = '18px';
-            title.style.marginBottom = '4px';
-            title.style.textAlign = 'center';
-            title.textContent = 'Relatório contaBuzu — ' + titleText;
-            
-            const subtitle = document.createElement('p');
-            subtitle.style.color = '#64748b';
-            subtitle.style.fontSize = '12px';
-            subtitle.style.marginBottom = '15px';
-            subtitle.style.textAlign = 'center';
-            subtitle.textContent = 'Gerado em: ' + new Date().toLocaleString('pt-BR');
+            const generatedAt = 'Gerado em: ' + new Date().toLocaleString('pt-BR');
 
-            const tableClone = table.cloneNode(true);
-            const hiddenRows = tableClone.querySelectorAll('tr[style*="display: none"]');
-            hiddenRows.forEach(r => r.remove());
+            // 1. Extrai cabeçalhos e linhas (respeitando se houver filtro ativo de busca na tela)
+            const head = [];
+            const body = [];
+            const columnAlignments = {};
 
-            tableClone.style.width = '100%';
-            tableClone.style.fontSize = '11px';
-            tableClone.style.borderCollapse = 'collapse';
-            
-            const cells = tableClone.querySelectorAll('th, td');
-            cells.forEach(cell => {
-                cell.style.border = '1px solid #cbd5e1';
-                cell.style.padding = '8px 10px';
+            const ths = table.querySelectorAll('thead tr th');
+            if (ths.length > 0) {
+                const headerRow = [];
+                ths.forEach((th, idx) => {
+                    const txt = th.innerText.replace(/\s+/g, ' ').trim();
+                    headerRow.push(txt);
+
+                    const computedAlign = window.getComputedStyle(th).textAlign;
+                    if (computedAlign === 'right' || /embarque|desembarque/i.test(txt)) {
+                        columnAlignments[idx] = 'right';
+                    } else if (computedAlign === 'center' || /data|hora|viagem|ocup/i.test(txt)) {
+                        columnAlignments[idx] = 'center';
+                    } else {
+                        columnAlignments[idx] = 'left';
+                    }
+                });
+                head.push(headerRow);
+            }
+
+            const trs = table.querySelectorAll('tbody tr');
+            trs.forEach(tr => {
+                if (tr.style.display === 'none') return;
+                const tds = tr.querySelectorAll('td');
+                if (tds.length === 0) return;
+
+                // Mensagem de tabela vazia
+                if (tds.length === 1 && tds[0].colSpan > 1) {
+                    body.push([tds[0].innerText.trim()]);
+                    return;
+                }
+
+                const rowData = [];
+                tds.forEach(td => {
+                    let txt = td.innerText.replace(/\s+/g, ' ').trim();
+                    rowData.push(txt);
+                });
+                body.push(rowData);
             });
 
-            element.appendChild(title);
-            element.appendChild(subtitle);
-            element.appendChild(tableClone);
+            // MÉTODO 1: jsPDF + autoTable (Vetorizado, sem limite de canvas, paginação infinita e sem cortar colunas)
+            if (window.jspdf && window.jspdf.jsPDF) {
+                try {
+                    const { jsPDF } = window.jspdf;
+                    const doc = new jsPDF({
+                        orientation: 'landscape',
+                        unit: 'pt',
+                        format: 'a4'
+                    });
 
-            if (typeof html2pdf !== 'undefined') {
-                const opt = {
-                    margin:       [10, 10, 10, 10],
-                    filename:     filename + '.pdf',
-                    image:        { type: 'jpeg', quality: 0.98 },
-                    html2canvas:  { scale: 2, useCORS: true },
-                    jsPDF:        { unit: 'mm', format: 'a4', orientation: 'landscape' }
-                };
-                html2pdf().set(opt).from(element).save();
-            } else {
-                const win = window.open('', '_blank');
-                win.document.write(`
+                    // Define alinhamento individual de cada coluna
+                    const columnStyles = {};
+                    Object.keys(columnAlignments).forEach(idx => {
+                        columnStyles[idx] = { halign: columnAlignments[idx] };
+                    });
+
+                    // Cabeçalho do Documento
+                    doc.setFont('helvetica', 'bold');
+                    doc.setFontSize(13);
+                    doc.setTextColor(15, 23, 42);
+                    doc.text('Relatório contaBuzu — ' + titleText, 35, 32);
+
+                    doc.setFont('helvetica', 'normal');
+                    doc.setFontSize(8.5);
+                    doc.setTextColor(100, 116, 139);
+                    doc.text(generatedAt + '   |   Total de registros: ' + body.length, 35, 46);
+
+                    // Geração da Tabela com AutoTable
+                    doc.autoTable({
+                        head: head,
+                        body: body,
+                        startY: 55,
+                        theme: 'striped',
+                        styles: {
+                            font: 'helvetica',
+                            fontSize: 7.8,
+                            cellPadding: { top: 4, bottom: 4, left: 6, right: 6 },
+                            valign: 'middle',
+                            overflow: 'linebreak'
+                        },
+                        headStyles: {
+                            fillColor: [37, 99, 235],
+                            textColor: 255,
+                            fontStyle: 'bold',
+                            halign: 'center',
+                            fontSize: 8
+                        },
+                        alternateRowStyles: {
+                            fillColor: [248, 250, 252]
+                        },
+                        columnStyles: columnStyles,
+                        margin: { top: 55, left: 30, right: 30, bottom: 30 },
+                        didDrawPage: function(data) {
+                            const pageCount = doc.internal.getNumberOfPages();
+                            doc.setFontSize(8);
+                            doc.setTextColor(148, 163, 184);
+                            doc.text(
+                                'Página ' + data.pageNumber + ' de ' + pageCount,
+                                doc.internal.pageSize.getWidth() - 80,
+                                doc.internal.pageSize.getHeight() - 14
+                            );
+                        }
+                    });
+
+                    doc.save(filename + '.pdf');
+                    return;
+                } catch (err) {
+                    console.warn('Falha no jsPDF autoTable, aplicando fallback:', err);
+                }
+            }
+
+            // MÉTODO 2: Fallback com janela de impressão nativa do navegador (@page landscape)
+            const printWin = window.open('', '_blank');
+            if (printWin) {
+                let tableHtml = '<table style="width: 100%; border-collapse: collapse; font-size: 11px;">';
+                if (head.length > 0) {
+                    tableHtml += '<thead><tr style="background: #2563eb; color: #ffffff;">';
+                    head[0].forEach((h, i) => {
+                        const align = columnAlignments[i] || 'left';
+                        tableHtml += `<th style="border: 1px solid #cbd5e1; padding: 6px 8px; text-align: ${align};">${h}</th>`;
+                    });
+                    tableHtml += '</tr></thead>';
+                }
+                tableHtml += '<tbody>';
+                body.forEach(row => {
+                    tableHtml += '<tr>';
+                    row.forEach((cell, i) => {
+                        const align = columnAlignments[i] || 'left';
+                        tableHtml += `<td style="border: 1px solid #e2e8f0; padding: 5px 8px; text-align: ${align};">${cell}</td>`;
+                    });
+                    tableHtml += '</tr>';
+                });
+                tableHtml += '</tbody></table>';
+
+                printWin.document.write(`
+                    <!DOCTYPE html>
                     <html>
                     <head>
+                        <meta charset="utf-8">
                         <title>${titleText}</title>
                         <style>
-                            body { font-family: Arial, sans-serif; padding: 20px; }
-                            h2 { text-align: center; color: #0f172a; }
-                            p { text-align: center; color: #64748b; font-size: 12px; }
-                            table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-                            th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 12px; }
-                            th { background: #2563eb; color: white; }
+                            @page { size: landscape; margin: 10mm; }
+                            body { font-family: Arial, sans-serif; margin: 0; padding: 15px; color: #0f172a; }
+                            h2 { text-align: center; color: #0f172a; margin: 0 0 4px; font-size: 16px; }
+                            p.sub { text-align: center; color: #64748b; font-size: 11px; margin: 0 0 16px; }
+                            table { width: 100%; border-collapse: collapse; }
+                            thead { display: table-header-group; }
+                            tr { page-break-inside: avoid; }
+                            th, td { font-size: 10px; }
+                            th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                            tr:nth-child(even) { background-color: #f8fafc; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
                         </style>
                     </head>
                     <body>
-                        ${element.innerHTML}
-                        <script>window.onload = function() { window.print(); window.close(); };<\/script>
+                        <h2>Relatório contaBuzu — ${titleText}</h2>
+                        <p class="sub">${generatedAt} | Total de registros: ${body.length}</p>
+                        ${tableHtml}
+                        <script>
+                            window.onload = function() {
+                                window.print();
+                            };
+                        <\/script>
                     </body>
                     </html>
                 `);
-                win.document.close();
+                printWin.document.close();
             }
         }
 
