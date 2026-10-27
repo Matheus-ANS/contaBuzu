@@ -1137,6 +1137,12 @@ try {
 
     // 1. Quantidade de passageiros por data / hora / linha / veículo (detalha todos os veículos contados)
     $dadosTabelaLinhaVeiculoDataHora = [];
+    $t1TotalEmbarques = 0;
+    $t1TotalDesembarques = 0;
+    $t1TotalPassageiros = 0;
+    $t1SomaOcupacao = 0;
+    $t1TotalRegistros = 0;
+    $t1MediaOcupacao = 0;
     try {
         $stmtT1 = $pdo->prepare("
             SELECT 
@@ -1150,6 +1156,8 @@ try {
                     DATE_FORMAT(c.dataInicio, '%H:%i'),
                     '00:00'
                 ) as horaFormatada,
+                COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'Plataforma') as empresaNome,
+                COALESCE(loc.local, 'Estação Lapa') as localNome,
                 COALESCE(NULLIF(l.numero, ''), CONCAT('Linha #', c.idLinha)) as linhaNumero,
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
                 COALESCE(NULLIF(v_vp.prefixo, 0), v_vp.placa, NULLIF(v_c.prefixo, 0), v_c.placa, 'S/ Veículo') as veiculoPrefixo,
@@ -1175,6 +1183,7 @@ try {
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
             LEFT JOIN veiculoPesquisado vp ON c.idPesquisa = vp.idPesquisa
             LEFT JOIN veiculo v_vp ON vp.idVeiculo = v_vp.idVeiculo
+            LEFT JOIN empresa e ON (c.idEmpresa = e.idEmpresa OR v_vp.idEmpresa = e.idEmpresa OR v_c.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa)
             LEFT JOIN (
                 SELECT 
                     idPesquisa,
@@ -1193,6 +1202,19 @@ try {
         ");
         $stmtT1->execute($paramsHist);
         $dadosTabelaLinhaVeiculoDataHora = $stmtT1->fetchAll();
+
+        $t1TotalRegistros = count($dadosTabelaLinhaVeiculoDataHora);
+        foreach ($dadosTabelaLinhaVeiculoDataHora as $rowT1) {
+            $e = (int)$rowT1['embarques'];
+            $d = (int)$rowT1['desembarques'];
+            $p = max($e, $d);
+            if ($p == 0 && ($e > 0 || $d > 0)) $p = $e + $d;
+            $t1TotalEmbarques += $e;
+            $t1TotalDesembarques += $d;
+            $t1TotalPassageiros += $p;
+            $t1SomaOcupacao += cbCalcularOcupacao($rowT1);
+        }
+        $t1MediaOcupacao = ($t1TotalRegistros > 0) ? round($t1SomaOcupacao / $t1TotalRegistros) : 0;
     } catch (PDOException $e) {}
 
     // 2. Total de passageiros por linha (agrupado por Data e Linha)
@@ -2700,64 +2722,51 @@ if ($canViewSolicitacoes) {
 
                     </div>
 
-                    <?php if ($canViewAllContagens): ?>
-                    <!-- PAINEL GERENCIAL: RELATÓRIO GERAL CONSOLIDADO DE TODAS AS CONTAGENS -->
-                    <div class="gerente-report-action-card" style="background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); color: #ffffff; border-radius: 16px; padding: 20px 24px; margin-bottom: 22px; box-shadow: 0 4px 14px rgba(15, 23, 42, 0.15); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-                        <div style="max-width: 620px;">
-                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                                <span style="background: rgba(255,255,255,0.18); color: #93c5fd; font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; padding: 4px 10px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.2);">
-                                    📋 Central de Relatórios Gerenciais
-                                </span>
-                                <span style="font-size: 0.82rem; color: #cbd5e1; font-weight: 600;">
-                                    <?php echo ($filtroUsuario > 0) ? 'Filtrado por Pesquisador Específico' : 'Consolidado de Todos os Pesquisadores'; ?>
-                                </span>
-                            </div>
-                            <h3 style="margin: 0 0 6px; font-size: 1.2rem; font-weight: 800; color: #ffffff;">
-                                Exportar Relatório Geral Consolidado de Contagens
-                            </h3>
-                            <p style="margin: 0; font-size: 0.85rem; color: #94a3b8; line-height: 1.45;">
-                                Reúna todas as <strong><?php echo number_format($totalSessoesUsuario, 0, ',', '.'); ?></strong> contagens registradas no período filtrado em um arquivo profissional pronto para envio à diretoria ou órgãos reguladores.
-                            </p>
+                    <!-- BARRA DE NAVEGAÇÃO DE TABELAS E BOTÃO COMPACTO DE EXPORTAÇÃO GERAL -->
+                    <div class="dash-tables-header-bar" style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
+                        <div class="dash-tables-nav" style="display: flex; gap: 8px; flex-wrap: wrap; background: #ffffff; padding: 8px 12px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.02); align-items: center;">
+                            <button type="button" class="dash-nav-btn active" id="btn-dash-t1" onclick="switchDashTable('dash-t1', this)" style="background: #2563eb; color: #ffffff; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: none; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(37,99,235,0.25); white-space: nowrap;">
+                                📊 1. Geral
+                            </button>
+                            <button type="button" class="dash-nav-btn" id="btn-dash-t2" onclick="switchDashTable('dash-t2', this)" style="background: #f1f5f9; color: #475569; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
+                                🚍 2. Total por Linha
+                            </button>
+                            <button type="button" class="dash-nav-btn" id="btn-dash-t3" onclick="switchDashTable('dash-t3', this)" style="background: #f1f5f9; color: #475569; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
+                                📍 3. Por Local
+                            </button>
+                            <button type="button" class="dash-nav-btn" id="btn-dash-t4" onclick="switchDashTable('dash-t4', this)" style="background: #f1f5f9; color: #475569; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
+                                🏢 4. Por Empresa / Cooperativa
+                            </button>
+                            <?php if ($canViewAllContagens): ?>
+                            <button type="button" class="dash-nav-btn" id="btn-dash-t5" onclick="switchDashTable('dash-t5', this)" style="background: #f1f5f9; color: #475569; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
+                                👥 5. Por Pesquisador / Usuário
+                            </button>
+                            <?php endif; ?>
                         </div>
-                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                            <!-- Botão PDF -->
-                            <button type="button" onclick="exportTable('tbl-t1', 'pdf', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="background: #e11d48; color: #ffffff; border: none; padding: 11px 18px; border-radius: 10px; font-weight: 700; font-size: 0.88rem; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 10px rgba(225,29,72,0.35); transition: transform 0.15s ease;" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                                <span>Exportar PDF</span>
-                            </button>
 
-                            <!-- Botão CSV -->
-                            <button type="button" onclick="exportTable('tbl-t1', 'csv', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="background: #16a34a; color: #ffffff; border: none; padding: 11px 18px; border-radius: 10px; font-weight: 700; font-size: 0.88rem; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 10px rgba(22,163,74,0.35); transition: transform 0.15s ease;" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
-                                <span>Exportar CSV</span>
-                            </button>
-
-                            <!-- Botão DOC -->
-                            <button type="button" onclick="exportTable('tbl-t1', 'doc', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="background: #2563eb; color: #ffffff; border: none; padding: 11px 18px; border-radius: 10px; font-weight: 700; font-size: 0.88rem; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 10px rgba(37,99,235,0.35); transition: transform 0.15s ease;" onmouseover="this.style.transform='translateY(-2px)'" onmouseout="this.style.transform='translateY(0)'">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>
-                                <span>Exportar DOC</span>
-                            </button>
-                        </div>
-                    </div>
-                    <?php endif; ?>
-
-                    <div class="dash-tables-nav" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; background: #ffffff; padding: 10px 14px; border-radius: 14px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.02);">
-                        <button type="button" class="dash-nav-btn active" id="btn-dash-t1" onclick="switchDashTable('dash-t1', this)" style="background: #2563eb; color: #ffffff; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: none; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(37,99,235,0.25);">
-                            📊 1. Geral
-                        </button>
-                        <button type="button" class="dash-nav-btn" id="btn-dash-t2" onclick="switchDashTable('dash-t2', this)" style="background: #f1f5f9; color: #475569; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease;">
-                            🚍 2. Total por Linha
-                        </button>
-                        <button type="button" class="dash-nav-btn" id="btn-dash-t3" onclick="switchDashTable('dash-t3', this)" style="background: #f1f5f9; color: #475569; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease;">
-                            📍 3. Por Local
-                        </button>
-                        <button type="button" class="dash-nav-btn" id="btn-dash-t4" onclick="switchDashTable('dash-t4', this)" style="background: #f1f5f9; color: #475569; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease;">
-                            🏢 4. Por Empresa / Cooperativa
-                        </button>
                         <?php if ($canViewAllContagens): ?>
-                        <button type="button" class="dash-nav-btn" id="btn-dash-t5" onclick="switchDashTable('dash-t5', this)" style="background: #f1f5f9; color: #475569; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease;">
-                            👥 5. Por Pesquisador / Usuário
-                        </button>
+                        <!-- BOTÃO COMPACTO DE EXPORTAR RELATÓRIO GERAL (CONSOLIDADO) -->
+                        <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block;">
+                            <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório Geral Consolidado de Contagens">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                <span>Exportar Relatório</span>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                            </button>
+                            <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 210px; z-index: 100; padding: 6px 0;">
+                                <div style="padding: 6px 14px 4px; font-size: 0.72rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f1f5f9; margin-bottom: 4px;">
+                                    Relatório Consolidado
+                                </div>
+                                <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'pdf', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                    📄 Exportar para PDF
+                                </a>
+                                <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'csv', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                    📊 Exportar para CSV
+                                </a>
+                                <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'doc', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                    📝 Exportar para DOC
+                                </a>
+                            </div>
+                        </div>
                         <?php endif; ?>
                     </div>
 
@@ -2766,25 +2775,25 @@ if ($canViewSolicitacoes) {
                         <div class="panel-card-header" style="background: #ffffff; padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                             <div>
                                 <h3 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                                    <span>📊 Geral</span>
+                                    <span>📊 Geral — Auditoria Detalhada de Contagens</span>
                                 </h3>
-                                <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Detalhamento individual de contagens por data, horário, linha e veículo</p>
+                                <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Detalhamento operacional por data, horário, empresa, local, linha e veículo com totais para repasse</p>
                             </div>
                             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                <input type="text" oninput="filterTableRows('tbl-t1', this.value)" placeholder="Buscar data, linha, veículo, viagem..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; width: 220px; outline: none; background: #ffffff;">
+                                <input type="text" oninput="filterTableRows('tbl-t1', this.value)" placeholder="Buscar data, empresa, local, linha, veículo..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; width: 260px; outline: none; background: #ffffff;">
                                 <div class="export-dropdown-wrapper" style="position: relative; display: inline-block;">
                                     <button type="button" onclick="toggleExportMenu('export-menu-t1', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2);">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                                         <span>Exportar</span>
                                     </button>
                                     <div id="export-menu-t1" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 110%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 170px; z-index: 100; padding: 6px 0;">
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'pdf', 'Quantidade_Passageiros_Data_Hora_Linha_Veiculo')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none;">
+                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'pdf', 'Relatorio_Auditoria_Contagens_Geral')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none;">
                                             📄 Exportar para PDF
                                         </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'csv', 'Quantidade_Passageiros_Data_Hora_Linha_Veiculo')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none;">
+                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'csv', 'Relatorio_Auditoria_Contagens_Geral')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none;">
                                             📊 Exportar para CSV
                                         </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'doc', 'Quantidade_Passageiros_Data_Hora_Linha_Veiculo')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none;">
+                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'doc', 'Relatorio_Auditoria_Contagens_Geral')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none;">
                                             📝 Exportar para DOC
                                         </a>
                                     </div>
@@ -2797,67 +2806,108 @@ if ($canViewSolicitacoes) {
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
                                         <th style="padding: 12px 10px; text-align: center;">Data</th>
                                         <th style="padding: 12px 10px; text-align: center;">Hora</th>
-                                        <?php if ($canViewAllContagens): ?>
-                                            <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
-                                        <?php endif; ?>
+                                        <th style="padding: 12px 10px; text-align: left;">Empresa</th>
+                                        <th style="padding: 12px 10px; text-align: left;">Local</th>
                                         <th style="padding: 12px 10px; text-align: left;">Linha</th>
                                         <th style="padding: 12px 10px; text-align: left;">Veículo</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
+                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
                                         <th style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                        <?php if ($canViewAllContagens): ?>
+                                            <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
+                                        <?php endif; ?>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php if (empty($dadosTabelaLinhaVeiculoDataHora)): ?>
-                                        <tr><td colspan="<?php echo $canViewAllContagens ? 9 : 8; ?>" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado para os filtros selecionados.</td></tr>
+                                        <tr><td colspan="<?php echo $canViewAllContagens ? 12 : 11; ?>" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado para os filtros selecionados.</td></tr>
                                     <?php else: ?>
                                         <?php foreach ($dadosTabelaLinhaVeiculoDataHora as $row): 
                                             $emb = (int)$row['embarques'];
                                             $des = (int)$row['desembarques'];
+                                            $pax = max($emb, $des);
+                                            if ($pax == 0 && ($emb > 0 || $des > 0)) $pax = $emb + $des;
                                             $ocup = cbCalcularOcupacao($row);
                                         ?>
                                             <tr style="border-bottom: 1px solid #f1f5f9;">
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 600; color: #475569;">
+                                                <td style="padding: 12px 10px; text-align: center; font-weight: 600; color: #475569; white-space: nowrap;">
                                                     <?php echo htmlspecialchars($row['dataFormatada']); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 700; color: #2563eb;">
+                                                <td style="padding: 12px 10px; text-align: center; font-weight: 700; color: #2563eb; white-space: nowrap;">
                                                     <?php echo htmlspecialchars($row['horaFormatada']); ?>
                                                 </td>
+                                                <td style="padding: 12px 10px; font-weight: 600; color: #334155; white-space: nowrap;">
+                                                    <?php echo htmlspecialchars($row['empresaNome']); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; font-weight: 600; color: #334155; white-space: nowrap;">
+                                                    <?php echo htmlspecialchars($row['localNome']); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; font-weight: 700; color: #0f172a; white-space: nowrap;">
+                                                    <?php echo htmlspecialchars($row['linhaNumero']); ?>
+                                                    <?php if (!empty($row['linhaDescricao'])): ?>
+                                                        <span style="font-size: 0.75rem; color: #64748b; font-weight: 500; display: block;"><?php echo htmlspecialchars($row['linhaDescricao']); ?></span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; font-weight: 600; color: #334155; white-space: nowrap;">
+                                                    <?php echo htmlspecialchars(formatarNumeroVeiculo($row['veiculoPrefixo'])); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
+                                                    <span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; <?php echo (strtolower($row['sentido']) === 'volta') ? 'background: #fef3c7; color: #b45309; border: 1px solid #fde68a;' : 'background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;'; ?>">
+                                                        <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
+                                                    </span>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #15803d; white-space: nowrap;">
+                                                    <?php echo number_format($emb, 0, ',', '.'); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c; white-space: nowrap;">
+                                                    <?php echo number_format($des, 0, ',', '.'); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; white-space: nowrap; background: rgba(37,99,235,0.03);">
+                                                    <?php echo number_format($pax, 0, ',', '.'); ?>
+                                                </td>
+                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.92rem; color: #0f172a; white-space: nowrap;">
+                                                    <?php echo $ocup; ?>%
+                                                </td>
                                                 <?php if ($canViewAllContagens): ?>
-                                                    <td style="padding: 12px 10px; font-weight: 600; color: #0f172a;">
+                                                    <td style="padding: 12px 10px; font-weight: 600; color: #0f172a; white-space: nowrap;">
                                                         <span style="display: inline-flex; align-items: center; gap: 6px;">
-                                                            <span style="width: 24px; height: 24px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.72rem; font-weight: 700;">
+                                                            <span style="width: 22px; height: 22px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700;">
                                                                 <?php echo strtoupper(substr($row['pesquisadorNome'], 0, 1)); ?>
                                                             </span>
                                                             <?php echo htmlspecialchars($row['pesquisadorNome']); ?>
                                                         </span>
                                                     </td>
                                                 <?php endif; ?>
-                                                <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
-                                                    <?php echo htmlspecialchars($row['linhaNumero']); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; font-weight: 600; color: #334155;">
-                                                    <?php echo htmlspecialchars(formatarNumeroVeiculo($row['veiculoPrefixo'])); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center;">
-                                                    <span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; <?php echo (strtolower($row['sentido']) === 'volta') ? 'background: #fef3c7; color: #b45309; border: 1px solid #fde68a;' : 'background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;'; ?>">
-                                                        <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
-                                                    </span>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #15803d;">
-                                                    <?php echo number_format($emb, 0, ',', '.'); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
-                                                    <?php echo number_format($des, 0, ',', '.'); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a;">
-                                                    <?php echo $ocup; ?>%
-                                                </td>
                                             </tr>
                                         <?php endforeach; ?>
                                     <?php endif; ?>
                                 </tbody>
+                                <?php if (!empty($dadosTabelaLinhaVeiculoDataHora)): ?>
+                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
+                                    <tr>
+                                        <td colspan="7" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            <span>📊 TOTAL GERAL (<?php echo number_format($t1TotalRegistros, 0, ',', '.'); ?> veículos auditados):</span>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                            <?php echo number_format($t1TotalEmbarques, 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                            <?php echo number_format($t1TotalDesembarques, 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
+                                            <?php echo number_format($t1TotalPassageiros, 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: center; color: #0f172a; font-size: 0.95rem;">
+                                            <?php echo $t1MediaOcupacao; ?>%
+                                        </td>
+                                        <?php if ($canViewAllContagens): ?>
+                                            <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
+                                        <?php endif; ?>
+                                    </tr>
+                                </tfoot>
+                                <?php endif; ?>
                             </table>
                         </div>
                         <div id="tbl-t1-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
@@ -7125,6 +7175,23 @@ if ($canViewSolicitacoes) {
                 body.push(rowData);
             });
 
+            // 2. Extrai rodapé (tfoot) com totais se existir
+            const foot = [];
+            const tfoots = table.querySelectorAll('tfoot tr');
+            tfoots.forEach(tr => {
+                const footRow = [];
+                tr.querySelectorAll('th, td').forEach(cell => {
+                    const txt = cell.innerText.replace(/\s+/g, ' ').trim();
+                    const colspan = parseInt(cell.getAttribute('colspan') || '1', 10);
+                    if (colspan > 1) {
+                        footRow.push({ content: txt, colSpan: colspan, styles: { halign: 'right', fontStyle: 'bold' } });
+                    } else {
+                        footRow.push(txt);
+                    }
+                });
+                if (footRow.length > 0) foot.push(footRow);
+            });
+
             // Resumo Gerencial de Métricas para o Cabeçalho do PDF
             const kpiEmbPdf  = document.getElementById('kpi-total-embarques');
             const kpiDesPdf  = document.getElementById('kpi-total-desembarques');
@@ -7167,6 +7234,13 @@ if ($canViewSolicitacoes) {
                     doc.autoTable({
                         head: head,
                         body: body,
+                        foot: foot.length > 0 ? foot : undefined,
+                        footStyles: {
+                            fillColor: [241, 245, 249],
+                            textColor: [15, 23, 42],
+                            fontStyle: 'bold',
+                            fontSize: 8
+                        },
                         startY: 55,
                         theme: 'striped',
                         styles: {
