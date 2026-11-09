@@ -57,7 +57,6 @@ $loggedCargo  = isset($_SESSION['cargo']) ? trim((string)$_SESSION['cargo']) : '
 // Definição de permissões e papéis
 $isAdmin   = ($loggedAcesso === 1) || (strcasecmp($loggedCargo, 'administrador') === 0) || (strcasecmp($loggedCargo, 'admin') === 0);
 $isGerente = ($loggedAcesso === 2) || (strcasecmp($loggedCargo, 'gerente') === 0) || (strcasecmp($loggedCargo, 'supervisor') === 0);
-$canViewSolicitacoes = ($isAdmin || $isGerente);
 $canViewAllContagens = ($isAdmin || $isGerente);
 
 // Inicial da foto / avatar
@@ -346,192 +345,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // 3.1. Solicitar Correção de Contagem (Enviada ao Supervisor/Gerente pelo Funcionário)
-        elseif ($action === 'solicitar_correcao') {
-            $idContagem         = (int)$_POST['idContagem'];
-            $qtdSubtrair        = (int)$_POST['qtd_subtrair'];
-            $justificativa      = isset($_POST['justificativa']) ? trim($_POST['justificativa']) : '';
-            $idUsuarioDestino   = isset($_POST['idUsuarioDestino']) ? (int)$_POST['idUsuarioDestino'] : 0;
-            $percentualSubtrair = isset($_POST['percentual_subtrair']) ? trim($_POST['percentual_subtrair']) : '';
-            $contagemAlvo       = isset($_POST['contagem_alvo']) ? trim($_POST['contagem_alvo']) : '';
-
-            if (!empty($contagemAlvo) && strpos($justificativa, '[Alvo:') === false && strpos($justificativa, '[Contagem') === false) {
-                $justificativa = "[Alvo: {$contagemAlvo}] " . $justificativa;
-            }
-
-            if ($idContagem <= 0 || $qtdSubtrair <= 0) {
-                if ($isAjax) {
-                    echo json_encode(['success' => false, 'message' => 'Valor a retirar ou sessão de contagem inválida.']);
-                    exit;
-                }
-                $mensagemErro = 'Valor a retirar ou contagem inválida.';
-            } elseif ($idUsuarioDestino <= 0) {
-                if ($isAjax) {
-                    echo json_encode(['success' => false, 'message' => 'Por favor, selecione para qual supervisor/gerente enviar a solicitação.']);
-                    exit;
-                }
-                $mensagemErro = 'Supervisor destinatário não selecionado.';
-            } elseif (empty($justificativa) || strlen($justificativa) < 3) {
-                if ($isAjax) {
-                    echo json_encode(['success' => false, 'message' => 'Por favor, informe uma justificativa válida para a correção (mínimo 3 caracteres).']);
-                    exit;
-                }
-                $mensagemErro = 'A justificativa da correção é obrigatória!';
-            } else {
-                // Valida pesquisa ativa e busca tipoContagem
-                $stmtCheck = $pdo->prepare("SELECT idPesquisa as idContagem, tipoContagem FROM pesquisa WHERE idPesquisa = ? AND (idUsuario = ? OR ? = 1) AND status = 'em_andamento' LIMIT 1");
-                $stmtCheck->execute([$idContagem, $usuarioId, $loggedAcesso]);
-                $contAtiva = $stmtCheck->fetch();
-
-                if (!$contAtiva) {
-                    if ($isAjax) {
-                        echo json_encode(['success' => false, 'message' => 'Sessão de contagem não localizada ou já finalizada.']);
-                        exit;
-                    }
-                    $mensagemErro = 'Sessão de contagem inválida.';
-                } else {
-                    $stmtIns = $pdo->prepare("
-                        INSERT INTO solicitacoesCorrecao 
-                            (idContagem, idUsuarioSolicitante, idUsuarioDestino, quantidade, justificativa, status, dataSolicitacao) 
-                        VALUES 
-                            (?, ?, ?, ?, ?, 'pendente', NOW())
-                    ");
-                    $stmtIns->execute([$idContagem, $usuarioId, $idUsuarioDestino, $qtdSubtrair, $justificativa]);
-
-                    $isPerc = (!empty($contAtiva['tipoContagem']) && stripos($contAtiva['tipoContagem'], 'perc') !== false);
-                    $textoQtd = $isPerc 
-                        ? ($percentualSubtrair ? $percentualSubtrair . '%' : calcPercentualStr($qtdSubtrair))
-                        : $qtdSubtrair . ' passageiro(s)';
-
-                    if ($isAjax) {
-                        echo json_encode([
-                            'success' => true,
-                            'message' => 'Solicitação de correção de -' . $textoQtd . ' enviada com sucesso ao supervisor!'
-                        ]);
-                        exit;
-                    }
-                    $mensagemSucesso = "Solicitação de correção enviada com sucesso ao supervisor!";
-                }
-            }
-        }
-
-        // 3.2. Responder Solicitação de Correção (Aprovar / Rejeitar por Supervisor/Gerente/Admin)
-        elseif ($action === 'responder_solicitacao') {
-            $idSolicitacao = isset($_POST['idSolicitacao']) ? (int)$_POST['idSolicitacao'] : 0;
-            $decisao       = isset($_POST['decisao']) ? trim(strtolower($_POST['decisao'])) : ''; // 'aprovar' ou 'rejeitar'
-            $motivo        = isset($_POST['motivo']) ? trim($_POST['motivo']) : '';
-
-            if ($idSolicitacao <= 0 || !in_array($decisao, ['aprovar', 'rejeitar'])) {
-                if ($isAjax) {
-                    echo json_encode(['success' => false, 'message' => 'Parâmetros de resposta inválidos.']);
-                    exit;
-                }
-                $mensagemErro = 'Parâmetros de resposta inválidos.';
-            } else {
-                // Busca a solicitação pendente com dados da pesquisa
-                $stmtSol = $pdo->prepare("
-                    SELECT s.*, p.totalPassageiros, p.tipoContagem, p.status as contagemStatus, p.idVeiculo
-                    FROM solicitacoesCorrecao s
-                    LEFT JOIN pesquisa p ON s.idContagem = p.idPesquisa
-                    WHERE s.idSolicitacao = ? AND s.status = 'pendente'
-                    LIMIT 1
-                ");
-                $stmtSol->execute([$idSolicitacao]);
-                $sol = $stmtSol->fetch();
-
-                if (!$sol) {
-                    if ($isAjax) {
-                        echo json_encode(['success' => false, 'message' => 'Solicitação não encontrada ou já respondida anteriormente.']);
-                        exit;
-                    }
-                    $mensagemErro = 'Solicitação não encontrada ou já respondida.';
-                } elseif (!$canViewSolicitacoes) {
-                    if ($isAjax) {
-                        echo json_encode(['success' => false, 'message' => 'Acesso negado: apenas administradores e gerentes podem responder a solicitações.']);
-                        exit;
-                    }
-                    $mensagemErro = 'Apenas administradores e gerentes podem responder a solicitações.';
-                } elseif (!$isAdmin && !$isGerente && (int)$sol['idUsuarioDestino'] !== $usuarioId) {
-                    if ($isAjax) {
-                        echo json_encode(['success' => false, 'message' => 'Apenas o supervisor/gerente destinatário desta solicitação ou um administrador pode respondê-la.']);
-                        exit;
-                    }
-                    $mensagemErro = 'Permissão negada para responder a esta solicitação.';
-                } else {
-                    if ($decisao === 'aprovar') {
-                        $qtdSubtrair = (int)$sol['quantidade'];
-                        $idContagem  = (int)$sol['idContagem'];
-                        $novoTotal   = max(0, (int)$sol['totalPassageiros'] - $qtdSubtrair);
-
-                        // Atualiza total da pesquisa
-                        $stmtUpdC = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = ? WHERE idPesquisa = ?");
-                        $stmtUpdC->execute([$novoTotal, $idContagem]);
-
-                        // Localizar idVeiculoPesquisado
-                        $idVP = null;
-                        if (!empty($sol['idVeiculo'])) {
-                            $stmtVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
-                            $stmtVP->execute([$idContagem, $sol['idVeiculo']]);
-                            $idVP = $stmtVP->fetchColumn();
-                            if (!$idVP) {
-                                $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
-                                $stmtInsVP->execute([$idContagem, $sol['idVeiculo']]);
-                                $idVP = $pdo->lastInsertId();
-                            }
-                        }
-
-                        // Registra no extrato da contagem
-                        $isPerc = (!empty($sol['tipoContagem']) && stripos($sol['tipoContagem'], 'perc') !== false);
-                        $descAjuste = $isPerc 
-                            ? calcPercentualStr($qtdSubtrair) . " (-{$qtdSubtrair} pas.)"
-                            : "-{$qtdSubtrair} passageiro(s)";
-
-                        $justifReg = "Correção de {$descAjuste} aprovada por {$loggedNome}. Motivo: " . $sol['justificativa'];
-                        if ($idVP) {
-                            $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, ?, 'correcao', ?, ?, NOW())");
-                            $stmtReg->execute([$idContagem, $idVP, $sol['idUsuarioSolicitante'], -$qtdSubtrair, $justifReg]);
-                        }
-
-                        // Marca solicitação como aprovada
-                        $stmtUpdSol = $pdo->prepare("
-                            UPDATE solicitacoesCorrecao 
-                            SET status = 'aprovada', idUsuarioResposta = ?, motivoResposta = ?, dataResposta = NOW() 
-                            WHERE idSolicitacao = ?
-                        ");
-                        $stmtUpdSol->execute([$usuarioId, $motivo ?: 'Aprovada pelo supervisor.', $idSolicitacao]);
-
-                        if ($isAjax) {
-                            echo json_encode([
-                                'success' => true,
-                                'message' => "Solicitação #{$idSolicitacao} aprovada com sucesso! Ajuste de {$descAjuste} aplicado à contagem #{$idContagem}."
-                            ]);
-                            exit;
-                        }
-                        $mensagemSucesso = "Solicitação aprovada e ajuste efetuado com sucesso!";
-                    } else {
-                        // Rejeitar
-                        $motivoFinal = !empty($motivo) ? $motivo : 'Solicitação recusada pelo supervisor.';
-
-                        $stmtUpdSol = $pdo->prepare("
-                            UPDATE solicitacoesCorrecao 
-                            SET status = 'rejeitada', idUsuarioResposta = ?, motivoResposta = ?, dataResposta = NOW() 
-                            WHERE idSolicitacao = ?
-                        ");
-                        $stmtUpdSol->execute([$usuarioId, $motivoFinal, $idSolicitacao]);
-
-                        if ($isAjax) {
-                            echo json_encode([
-                                'success' => true,
-                                'message' => "Solicitação #{$idSolicitacao} recusada pelo supervisor."
-                            ]);
-                            exit;
-                        }
-                        $mensagemSucesso = "Solicitação recusada com sucesso.";
-                    }
-                }
-            }
-        }
-
         // 4. Finalizar Sessão de Contagem
         elseif ($action === 'finalizar_contagem') {
             $idContagem = (int)$_POST['idContagem'];
@@ -673,7 +486,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $turnosValidos = array('Matutino', 'Vespertino', 'Noturno');
 
             if ($idContagem > 0 && in_array($turno, $turnosValidos)) {
-                if ($podeVerSolicitacoes) {
+                if ($canViewAllContagens) {
                     $stmtUpd = $pdo->prepare("UPDATE pesquisa SET turno = ? WHERE idPesquisa = ?");
                     $stmtUpd->execute(array($turno, $idContagem));
                 } else {
@@ -1559,64 +1372,6 @@ try {
     if ($stmtEmp) $empresasDisponiveis = $stmtEmp->fetchAll();
 } catch (\Exception $e) {}
 
-// Carregar supervisores e gerentes para escolha no formulário de correção
-$supervisoresDisponiveis = [];
-try {
-    $stmtSup = $pdo->query("SELECT idusuarios, nome, login, acesso, cargo FROM usuarios WHERE COALESCE(ativo, 1) = 1 AND (acesso IN (1, 2) OR LOWER(COALESCE(cargo, '')) IN ('administrador', 'admin', 'gerente', 'supervisor')) ORDER BY (acesso = 1) DESC, (acesso = 2) DESC, nome ASC");
-    if ($stmtSup) $supervisoresDisponiveis = $stmtSup->fetchAll();
-} catch (\Exception $e) {}
-
-// Carregar solicitações de correção para a aba "Solicitações" (apenas visível para Administrador ou Gerente)
-$solicitacoesCorrecao = [];
-$totalPendentesNotif = 0;
-$solicPendentesCount = 0;
-$solicAprovadasCount = 0;
-$solicRejeitadasCount = 0;
-
-if ($canViewSolicitacoes) {
-    try {
-        $sqlSolic = "
-            SELECT s.*, 
-                   uSol.nome as solicitanteNome, uSol.login as solicitanteLogin,
-                   uDest.nome as destinoNome, uDest.login as destinoLogin,
-                   uResp.nome as respostaNome, uResp.login as respostaLogin,
-                   c.idLinha, c.idVeiculo, c.idLocal, c.viagem as sentido, c.tipoContagem, c.totalPassageiros as totalContagem,
-                   l.numero as linhaNumero, l.descricao as linhaDescricao,
-                   v.prefixo as veiculoPrefixo,
-                   loc.local as nomeLocal,
-                   DATE_FORMAT(s.dataSolicitacao, '%d/%m/%Y %H:%i') as dataSolicitacaoFmt,
-                   DATE_FORMAT(s.dataResposta, '%d/%m/%Y %H:%i') as dataRespostaFmt
-            FROM solicitacoesCorrecao s
-            LEFT JOIN usuarios uSol ON s.idUsuarioSolicitante = uSol.idusuarios
-            LEFT JOIN usuarios uDest ON s.idUsuarioDestino = uDest.idusuarios
-            LEFT JOIN usuarios uResp ON s.idUsuarioResposta = uResp.idusuarios
-            LEFT JOIN pesquisa c ON s.idContagem = c.idPesquisa
-            LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-            LEFT JOIN locais loc ON c.idLocal = loc.idLocal
-            ORDER BY s.idSolicitacao DESC
-        ";
-        $stmtSolic = $pdo->query($sqlSolic);
-
-        if ($stmtSolic) {
-            $solicitacoesCorrecao = $stmtSolic->fetchAll();
-            foreach ($solicitacoesCorrecao as $sc) {
-                $st = strtolower($sc['status']);
-                if ($st === 'pendente') {
-                    $solicPendentesCount++;
-                    if ($isAdmin || $isGerente || (int)$sc['idUsuarioDestino'] === $usuarioId) {
-                        $totalPendentesNotif++;
-                    }
-                } elseif ($st === 'aprovada') {
-                    $solicAprovadasCount++;
-                } elseif ($st === 'rejeitada') {
-                    $solicRejeitadasCount++;
-                }
-            }
-        }
-    } catch (\Exception $e) {}
-}
-
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -1687,6 +1442,28 @@ if ($canViewSolicitacoes) {
                         Sair
                     </a>
                 </div>
+
+                <!-- Controles Mobile (Relógio Compacto + Botão Menu Hamburguer) - Oculto no Desktop -->
+                <div class="cb-mobile-header-controls cb-mobile-only">
+                    <div class="cb-mobile-clock-mini" onclick="toggleDateInClock()" title="Toque para alternar data/hora">
+                        <span class="pulse-dot" style="width: 7px; height: 7px; background: #22c55e; border-radius: 50%; display: inline-block;"></span>
+                        <span id="realtime-clock-mobile"><?php echo date('H:i'); ?></span>
+                    </div>
+                    <button type="button" class="cb-hamburger-btn" id="cb-hamburger-trigger" onclick="toggleMobileDrawer()" aria-label="Abrir Menu de Navegação">
+                        <span class="cb-hamburger-line"></span>
+                        <span class="cb-hamburger-line"></span>
+                        <span class="cb-hamburger-line"></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Barra Indicadora da Aba Ativa no Mobile -->
+            <div class="cb-mobile-active-tab-pill cb-mobile-only" onclick="toggleMobileDrawer()">
+                <div class="cb-pill-left">
+                    <span style="width: 8px; height: 8px; border-radius: 50%; background: #0054A6; display: inline-block;"></span>
+                    <span id="cb-mobile-current-tab-name">Painel de Contagem</span>
+                </div>
+                <span class="cb-pill-action">Trocar aba ☰</span>
             </div>
 
             <!-- Navegação de Abas do Usuário -->
@@ -1703,14 +1480,6 @@ if ($canViewSolicitacoes) {
                     </svg>
                     Dashboard <span class="tab-badge"><?php echo $totalSessoesUsuario; ?></span>
                 </button>
-                <?php if ($canViewSolicitacoes): ?>
-                <button type="button" class="tab-btn" id="btn-tab-solicitacoes" onclick="switchUserTab('tab-solicitacoes', this)">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="18" height="18">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" />
-                    </svg>
-                    Solicitações <?php if ($totalPendentesNotif > 0): ?><span class="tab-badge" style="background: #ef4444; color: #ffffff;"><?php echo $totalPendentesNotif; ?></span><?php else: ?><span class="tab-badge"><?php echo count($solicitacoesCorrecao); ?></span><?php endif; ?>
-                </button>
-                <?php endif; ?>
             </div>
 
             <!-- Alertas e Notificações -->
@@ -1776,9 +1545,19 @@ if ($canViewSolicitacoes) {
                             <input type="hidden" name="tipoOperacao" id="input_tipoOperacao" value="">
                             <input type="hidden" name="sentido" id="input_sentido" value="">
 
+                            <!-- Resumo Compacto de Dados no Mobile (Permite ir direto às Seleções Obrigatórias) -->
+                            <div class="cb-mobile-dados-toggle cb-mobile-only" onclick="toggleMobileDadosCard()">
+                                <div class="cb-dados-summary">
+                                    <span>👤 <?php echo htmlspecialchars($loggedNome); ?></span>
+                                    <span style="color: #94a3b8;">•</span>
+                                    <span>☀️ <span id="cb-mobile-turno-summary"><?php echo htmlspecialchars($turnoAtual); ?></span></span>
+                                </div>
+                                <span class="cb-dados-action" id="cb-mobile-dados-action-label">Editar Turno ▾</span>
+                            </div>
+
                             <div class="panel-layout-grid">
                                 <!-- ESQUERDA: DADOS -->
-                                <div class="panel-card-column">
+                                <div class="panel-card-column cb-mobile-collapsed" id="cb-dados-card-col">
                                     <div class="panel-card">
                                         <div class="panel-card-header">
                                             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -2138,14 +1917,6 @@ if ($canViewSolicitacoes) {
                                     </div>
 
                                     <div class="session-header-actions" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                        <!-- Botão Solicitar Correção (Supervisor) -->
-                                        <button type="button" onclick="openCorrectionModal()" id="btn-solicitar-correcao-topo" style="background: #fff1f2; color: #e11d48; border: 1.5px solid #fecdd3; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(225,29,72,0.1); transition: all 0.2s;" onmouseover="this.style.background='#ffe4e6';" onmouseout="this.style.background='#fff1f2';">
-                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="16" height="16">
-                                                <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
-                                            </svg>
-                                            <span>Solicitar Correção</span>
-                                        </button>
-
                                         <!-- Botão Finalizar Contagem -->
                                         <form method="POST" action="index.php" onsubmit="return confirm('Deseja realmente ENCERRAR e salvar a contagem desta sessão?');">
                                             <input type="hidden" name="action" value="finalizar_contagem">
@@ -2170,9 +1941,62 @@ if ($canViewSolicitacoes) {
                                             </button>
                                         </form>
                                     </div>
+
+                                    <!-- Barra Compacta da Sessão no Mobile (Detalhes Colapsáveis + Menu de Ações) -->
+                                    <div class="cb-mobile-session-bar cb-mobile-only">
+                                        <button type="button" class="cb-session-toggle-info-btn" id="cb-btn-toggle-session-info" onclick="toggleMobileSessionInfo()">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                <circle cx="12" cy="12" r="10"></circle>
+                                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                                            </svg>
+                                            <span id="cb-session-info-btn-text">Info da Linha ▾</span>
+                                        </button>
+
+                                        <div style="position: relative;">
+                                            <button type="button" class="cb-session-actions-trigger" onclick="toggleMobileSessionMenu(event)">
+                                                <span>⚙️ Ações</span>
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                                    <polyline points="6 9 12 15 18 9"></polyline>
+                                                </svg>
+                                            </button>
+
+                                            <div class="cb-session-actions-dropdown" id="cb-mobile-session-dropdown">
+                                                <button type="button" class="cb-session-action-item" onclick="closeMobileSessionMenu(); openAlterarLinhaVeiculoModal();">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                                    </svg>
+                                                    <span>Editar Linha / Veículo / Turno</span>
+                                                </button>
+
+                                                <form method="POST" action="index.php" onsubmit="return confirm('Deseja realmente ENCERRAR e salvar a contagem desta sessão?');">
+                                                    <input type="hidden" name="action" value="finalizar_contagem">
+                                                    <input type="hidden" name="idContagem" value="<?php echo $sessaoAtiva['idContagem']; ?>">
+                                                    <button type="submit" class="cb-session-action-item cb-action-danger">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="16" height="16">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 7.5A2.25 2.25 0 0 1 7.5 5.25h9a2.25 2.25 0 0 1 2.25 2.25v9a2.25 2.25 0 0 1-2.25 2.25h-9a2.25 2.25 0 0 1-2.25-2.25v-9Z" />
+                                                        </svg>
+                                                        <span>Finalizar Contagem</span>
+                                                    </button>
+                                                </form>
+
+                                                <form method="POST" action="index.php" onsubmit="return confirm('Deseja realmente CANCELAR esta contagem? Esta ação não poderá ser desfeita.');">
+                                                    <input type="hidden" name="action" value="cancelar_contagem">
+                                                    <input type="hidden" name="idContagem" value="<?php echo $sessaoAtiva['idContagem']; ?>">
+                                                    <button type="submit" class="cb-session-action-item cb-action-muted">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="16" height="16">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                        </svg>
+                                                        <span>Cancelar Contagem</span>
+                                                    </button>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
 
-                                <div class="session-info-grid">
+                                <div class="session-info-grid cb-mobile-collapsed" id="cb-session-info-grid">
                                     <div class="session-info-item session-info-clickable" onclick="openAlterarLinhaVeiculoModal()" title="Clique para editar Linha, Veículo ou Turno">
                                         <div style="display: flex; justify-content: space-between; align-items: center;">
                                             <label style="margin:0; cursor: pointer;">Linha</label>
@@ -2493,7 +2317,18 @@ if ($canViewSolicitacoes) {
                     <!-- 1. CARTÃO DE FILTROS DA PESQUISA (LAYOUT FIDELIDADE IMAGEM) -->
                     <div class="panel-card" style="margin-bottom: 20px; border-radius: 12px; background: #ffffff; border: 1px solid #e2e8f0; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
                         <div class="panel-card-body" style="padding: 16px 20px;">
-                            <form method="GET" action="index.php" id="form-filtros-historico">
+                            <!-- Botão Mobile para Expandir/Recolher Filtros da Pesquisa -->
+                            <button type="button" class="cb-mobile-filter-toggle cb-mobile-only" onclick="toggleMobileDashFilters()">
+                                <span class="cb-filter-left">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+                                    </svg>
+                                    <span>Filtros da Pesquisa</span>
+                                </span>
+                                <span class="cb-filter-badge" id="cb-mobile-filter-toggle-label">Mostrar Filtros ▾</span>
+                            </button>
+
+                            <form method="GET" action="index.php" id="form-filtros-historico" class="cb-mobile-collapsed">
                                 <input type="hidden" name="tab" value="historico">
                                 
                                 <div class="dash-filters-grid" style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;">
@@ -3244,289 +3079,6 @@ if ($canViewSolicitacoes) {
 
                 </div>
 
-                <?php if ($canViewSolicitacoes): ?>
-                <!-- ABA 3: SOLICITAÇÕES DE CORREÇÃO (PARA ADMINISTRADOR E GERENTE) -->
-                <div id="user-tab-solicitacoes" class="user-tab-content" style="display: none;">
-                    
-                    <!-- Header do Módulo de Solicitações -->
-                    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.02); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-                        <div>
-                            <h2 style="font-size: 1.3rem; font-weight: 800; color: #0f172a; margin: 0 0 4px 0; display: flex; align-items: center; gap: 10px;">
-                                <span style="background: #eff6ff; color: #2563eb; width: 38px; height: 38px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="22" height="22">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" />
-                                    </svg>
-                                </span>
-                                Solicitações de Correção de Contagem
-                            </h2>
-                            <p style="color: #64748b; font-size: 0.88rem; margin: 0; font-weight: 500;">
-                                <?php if ($isAdmin): ?>
-                                    Visão do Administrador: visualize e responda às solicitações de ajuste de contagem enviadas pelos pesquisadores.
-                                <?php else: ?>
-                                    Visão da Gerência: acompanhe e decida sobre as solicitações de ajuste de contagem sob sua supervisão.
-                                <?php endif; ?>
-                            </p>
-                        </div>
-
-                        <div style="display: flex; gap: 10px; align-items: center;">
-                            <a href="index.php?tab=solicitacoes" style="background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; padding: 9px 16px; border-radius: 10px; font-weight: 700; font-size: 0.86rem; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="16" height="16">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-                                </svg>
-                                <span>Atualizar Lista</span>
-                            </a>
-                        </div>
-                    </div>
-
-                    <!-- KPI Cards das Solicitações -->
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px;">
-                        
-                        <!-- Pendentes -->
-                        <div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 16px; padding: 18px 20px;">
-                            <div style="color: #b45309; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
-                                <span>⏳ Pendentes de Aprovação</span>
-                            </div>
-                            <div style="color: #b45309; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo $solicPendentesCount; ?>
-                            </div>
-                            <div style="color: #92400e; font-size: 0.78rem; font-weight: 600;">
-                                Aguardando decisão do supervisor
-                            </div>
-                        </div>
-
-                        <!-- Aprovadas -->
-                        <div style="background: #dcfce7; border: 1px solid #bbf7d0; border-radius: 16px; padding: 18px 20px;">
-                            <div style="color: #15803d; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
-                                <span>✅ Aprovadas / Ajustadas</span>
-                            </div>
-                            <div style="color: #15803d; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo $solicAprovadasCount; ?>
-                            </div>
-                            <div style="color: #166534; font-size: 0.78rem; font-weight: 600;">
-                                Descontadas na contagem
-                            </div>
-                        </div>
-
-                        <!-- Rejeitadas -->
-                        <div style="background: #ffe4e6; border: 1px solid #fecdd3; border-radius: 16px; padding: 18px 20px;">
-                            <div style="color: #be123c; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
-                                <span>❌ Rejeitadas / Recusadas</span>
-                            </div>
-                            <div style="color: #be123c; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo $solicRejeitadasCount; ?>
-                            </div>
-                            <div style="color: #9f1239; font-size: 0.78rem; font-weight: 600;">
-                                Mantidas sem alteração
-                            </div>
-                        </div>
-
-                        <!-- Total -->
-                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; padding: 18px 20px;">
-                            <div style="color: #475569; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
-                                <span>📋 Total de Solicitações</span>
-                            </div>
-                            <div style="color: #0f172a; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px;">
-                                <?php echo count($solicitacoesCorrecao); ?>
-                            </div>
-                            <div style="color: #64748b; font-size: 0.78rem; font-weight: 600;">
-                                Registradas no sistema
-                            </div>
-                        </div>
-
-                    </div>
-
-                    <!-- Barra de Filtros e Busca Rápida -->
-                    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
-                        
-                        <!-- Pills de Status -->
-                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                            <button type="button" class="solic-filter-pill active" data-status-filter="todos" onclick="filtrarSolicitacoesPorStatus('todos', this)" style="border: none; padding: 8px 16px; border-radius: 10px; font-weight: 700; font-size: 0.84rem; cursor: pointer; transition: all 0.2s; background: #0f172a; color: #ffffff;">
-                                Todas (<?php echo count($solicitacoesCorrecao); ?>)
-                            </button>
-                            <button type="button" class="solic-filter-pill" data-status-filter="pendente" onclick="filtrarSolicitacoesPorStatus('pendente', this)" style="border: 1px solid #fed7aa; padding: 8px 16px; border-radius: 10px; font-weight: 700; font-size: 0.84rem; cursor: pointer; transition: all 0.2s; background: #fff7ed; color: #c2410c;">
-                                ⏳ Pendentes (<?php echo $solicPendentesCount; ?>)
-                            </button>
-                            <button type="button" class="solic-filter-pill" data-status-filter="aprovada" onclick="filtrarSolicitacoesPorStatus('aprovada', this)" style="border: 1px solid #bbf7d0; padding: 8px 16px; border-radius: 10px; font-weight: 700; font-size: 0.84rem; cursor: pointer; transition: all 0.2s; background: #f0fdf4; color: #15803d;">
-                                ✅ Aprovadas (<?php echo $solicAprovadasCount; ?>)
-                            </button>
-                            <button type="button" class="solic-filter-pill" data-status-filter="rejeitada" onclick="filtrarSolicitacoesPorStatus('rejeitada', this)" style="border: 1px solid #fecdd3; padding: 8px 16px; border-radius: 10px; font-weight: 700; font-size: 0.84rem; cursor: pointer; transition: all 0.2s; background: #fff1f2; color: #be123c;">
-                                ❌ Rejeitadas (<?php echo $solicRejeitadasCount; ?>)
-                            </button>
-                        </div>
-
-                        <!-- Campo de Busca em Tempo Real -->
-                        <div style="flex: 1; max-width: 420px; min-width: 260px; position: relative;">
-                            <input type="text" id="buscarSolicitacoesInput" oninput="buscarSolicitacoesTable(this.value)" placeholder="Buscar por funcionário, supervisor, justificativa..." style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 0.88rem; outline: none; background: #f8fafc; font-family: inherit;">
-                        </div>
-
-                    </div>
-
-                    <!-- Tabela de Solicitações -->
-                    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 16px rgba(15,23,42,0.02);">
-                        <div style="overflow-x: auto;">
-                            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.88rem;">
-                                <thead>
-                                    <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em;">
-                                        <th style="padding: 14px 16px; font-weight: 800;">#ID / Data</th>
-                                        <th style="padding: 14px 16px; font-weight: 800;">Funcionário (Solicitante)</th>
-                                        <th style="padding: 14px 16px; font-weight: 800;">Supervisor Destino</th>
-                                        <th style="padding: 14px 16px; font-weight: 800;">Contagem</th>
-                                        <th style="padding: 14px 16px; font-weight: 800; text-align: center;">Ajuste</th>
-                                        <th style="padding: 14px 16px; font-weight: 800;">Justificativa</th>
-                                        <th style="padding: 14px 16px; font-weight: 800; text-align: center;">Status</th>
-                                        <th style="padding: 14px 16px; font-weight: 800;">Resposta / Decisão</th>
-                                        <th style="padding: 14px 16px; font-weight: 800; text-align: center; min-width: 160px;">Ações</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="tabelaSolicitacoesBody">
-                                    <?php if (empty($solicitacoesCorrecao)): ?>
-                                        <tr id="solicitacoesNoDataRow">
-                                            <td colspan="9" style="padding: 40px 20px; text-align: center; color: #94a3b8;">
-                                                <div style="font-size: 2.5rem; margin-bottom: 10px;">📭</div>
-                                                <div style="font-weight: 700; font-size: 1rem; color: #475569; margin-bottom: 4px;">Nenhuma solicitação encontrada</div>
-                                                <div style="font-size: 0.84rem;">Quando um funcionário solicitar uma correção no meio da contagem, ela aparecerá aqui para o supervisor.</div>
-                                            </td>
-                                        </tr>
-                                    <?php else: ?>
-                                        <?php foreach ($solicitacoesCorrecao as $sol): ?>
-                                            <?php 
-                                                $stLower = strtolower($sol['status']);
-                                                $podeResponder = ($stLower === 'pendente') && ($isAdmin || $isGerente || (int)$sol['idUsuarioDestino'] === $usuarioId);
-                                                $linhaTxt = !empty($sol['linhaNumero']) ? $sol['linhaNumero'] . ' - ' . $sol['linhaDescricao'] : (!empty($sol['idLinha']) ? 'Linha #' . $sol['idLinha'] : 'N/A');
-                                                $veicTxt = !empty($sol['veiculoPrefixo']) ? $sol['veiculoPrefixo'] : (!empty($sol['idVeiculo']) ? 'Prefixo #' . $sol['idVeiculo'] : 'N/A');
-                                            ?>
-                                            <tr data-status="<?php echo htmlspecialchars($stLower); ?>" style="border-bottom: 1px solid #f1f5f9; transition: background 0.15s ease;">
-                                                
-                                                <!-- ID e Data -->
-                                                <td style="padding: 14px 16px; vertical-align: middle;">
-                                                    <div style="font-weight: 800; color: #0f172a;">#<?php echo $sol['idSolicitacao']; ?></div>
-                                                    <div style="color: #64748b; font-size: 0.78rem; font-weight: 600;"><?php echo htmlspecialchars($sol['dataSolicitacaoFmt']); ?></div>
-                                                </td>
-
-                                                <!-- Solicitante -->
-                                                <td style="padding: 14px 16px; vertical-align: middle;">
-                                                    <div style="font-weight: 700; color: #1e293b; display: flex; align-items: center; gap: 6px;">
-                                                        <span>👤 <?php echo htmlspecialchars($sol['solicitanteNome'] ?: 'Usuário #'.$sol['idUsuarioSolicitante']); ?></span>
-                                                    </div>
-                                                    <div style="color: #64748b; font-size: 0.78rem;">@<?php echo htmlspecialchars($sol['solicitanteLogin'] ?: ''); ?></div>
-                                                </td>
-
-                                                <!-- Supervisor Destino -->
-                                                <td style="padding: 14px 16px; vertical-align: middle;">
-                                                    <div style="font-weight: 700; color: #1e3a8a; display: flex; align-items: center; gap: 6px;">
-                                                        <span>🛡️ <?php echo htmlspecialchars($sol['destinoNome'] ?: 'Supervisor #'.$sol['idUsuarioDestino']); ?></span>
-                                                    </div>
-                                                    <div style="color: #64748b; font-size: 0.78rem;">@<?php echo htmlspecialchars($sol['destinoLogin'] ?: ''); ?></div>
-                                                </td>
-
-                                                <!-- Contagem -->
-                                                <td style="padding: 14px 16px; vertical-align: middle;">
-                                                    <div style="font-weight: 700; color: #0f172a;">Sessão #<?php echo $sol['idContagem']; ?></div>
-                                                    <div style="color: #475569; font-size: 0.78rem;">Linha: <?php echo htmlspecialchars($linhaTxt); ?></div>
-                                                    <div style="color: #64748b; font-size: 0.76rem;">Veículo: <?php echo htmlspecialchars($veicTxt); ?></div>
-                                                </td>
-
-                                                <!-- Quantidade de Ajuste -->
-                                                <td style="padding: 14px 16px; vertical-align: middle; text-align: center;">
-                                                    <span style="display: inline-block; background: #fee2e2; color: #dc2626; padding: 4px 10px; border-radius: 8px; font-weight: 800; font-size: 0.95rem; border: 1px solid #fca5a5;">
-                                                        <?php if (!empty($sol['tipoContagem']) && stripos($sol['tipoContagem'], 'perc') !== false): ?>
-                                                            -<?php echo calcPercentualStr((int)$sol['quantidade']); ?>
-                                                            <span style="display: block; font-size: 0.72rem; font-weight: 600; opacity: 0.85;">(<?php echo (int)$sol['quantidade']; ?> pas.)</span>
-                                                        <?php else: ?>
-                                                            -<?php echo (int)$sol['quantidade']; ?> pas.
-                                                        <?php endif; ?>
-                                                    </span>
-                                                </td>
-
-                                                <!-- Justificativa do Fiscal -->
-                                                <td style="padding: 14px 16px; vertical-align: middle; max-width: 260px;">
-                                                    <div style="color: #334155; font-size: 0.86rem; line-height: 1.4; word-break: break-word;">
-                                                        <?php 
-                                                            $justifTxt = $sol['justificativa'];
-                                                            if (preg_match('/^\[(?:Alvo|Contagem a alterar):\s*([^\]]+)\]\s*(.*)$/si', $justifTxt, $mAlvo)) {
-                                                                echo '<div style="margin-bottom: 5px;"><span style="display: inline-flex; align-items: center; gap: 4px; background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; padding: 2px 8px; border-radius: 6px; font-size: 0.76rem; font-weight: 700;">🎯 ' . htmlspecialchars($mAlvo[1]) . '</span></div>';
-                                                                $justifTxt = $mAlvo[2];
-                                                            }
-                                                            echo nl2br(htmlspecialchars($justifTxt));
-                                                        ?>
-                                                    </div>
-                                                </td>
-
-                                                <!-- Status -->
-                                                <td style="padding: 14px 16px; vertical-align: middle; text-align: center;">
-                                                    <?php if ($stLower === 'pendente'): ?>
-                                                        <span style="display: inline-flex; align-items: center; gap: 5px; background: #fef3c7; color: #b45309; padding: 4px 10px; border-radius: 9999px; font-weight: 700; font-size: 0.78rem; border: 1px solid #fcd34d;">
-                                                            <span style="width: 7px; height: 7px; background: #f59e0b; border-radius: 50%; display: inline-block;"></span>
-                                                            Pendente
-                                                        </span>
-                                                    <?php elseif ($stLower === 'aprovada'): ?>
-                                                        <span style="display: inline-flex; align-items: center; gap: 5px; background: #dcfce7; color: #15803d; padding: 4px 10px; border-radius: 9999px; font-weight: 700; font-size: 0.78rem; border: 1px solid #86efac;">
-                                                            ✓ Aprovada
-                                                        </span>
-                                                    <?php else: ?>
-                                                        <span style="display: inline-flex; align-items: center; gap: 5px; background: #fee2e2; color: #be123c; padding: 4px 10px; border-radius: 9999px; font-weight: 700; font-size: 0.78rem; border: 1px solid #fca5a5;">
-                                                            ✕ Rejeitada
-                                                        </span>
-                                                    <?php endif; ?>
-                                                </td>
-
-                                                <!-- Resposta / Decisão -->
-                                                <td style="padding: 14px 16px; vertical-align: middle; font-size: 0.82rem; color: #475569;">
-                                                    <?php if ($stLower === 'pendente'): ?>
-                                                        <span style="color: #94a3b8; font-style: italic;">Aguardando supervisor...</span>
-                                                    <?php else: ?>
-                                                        <div style="font-weight: 600; color: #1e293b;">
-                                                            Por: <?php echo htmlspecialchars($sol['respostaNome'] ?: 'Supervisor'); ?>
-                                                        </div>
-                                                        <div style="color: #64748b; font-size: 0.76rem;"><?php echo htmlspecialchars($sol['dataRespostaFmt'] ?: ''); ?></div>
-                                                        <?php if (!empty($sol['motivoResposta'])): ?>
-                                                            <div style="margin-top: 4px; font-size: 0.8rem; color: #0f172a; background: #f8fafc; padding: 4px 8px; border-radius: 6px; border: 1px solid #e2e8f0;">
-                                                                "<?php echo htmlspecialchars($sol['motivoResposta']); ?>"
-                                                            </div>
-                                                        <?php endif; ?>
-                                                    <?php endif; ?>
-                                                </td>
-
-                                                <!-- Ações -->
-                                                <td style="padding: 14px 16px; vertical-align: middle; text-align: center;">
-                                                    <?php if ($podeResponder): ?>
-                                                        <div style="display: flex; gap: 8px; justify-content: center;">
-                                                            <button type="button" onclick="aprovarSolicitacao(<?php echo $sol['idSolicitacao']; ?>, <?php echo (int)$sol['quantidade']; ?>, '<?php echo addslashes(htmlspecialchars($sol['solicitanteNome'])); ?>', <?php echo $sol['idContagem']; ?>, '<?php echo !empty($sol['tipoContagem']) ? strtolower($sol['tipoContagem']) : 'quantidade'; ?>')" title="Aprovar e abater da contagem" style="background: #16a34a; color: #ffffff; border: none; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; box-shadow: 0 1px 3px rgba(22,163,74,0.3); transition: all 0.2s;">
-                                                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" width="14" height="14">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                                                                </svg>
-                                                                <span>Aprovar</span>
-                                                            </button>
-
-                                                            <button type="button" onclick="abrirModalRejeitar(<?php echo $sol['idSolicitacao']; ?>, '<?php echo addslashes(htmlspecialchars($sol['solicitanteNome'])); ?>')" title="Rejeitar solicitação" style="background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: all 0.2s;">
-                                                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" width="14" height="14">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
-                                                                </svg>
-                                                                <span>Rejeitar</span>
-                                                            </button>
-                                                        </div>
-                                                    <?php elseif ($stLower === 'pendente'): ?>
-                                                        <span style="font-size: 0.8rem; color: #d97706; font-weight: 600; display: inline-flex; align-items: center; gap: 4px;">
-                                                            <span>⏳ Em análise</span>
-                                                        </span>
-                                                    <?php else: ?>
-                                                        <span style="font-size: 0.8rem; color: #64748b; font-weight: 600;">
-                                                            Concluída
-                                                        </span>
-                                                    <?php endif; ?>
-                                                </td>
-
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                </div>
-                <?php endif; ?>
-
             </div>
 
         </div>
@@ -3783,170 +3335,6 @@ if ($canViewSolicitacoes) {
         </div>
     </div>
 
-    <!-- MODAL DE SOLICITAÇÃO DE CORREÇÃO COM ESCOLHA DE SUPERVISOR E JUSTIFICATIVA -->
-    <div class="modal-overlay" id="correctionModal">
-        <div class="modal-card">
-            <div class="modal-header">
-                <div class="modal-title">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="22" height="22" style="color: #ea580c;">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                    </svg>
-                    Solicitar Correção de Contagem
-                </div>
-                <button type="button" onclick="closeCorrectionModal()" style="background: none; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer;">&times;</button>
-            </div>
-
-            <div style="background: #fff7ed; border: 1px solid #fed7aa; border-radius: 10px; padding: 12px 14px; margin-bottom: 18px; font-size: 0.86rem; color: #9a3412; display: flex; align-items: flex-start; gap: 8px;">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="18" height="18" style="flex-shrink: 0; margin-top: 2px;">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z" />
-                </svg>
-                <span>Esta correção será enviada como uma solicitação para aprovação do supervisor/gerente selecionado abaixo.</span>
-            </div>
-
-            <form id="correctionForm" onsubmit="submitCorrection(event)">
-                <!-- 1. ESCOLHER SUPERVISOR / GERENTE DESTINATÁRIO -->
-                <div style="margin-bottom: 16px;">
-                    <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: block; margin-bottom: 6px;">
-                        Enviar solicitação para quem? <span style="color: #dc2626;">* (Obrigatório)</span>
-                    </label>
-                    <select id="corrDestino" required class="form-select-custom" style="width: 100%; padding: 11px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-family: inherit; font-size: 0.95rem; font-weight: 600; color: #1e293b; background-color: #ffffff;">
-                        <option value="">-- Selecione o Supervisor / Gerente --</option>
-                        <?php foreach ($supervisoresDisponiveis as $sup): ?>
-                            <?php 
-                                $supCargo = isset($sup['cargo']) && !empty($sup['cargo']) ? $sup['cargo'] : '';
-                                $supRoleTag = '';
-                                if ((int)$sup['acesso'] === 1 || strcasecmp($supCargo, 'administrador') === 0) {
-                                    $supRoleTag = '— [Administrador]';
-                                } elseif ((int)$sup['acesso'] === 2 || strcasecmp($supCargo, 'gerente') === 0) {
-                                    $supRoleTag = '— [Gerente]';
-                                }
-                            ?>
-                            <option value="<?php echo $sup['idusuarios']; ?>">
-                                👤 <?php echo htmlspecialchars($sup['nome']); ?> (@<?php echo htmlspecialchars($sup['login']); ?>) <?php echo $supRoleTag; ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <!-- 1.1. ESCOLHER DE QUAL CONTAGEM DEVE TER O VALOR ALTERADO -->
-                <div style="margin-bottom: 16px;">
-                    <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: block; margin-bottom: 6px;">
-                        De qual contagem deve ter o valor alterado? <span style="color: #dc2626;">*</span>
-                    </label>
-                    <select id="corrContagemAlvo" required class="form-select-custom" onchange="atualizarInfoContagemAlvo(this)" style="width: 100%; padding: 11px 14px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-family: inherit; font-size: 0.92rem; font-weight: 600; color: #1e293b; background-color: #ffffff;">
-                        <option value="atual">⏱️ Contagem atual em andamento</option>
-                    </select>
-                    <div id="corrContagemAlvoFeedback" style="margin-top: 6px; font-size: 0.82rem; color: #2563eb; font-weight: 600; display: none;"></div>
-                </div>
-
-                <!-- 2A. QUANTIDADE A SUBTRAIR (MODO QUANTIDADE PADRÃO) -->
-                <div id="containerCorrQtd" style="margin-bottom: 16px;">
-                    <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: block; margin-bottom: 6px;">
-                        Quantidade a Subtrair / Estornar: <span style="color: #dc2626;">*</span>
-                    </label>
-                    <input type="number" id="corrQtd" min="1" max="1000" value="1" required style="width: 100%; padding: 11px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-family: inherit; font-size: 1.1rem; font-weight: 700;">
-                </div>
-
-                <!-- 2B. PORCENTAGEM A SUBTRAIR (MODO PERCENTUAL) -->
-                <div id="containerCorrPercent" style="margin-bottom: 18px; display: none;">
-                    <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: block; margin-bottom: 8px;">
-                        Porcentagem a Subtrair / Estornar: <span style="color: #dc2626;">*</span>
-                    </label>
-                    
-                    <!-- Botoeira de Seleção Rápida de % -->
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 10px;">
-                        <button type="button" class="btn-corr-pct" onclick="selectCorrPercent(15)" data-pct="15" style="border: 2px solid #cbd5e1; background: #f8fafc; color: #334155; padding: 10px 6px; border-radius: 10px; font-weight: 800; font-size: 1.05rem; cursor: pointer; text-align: center; transition: all 0.2s;">
-                            15%
-                        </button>
-                        <button type="button" class="btn-corr-pct" onclick="selectCorrPercent(35)" data-pct="35" style="border: 2px solid #cbd5e1; background: #f8fafc; color: #334155; padding: 10px 6px; border-radius: 10px; font-weight: 800; font-size: 1.05rem; cursor: pointer; text-align: center; transition: all 0.2s;">
-                            35%
-                        </button>
-                        <button type="button" class="btn-corr-pct" onclick="selectCorrPercent(50)" data-pct="50" style="border: 2px solid #cbd5e1; background: #f8fafc; color: #334155; padding: 10px 6px; border-radius: 10px; font-weight: 800; font-size: 1.05rem; cursor: pointer; text-align: center; transition: all 0.2s;">
-                            50%
-                        </button>
-                        <button type="button" class="btn-corr-pct" onclick="selectCorrPercent(65)" data-pct="65" style="border: 2px solid #cbd5e1; background: #f8fafc; color: #334155; padding: 10px 6px; border-radius: 10px; font-weight: 800; font-size: 1.05rem; cursor: pointer; text-align: center; transition: all 0.2s;">
-                            65%
-                        </button>
-                        <button type="button" class="btn-corr-pct" onclick="selectCorrPercent(100)" data-pct="100" style="border: 2px solid #cbd5e1; background: #f8fafc; color: #334155; padding: 10px 6px; border-radius: 10px; font-weight: 800; font-size: 1.05rem; cursor: pointer; text-align: center; transition: all 0.2s;">
-                            100%
-                        </button>
-                        <button type="button" class="btn-corr-pct" onclick="selectCorrPercent(120)" data-pct="120" style="border: 2px solid #cbd5e1; background: #f8fafc; color: #334155; padding: 10px 6px; border-radius: 10px; font-weight: 800; font-size: 1.05rem; cursor: pointer; text-align: center; transition: all 0.2s;">
-                            120%
-                        </button>
-                    </div>
-
-                    <select id="corrPercentSelect" onchange="selectCorrPercent(this.value)" class="form-select-custom" style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-family: inherit; font-size: 0.95rem; font-weight: 700; color: #6b21a8; background-color: #faf5ff;">
-                        <option value="15">15% de ocupação</option>
-                        <option value="35">35% de ocupação</option>
-                        <option value="50">50% de ocupação</option>
-                        <option value="65">65% de ocupação</option>
-                        <option value="100">100% de ocupação</option>
-                        <option value="120">120% de ocupação</option>
-                    </select>
-
-                    <div id="corrPercentFeedback" style="margin-top: 8px; font-size: 0.84rem; color: #7e22ce; font-weight: 600; display: flex; align-items: center; gap: 6px;">
-                        <span>✓ Valor selecionado para estorno: <strong id="corrPercentBadge">15%</strong></span>
-                    </div>
-                </div>
-
-                <!-- 3. JUSTIFICATIVA -->
-                <div style="margin-bottom: 24px;">
-                    <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: block; margin-bottom: 6px;">
-                        Justificativa do Ajuste <span style="color: #dc2626;">* (Obrigatória)</span>:
-                    </label>
-                    <textarea id="corrJustificativa" rows="3" placeholder="Descreva claramente o motivo da correção (ex: Clique acidental de grupo, passageiros contabilizados a mais, etc.)..." required style="width: 100%; padding: 11px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-family: inherit; font-size: 0.92rem; resize: vertical;"></textarea>
-                </div>
-
-                <div style="display: flex; gap: 12px; justify-content: flex-end;">
-                    <button type="button" onclick="closeCorrectionModal()" style="padding: 10px 18px; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 10px; font-weight: 600; cursor: pointer;">
-                        Cancelar
-                    </button>
-                    <button type="submit" id="btnSubmitCorrecao" style="padding: 10px 20px; background: #ea580c; color: #ffffff; border: none; border-radius: 10px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(234,88,12,0.3);">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="18" height="18">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
-                        </svg>
-                        Enviar Solicitação ao Supervisor
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- MODAL PARA REJEITAR SOLICITAÇÃO COM MOTIVO -->
-    <div class="modal-overlay" id="rejeitarSolicitacaoModal">
-        <div class="modal-card">
-            <div class="modal-header">
-                <div class="modal-title">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="22" height="22" style="color: #dc2626;">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="m9.75 9.75 4.5 4.5m0-4.5-4.5 4.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                    </svg>
-                    Rejeitar Solicitação de Correção <span id="rejeitarModalId" style="color: #dc2626;">#--</span>
-                </div>
-                <button type="button" onclick="fecharModalRejeitar()" style="background: none; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer;">&times;</button>
-            </div>
-
-            <form id="rejeitarSolicitacaoForm" onsubmit="confirmarRejeicao(event)">
-                <input type="hidden" id="rejeitarIdSolicitacao" value="">
-                
-                <div style="margin-bottom: 20px;">
-                    <label style="font-weight: 700; font-size: 0.88rem; color: #334155; display: block; margin-bottom: 6px;">
-                        Motivo da Recusa <span style="color: #dc2626;">* (Obrigatório)</span>:
-                    </label>
-                    <textarea id="rejeitarMotivo" rows="3" placeholder="Informe o motivo pelo qual esta solicitação não foi aprovada..." required style="width: 100%; padding: 11px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-family: inherit; font-size: 0.92rem; resize: vertical;"></textarea>
-                </div>
-
-                <div style="display: flex; gap: 12px; justify-content: flex-end;">
-                    <button type="button" onclick="fecharModalRejeitar()" style="padding: 10px 18px; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 10px; font-weight: 600; cursor: pointer;">
-                        Cancelar
-                    </button>
-                    <button type="submit" id="btnConfirmarRejeicao" style="padding: 10px 18px; background: #dc2626; color: #ffffff; border: none; border-radius: 10px; font-weight: 700; cursor: pointer;">
-                        Confirmar Rejeição
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-
     <!-- MODAL DE EXTRATO DETALHADO DO HISTÓRICO DE UMA SESSÃO -->
     <div class="modal-overlay" id="historyDetailsModal">
         <div class="modal-card" style="max-width: 1200px; width: 95vw; max-height: 90vh; overflow-y: auto;">
@@ -4090,6 +3478,13 @@ if ($canViewSolicitacoes) {
                 btn.style.color = showDateInClock ? '#334155' : '#991b1b';
                 btn.style.borderColor = showDateInClock ? '#cbd5e1' : '#fecaca';
             }
+            const btnDrawer = document.getElementById('btn-toggle-date-drawer');
+            if (btnDrawer) {
+                btnDrawer.textContent = showDateInClock ? '📅 Data: ON' : '📅 Data: OFF';
+                btnDrawer.style.background = showDateInClock ? '#f1f5f9' : '#fee2e2';
+                btnDrawer.style.color = showDateInClock ? '#334155' : '#991b1b';
+                btnDrawer.style.borderColor = showDateInClock ? '#cbd5e1' : '#fecaca';
+            }
             updateClock();
         }
 
@@ -4102,13 +3497,23 @@ if ($canViewSolicitacoes) {
             const minutes = String(now.getMinutes()).padStart(2, '0');
             const seconds = String(now.getSeconds()).padStart(2, '0');
 
+            const fullText = showDateInClock
+                ? `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`
+                : `${hours}:${minutes}:${seconds}`;
+
             const clockEl = document.getElementById('realtime-clock');
             if (clockEl) {
-                if (showDateInClock) {
-                    clockEl.textContent = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
-                } else {
-                    clockEl.textContent = `${hours}:${minutes}:${seconds}`;
-                }
+                clockEl.textContent = fullText;
+            }
+
+            const clockDrawerEl = document.getElementById('realtime-clock-drawer');
+            if (clockDrawerEl) {
+                clockDrawerEl.textContent = fullText;
+            }
+
+            const clockMobEl = document.getElementById('realtime-clock-mobile');
+            if (clockMobEl) {
+                clockMobEl.textContent = showDateInClock ? `${day}/${month} ${hours}:${minutes}` : `${hours}:${minutes}`;
             }
 
             const panelDateEl = document.getElementById('panel-read-date');
@@ -4337,7 +3742,7 @@ if ($canViewSolicitacoes) {
             }, duration);
         }
 
-        // 2. ALTERNÂNCIA DE ABAS DO USUÁRIO (Contador vs Meu Histórico)
+        // 2. ALTERNÂNCIA DE ABAS DO USUÁRIO (Contador vs Meu Histórico) + MENU MOBILE
         function switchUserTab(tabId, btn) {
             const tabs = document.querySelectorAll('.user-tab-content');
             tabs.forEach(t => t.style.display = 'none');
@@ -4349,12 +3754,98 @@ if ($canViewSolicitacoes) {
             btns.forEach(b => b.classList.remove('active'));
             if (btn) btn.classList.add('active');
 
+            // Sincroniza itens do menu hamburguer e barra inferior mobile
+            const tabLabels = {
+                'tab-contador': 'Painel de Contagem',
+                'tab-historico': 'Dashboard'
+            };
+            const pillName = document.getElementById('cb-mobile-current-tab-name');
+            if (pillName && tabLabels[tabId]) {
+                pillName.textContent = tabLabels[tabId];
+            }
+
+            document.querySelectorAll('.cb-drawer-nav-item[data-tab-target]').forEach(item => {
+                item.classList.toggle('active', item.getAttribute('data-tab-target') === tabId);
+            });
+
+            document.querySelectorAll('.cb-bottom-nav-btn[data-tab-target]').forEach(item => {
+                item.classList.toggle('active', item.getAttribute('data-tab-target') === tabId);
+            });
+
+            closeMobileDrawer();
+
             if (tabId === 'tab-contador') {
                 if (typeof limparTodasSelecoesObrigatorias === 'function') {
                     limparTodasSelecoesObrigatorias();
                 }
             }
         }
+
+        // Funções de Controle do Menu Hamburguer e Componentes Práticos Mobile
+        function toggleMobileDrawer() {
+            const drawer = document.getElementById('cb-mobile-drawer');
+            const backdrop = document.getElementById('cb-mobile-backdrop');
+            const trigger = document.getElementById('cb-hamburger-trigger');
+            if (!drawer || !backdrop) return;
+            const isOpen = drawer.classList.toggle('open');
+            backdrop.classList.toggle('open', isOpen);
+            if (trigger) trigger.classList.toggle('is-active', isOpen);
+            document.body.style.overflow = isOpen ? 'hidden' : '';
+        }
+
+        function closeMobileDrawer() {
+            const drawer = document.getElementById('cb-mobile-drawer');
+            const backdrop = document.getElementById('cb-mobile-backdrop');
+            const trigger = document.getElementById('cb-hamburger-trigger');
+            if (drawer) drawer.classList.remove('open');
+            if (backdrop) backdrop.classList.remove('open');
+            if (trigger) trigger.classList.remove('is-active');
+            document.body.style.overflow = '';
+        }
+
+        function toggleMobileDadosCard() {
+            const col = document.getElementById('cb-dados-card-col');
+            const lbl = document.getElementById('cb-mobile-dados-action-label');
+            if (!col) return;
+            const isCollapsed = col.classList.toggle('cb-mobile-collapsed');
+            if (lbl) lbl.textContent = isCollapsed ? 'Editar Turno ▾' : 'Ocultar Dados ▴';
+        }
+
+        function toggleMobileSessionInfo() {
+            const grid = document.getElementById('cb-session-info-grid');
+            const btn = document.getElementById('cb-btn-toggle-session-info');
+            const txt = document.getElementById('cb-session-info-btn-text');
+            if (!grid) return;
+            const isCollapsed = grid.classList.toggle('cb-mobile-collapsed');
+            if (btn) btn.classList.toggle('is-expanded', !isCollapsed);
+            if (txt) txt.textContent = isCollapsed ? 'Info da Linha ▾' : 'Ocultar Info ▴';
+        }
+
+        function toggleMobileSessionMenu(e) {
+            if (e) e.stopPropagation();
+            const menu = document.getElementById('cb-mobile-session-dropdown');
+            if (menu) menu.classList.toggle('open');
+        }
+
+        function closeMobileSessionMenu() {
+            const menu = document.getElementById('cb-mobile-session-dropdown');
+            if (menu) menu.classList.remove('open');
+        }
+
+        function toggleMobileDashFilters() {
+            const form = document.getElementById('form-filtros-historico');
+            const lbl = document.getElementById('cb-mobile-filter-toggle-label');
+            if (!form) return;
+            const isCollapsed = form.classList.toggle('cb-mobile-collapsed');
+            if (lbl) lbl.textContent = isCollapsed ? 'Mostrar Filtros ▾' : 'Ocultar Filtros ▴';
+        }
+
+        document.addEventListener('click', function(e) {
+            const menu = document.getElementById('cb-mobile-session-dropdown');
+            if (menu && menu.classList.contains('open') && !e.target.closest('.cb-mobile-session-bar')) {
+                menu.classList.remove('open');
+            }
+        });
 
         // 3. PAGINAÇÃO, FILTRO DE BUSCA E DESTAQUE (HIGHLIGHT) NA TABELA DE HISTÓRICO
         let historyCurrentPage = 1;
@@ -4659,408 +4150,6 @@ if ($canViewSolicitacoes) {
             if (typeof showToastNotification === 'function') {
                 showToastNotification('✓ Quantidade zerada (0 passageiros).', 2000);
             }
-        }
-
-        // 5. MODAL DE SOLICITAÇÃO DE CORREÇÃO AO SUPERVISOR
-        const percentToPasMap = {
-            '15': 13,
-            '35': 30,
-            '50': 42,
-            '65': 54,
-            '100': 82,
-            '120': 100
-        };
-
-        function selectCorrPercent(pct) {
-            pct = String(pct);
-            const select = document.getElementById('corrPercentSelect');
-            if (select) select.value = pct;
-
-            const badge = document.getElementById('corrPercentBadge');
-            if (badge) badge.textContent = pct + '%';
-
-            const buttons = document.querySelectorAll('.btn-corr-pct');
-            buttons.forEach(btn => {
-                if (btn.getAttribute('data-pct') === pct) {
-                    btn.style.border = '2px solid #a855f7';
-                    btn.style.background = '#f3e8ff';
-                    btn.style.color = '#6b21a8';
-                } else {
-                    btn.style.border = '2px solid #cbd5e1';
-                    btn.style.background = '#f8fafc';
-                    btn.style.color = '#334155';
-                }
-            });
-        }
-
-        function openCorrectionModal() {
-            const modal = document.getElementById('correctionModal');
-            if (!modal) return;
-
-            modal.classList.add('active');
-
-            // Preenche dinamicamente o select com as contagens disponíveis na sessão
-            const selectAlvo = document.getElementById('corrContagemAlvo');
-            if (selectAlvo) {
-                selectAlvo.innerHTML = '';
-
-                // Opção 1: Contagem atual em andamento
-                const optAtual = document.createElement('option');
-                optAtual.value = 'atual';
-                const counterEl = document.getElementById('counterTotal');
-                const percentEl = document.getElementById('counterTotalPercent');
-                const totalAtualTxt = (activeTipoContagem === 'percentual' && percentEl) ? percentEl.textContent.trim() : (counterEl ? counterEl.textContent.trim() + ' pas.' : '');
-                optAtual.textContent = '⏱️ Contagem atual em andamento' + (totalAtualTxt ? ' (' + totalAtualTxt + ')' : '');
-                selectAlvo.appendChild(optAtual);
-
-                // Opções dos registros salvos na sessão
-                const listaLogs = (window.registrosSessaoAtual && window.registrosSessaoAtual.length > 0)
-                    ? window.registrosSessaoAtual
-                    : [];
-
-                listaLogs.forEach(function(reg, idx) {
-                    const opt = document.createElement('option');
-                    opt.value = reg.idRegistro || ('reg_' + idx);
-                    const veic = reg.veiculoPrefixo ? formatarNumeroVeiculo(reg.veiculoPrefixo) : (reg.veiculoPlaca ? reg.veiculoPlaca : 'Veículo não informado');
-                    const isSalvo = (reg.tipo === 'salvamento');
-                    const qtdFmt = isSalvo
-                        ? ((activeTipoContagem === 'percentual' || (typeof activeTipoContagem === 'string' && activeTipoContagem.includes('perc')))
-                            ? (getPercentualLabel(reg.quantidade) + ' / ' + parseInt(reg.quantidade, 10) + ' pas.')
-                            : (reg.quantidade + ' pas.'))
-                        : (reg.quantidade + ' pas.');
-
-                    const tagTipo = isSalvo ? '💾 Salvo' : 'Ajuste';
-                    opt.textContent = `${tagTipo} às ${reg.horaFormatada || ''} — Veículo: ${veic} (${qtdFmt})`;
-                    opt.dataset.veiculo = veic;
-                    opt.dataset.hora = reg.horaFormatada || '';
-                    opt.dataset.qtd = reg.quantidade;
-                    selectAlvo.appendChild(opt);
-                });
-
-                atualizarInfoContagemAlvo(selectAlvo);
-            }
-
-            const containerQtd = document.getElementById('containerCorrQtd');
-            const containerPercent = document.getElementById('containerCorrPercent');
-            const inputQtd = document.getElementById('corrQtd');
-            const selectPercent = document.getElementById('corrPercentSelect');
-
-            if (activeTipoContagem === 'percentual') {
-                if (containerQtd) containerQtd.style.display = 'none';
-                if (containerPercent) containerPercent.style.display = 'block';
-                if (inputQtd) inputQtd.required = false;
-                if (selectPercent) {
-                    selectPercent.required = true;
-                    selectCorrPercent(selectPercent.value || '15');
-                }
-            } else {
-                if (containerQtd) containerQtd.style.display = 'block';
-                if (containerPercent) containerPercent.style.display = 'none';
-                if (inputQtd) {
-                    inputQtd.required = true;
-                    inputQtd.focus();
-                }
-                if (selectPercent) selectPercent.required = false;
-            }
-
-            const destino = document.getElementById('corrDestino');
-            if (destino && activeTipoContagem === 'percentual') destino.focus();
-        }
-
-        function atualizarInfoContagemAlvo(selectEl) {
-            const feedback = document.getElementById('corrContagemAlvoFeedback');
-            if (!feedback || !selectEl) return;
-            const selIdx = selectEl.selectedIndex;
-            if (selIdx < 0) {
-                feedback.style.display = 'none';
-                return;
-            }
-            const opt = selectEl.options[selIdx];
-            if (opt.value === 'atual') {
-                feedback.textContent = 'ℹ️ A correção será aplicada sobre o lançamento em andamento.';
-                feedback.style.color = '#0284c7';
-                feedback.style.display = 'block';
-            } else {
-                feedback.textContent = '✓ Lançamento selecionado: ' + opt.textContent;
-                feedback.style.color = '#15803d';
-                feedback.style.display = 'block';
-            }
-        }
-
-        function closeCorrectionModal() {
-            const modal = document.getElementById('correctionModal');
-            if (modal) modal.classList.remove('active');
-            const form = document.getElementById('correctionForm');
-            if (form) form.reset();
-            if (activeTipoContagem === 'percentual') {
-                selectCorrPercent('15');
-            }
-        }
-
-        function submitCorrection(e) {
-            e.preventDefault();
-            if (!activeContagemId) {
-                alert('Nenhuma sessão de contagem ativa identificada.');
-                return;
-            }
-
-            const destinoSelect = document.getElementById('corrDestino');
-            const idUsuarioDestino = destinoSelect ? destinoSelect.value : '';
-            const justificativa = document.getElementById('corrJustificativa') ? document.getElementById('corrJustificativa').value.trim() : '';
-
-            const alvoSelect = document.getElementById('corrContagemAlvo');
-            let textoAlvo = '';
-            if (alvoSelect && alvoSelect.selectedIndex >= 0) {
-                const selectedOpt = alvoSelect.options[alvoSelect.selectedIndex];
-                if (selectedOpt.value === 'atual') {
-                    textoAlvo = 'Contagem atual em andamento';
-                } else {
-                    textoAlvo = selectedOpt.textContent.trim();
-                }
-            }
-
-            let qtd = 1;
-            let percentualSubtrair = '';
-            let justifFinal = justificativa;
-
-            if (activeTipoContagem === 'percentual') {
-                const selectPercent = document.getElementById('corrPercentSelect');
-                percentualSubtrair = selectPercent ? selectPercent.value : '15';
-                qtd = percentToPasMap[percentualSubtrair] || 13;
-                justifFinal = (textoAlvo ? `[Alvo: ${textoAlvo}] ` : '') + `[Estorno de ${percentualSubtrair}%] ` + justificativa;
-            } else {
-                qtd = document.getElementById('corrQtd') ? document.getElementById('corrQtd').value : 1;
-                justifFinal = (textoAlvo ? `[Alvo: ${textoAlvo}] ` : '') + justificativa;
-            }
-
-            if (!idUsuarioDestino) {
-                alert('Por favor, selecione para qual supervisor/gerente enviar a solicitação de correção.');
-                if (destinoSelect) destinoSelect.focus();
-                return;
-            }
-
-            if (!justificativa || justificativa.length < 3) {
-                alert('Por favor, digite uma justificativa explicativa para a correção (mínimo de 3 caracteres).');
-                const justEl = document.getElementById('corrJustificativa');
-                if (justEl) justEl.focus();
-                return;
-            }
-
-            const btn = document.getElementById('btnSubmitCorrecao');
-            if (btn) {
-                btn.disabled = true;
-                btn.style.opacity = '0.7';
-            }
-
-            const formData = new FormData();
-            formData.append('action', 'solicitar_correcao');
-            formData.append('idContagem', activeContagemId);
-            formData.append('idUsuarioDestino', idUsuarioDestino);
-            formData.append('contagem_alvo', textoAlvo);
-            formData.append('qtd_subtrair', qtd);
-            formData.append('percentual_subtrair', percentualSubtrair);
-            formData.append('justificativa', justifFinal);
-            formData.append('ajax', '1');
-
-            fetch('index.php', {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.style.opacity = '1';
-                }
-                if (data.success) {
-                    closeCorrectionModal();
-                    showToastNotification('✓ ' + (data.message || 'Solicitação enviada ao supervisor com sucesso!'));
-                    setTimeout(() => {
-                        window.location.href = 'index.php?tab=solicitacoes';
-                    }, 2000);
-                } else {
-                    alert(data.message || 'Erro ao enviar solicitação de correção.');
-                }
-            })
-            .catch(err => {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.style.opacity = '1';
-                }
-                console.error('Erro na solicitação de correção:', err);
-                alert('Ocorreu um erro de comunicação com o servidor ao enviar a solicitação.');
-            });
-        }
-
-        // 5.1. GERENCIAMENTO DE SOLICITAÇÕES (APROVAR / REJEITAR)
-        function aprovarSolicitacao(idSolicitacao, qtd, fiscalNome, idContagem, tipoContagem) {
-            const ajusteTexto = (tipoContagem && tipoContagem.toLowerCase().includes('perc'))
-                ? `-${getPercentualLabel(qtd)} (${qtd} pas.)`
-                : `-${qtd} passageiro(s)`;
-
-            if (!confirm(`Deseja realmente APROVAR a solicitação #${idSolicitacao}?\n\n• Solicitante: ${fiscalNome}\n• Sessão: #${idContagem}\n• Ajuste: ${ajusteTexto}\n\nO valor será descontado da contagem correspondente imediatamente.`)) {
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('action', 'responder_solicitacao');
-            formData.append('idSolicitacao', idSolicitacao);
-            formData.append('decisao', 'aprovar');
-            formData.append('ajax', '1');
-
-            fetch('index.php', {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    showToastNotification('✓ ' + (data.message || 'Solicitação aprovada com sucesso!'));
-                    setTimeout(() => {
-                        window.location.href = 'index.php?tab=solicitacoes';
-                    }, 2000);
-                } else {
-                    alert(data.message || 'Erro ao aprovar solicitação.');
-                }
-            })
-            .catch(err => {
-                console.error('Erro ao aprovar solicitação:', err);
-                alert('Erro ao processar a aprovação.');
-            });
-        }
-
-        function abrirModalRejeitar(idSolicitacao, fiscalNome) {
-            const idInput = document.getElementById('rejeitarIdSolicitacao');
-            const idSpan = document.getElementById('rejeitarModalId');
-            const motivoArea = document.getElementById('rejeitarMotivo');
-            const modal = document.getElementById('rejeitarSolicitacaoModal');
-
-            if (idInput) idInput.value = idSolicitacao;
-            if (idSpan) idSpan.textContent = '#' + idSolicitacao + (fiscalNome ? ' (' + fiscalNome + ')' : '');
-            if (motivoArea) motivoArea.value = '';
-            if (modal) {
-                modal.classList.add('active');
-                if (motivoArea) motivoArea.focus();
-            }
-        }
-
-        function fecharModalRejeitar() {
-            const modal = document.getElementById('rejeitarSolicitacaoModal');
-            if (modal) modal.classList.remove('active');
-        }
-
-        function confirmarRejeicao(e) {
-            e.preventDefault();
-            const idSolicitacao = document.getElementById('rejeitarIdSolicitacao').value;
-            const motivo = document.getElementById('rejeitarMotivo').value.trim();
-
-            if (!motivo) {
-                alert('Por favor, informe o motivo da recusa.');
-                return;
-            }
-
-            const btn = document.getElementById('btnConfirmarRejeicao');
-            if (btn) {
-                btn.disabled = true;
-                btn.style.opacity = '0.7';
-            }
-
-            const formData = new FormData();
-            formData.append('action', 'responder_solicitacao');
-            formData.append('idSolicitacao', idSolicitacao);
-            formData.append('decisao', 'rejeitar');
-            formData.append('motivo', motivo);
-            formData.append('ajax', '1');
-
-            fetch('index.php', {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.style.opacity = '1';
-                }
-                if (data.success) {
-                    fecharModalRejeitar();
-                    showToastNotification(data.message || 'Solicitação rejeitada com sucesso.');
-                    setTimeout(() => {
-                        window.location.href = 'index.php?tab=solicitacoes';
-                    }, 2000);
-                } else {
-                    alert(data.message || 'Erro ao rejeitar solicitação.');
-                }
-            })
-            .catch(err => {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.style.opacity = '1';
-                }
-                console.error('Erro ao rejeitar solicitação:', err);
-                alert('Erro ao processar a rejeição.');
-            });
-        }
-
-        // 5.2. FILTROS E BUSCA NA TABELA DE SOLICITAÇÕES
-        function filtrarSolicitacoesPorStatus(status, btn) {
-            const pills = document.querySelectorAll('.solic-filter-pill');
-            pills.forEach(p => {
-                p.classList.remove('active');
-                p.style.background = '#f8fafc';
-                p.style.color = '#334155';
-            });
-            if (btn) {
-                btn.classList.add('active');
-                if (status === 'todos') {
-                    btn.style.background = '#0f172a';
-                    btn.style.color = '#ffffff';
-                } else if (status === 'pendente') {
-                    btn.style.background = '#fff7ed';
-                    btn.style.color = '#c2410c';
-                } else if (status === 'aprovada') {
-                    btn.style.background = '#f0fdf4';
-                    btn.style.color = '#15803d';
-                } else if (status === 'rejeitada') {
-                    btn.style.background = '#fff1f2';
-                    btn.style.color = '#be123c';
-                }
-            }
-
-            const searchInput = document.getElementById('buscarSolicitacoesInput');
-            const q = searchInput ? searchInput.value.toLowerCase().trim() : '';
-
-            const rows = document.querySelectorAll('#tabelaSolicitacoesBody tr[data-status]');
-            let countVisible = 0;
-
-            rows.forEach(row => {
-                const rowStatus = row.getAttribute('data-status');
-                const rowText = row.textContent.toLowerCase();
-
-                const matchStatus = (status === 'todos' || rowStatus === status);
-                const matchQuery = (q === '' || rowText.indexOf(q) !== -1);
-
-                if (matchStatus && matchQuery) {
-                    row.style.display = '';
-                    countVisible++;
-                } else {
-                    row.style.display = 'none';
-                }
-            });
-
-            const noData = document.getElementById('solicitacoesNoDataRow');
-            if (noData) {
-                noData.style.display = (countVisible === 0) ? '' : 'none';
-            }
-        }
-
-        function buscarSolicitacoesTable(query) {
-            const activePill = document.querySelector('.solic-filter-pill.active');
-            const status = activePill ? activePill.getAttribute('data-status-filter') : 'todos';
-            filtrarSolicitacoesPorStatus(status, activePill);
         }
 
         // 6. MODAL DE DETALHES/EXTRATO DO HISTÓRICO
@@ -7849,15 +6938,7 @@ if ($canViewSolicitacoes) {
             initDashTablesPagination();
 
             const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.get('tab') === 'solicitacoes') {
-                const solicBtn = document.getElementById('btn-tab-solicitacoes');
-                if (solicBtn) {
-                    switchUserTab('tab-solicitacoes', solicBtn);
-                } else {
-                    const contBtn = document.getElementById('btn-tab-contador');
-                    if (contBtn) switchUserTab('tab-contador', contBtn);
-                }
-            } else if (urlParams.has('data_inicio') || urlParams.has('data_fim') || urlParams.has('hora_inicio') || urlParams.has('hora_fim') || urlParams.has('idEmpresa') || urlParams.has('idLinha') || urlParams.has('idVeiculo') || urlParams.has('idLocal') || urlParams.has('tipoOperacao') || urlParams.has('idUsuario') || urlParams.get('tab') === 'historico') {
+            if (urlParams.has('data_inicio') || urlParams.has('data_fim') || urlParams.has('hora_inicio') || urlParams.has('hora_fim') || urlParams.has('idEmpresa') || urlParams.has('idLinha') || urlParams.has('idVeiculo') || urlParams.has('idLocal') || urlParams.has('tipoOperacao') || urlParams.has('idUsuario') || urlParams.get('tab') === 'historico') {
                 const histBtn = document.getElementById('btn-tab-historico');
                 if (histBtn) switchUserTab('tab-historico', histBtn);
             }
@@ -7867,6 +6948,15 @@ if ($canViewSolicitacoes) {
                 if (defaultHistBtn) switchUserTab('tab-historico', defaultHistBtn);
             }
             <?php endif; ?>
+
+            // Sincronizar resumo de turno no mobile ao alterar select
+            const selTurnoInit = document.getElementById('select_iniciar_turno');
+            if (selTurnoInit) {
+                selTurnoInit.addEventListener('change', function() {
+                    const summaryTurno = document.getElementById('cb-mobile-turno-summary');
+                    if (summaryTurno) summaryTurno.textContent = this.value;
+                });
+            }
 
             var alerts = document.querySelectorAll('.alert');
             alerts.forEach(function(alertEl) {
@@ -7879,5 +6969,118 @@ if ($canViewSolicitacoes) {
             });
         });
     </script>
+
+    <!-- Menu Hamburguer Slide-Out (Drawer Mobile na Raiz do Body) -->
+    <div class="cb-mobile-backdrop cb-mobile-only" id="cb-mobile-backdrop" onclick="closeMobileDrawer()"></div>
+    <aside class="cb-mobile-drawer cb-mobile-only" id="cb-mobile-drawer" aria-label="Menu Mobile">
+        <div class="cb-drawer-header">
+            <div class="cb-drawer-user">
+                <div class="user-avatar">
+                    <?php echo htmlspecialchars($initials); ?>
+                </div>
+                <div class="user-info">
+                    <h3><?php echo htmlspecialchars($loggedNome); ?></h3>
+                    <p>@<?php echo htmlspecialchars($loggedLogin); ?> • <?php echo $roleLabel; ?></p>
+                </div>
+            </div>
+            <button type="button" class="cb-drawer-close" onclick="closeMobileDrawer()" aria-label="Fechar Menu">&times;</button>
+        </div>
+
+        <div class="cb-drawer-clock-row">
+            <div class="cb-clock-left">
+                <span class="pulse-dot" style="width: 8px; height: 8px; background: #22c55e; border-radius: 50%; display: inline-block;"></span>
+                <span id="realtime-clock-drawer"><?php echo date('H:i:s'); ?></span>
+            </div>
+            <button type="button" onclick="toggleDateInClock()" id="btn-toggle-date-drawer" style="background: #fee2e2; border: 1px solid #fecaca; border-radius: 6px; padding: 4px 9px; font-size: 0.72rem; cursor: pointer; color: #991b1b; font-weight: 700;">
+                📅 Data: OFF
+            </button>
+        </div>
+
+        <div class="cb-drawer-section-label">Navegação Principal</div>
+        <nav class="cb-drawer-nav">
+            <button type="button" class="cb-drawer-nav-item active" data-tab-target="tab-contador" onclick="switchUserTab('tab-contador', document.getElementById('btn-tab-contador'))">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                    </svg>
+                    <span>Painel de Contagem</span>
+                </span>
+                <?php if ($sessaoAtiva): ?>
+                    <span class="cb-drawer-badge" style="background: #dcfce7; color: #15803d;">Ativa</span>
+                <?php endif; ?>
+            </button>
+
+            <button type="button" class="cb-drawer-nav-item" data-tab-target="tab-historico" onclick="switchUserTab('tab-historico', document.getElementById('btn-tab-historico'))">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
+                    </svg>
+                    <span>Dashboard</span>
+                </span>
+                <span class="cb-drawer-badge"><?php echo $totalSessoesUsuario; ?></span>
+            </button>
+
+            <?php if ($sessaoAtiva): ?>
+                <div class="cb-drawer-section-label" style="padding-left: 4px; margin-top: 8px;">Sessão em Andamento</div>
+                <button type="button" class="cb-drawer-nav-item" onclick="closeMobileDrawer(); switchUserTab('tab-contador', document.getElementById('btn-tab-contador')); openAlterarLinhaVeiculoModal();">
+                    <span class="cb-item-left">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="#2563eb">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                        </svg>
+                        <span>Editar Linha / Veículo / Turno</span>
+                    </span>
+                </button>
+            <?php endif; ?>
+
+            <?php if ($isAdmin): ?>
+                <div class="cb-drawer-section-label" style="padding-left: 4px; margin-top: 8px;">Administração</div>
+                <a href="admin_panel.php" class="cb-drawer-nav-item cb-drawer-admin">
+                    <span class="cb-item-left">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.43l-1.003.828c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.43l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.991l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                        </svg>
+                        <span>Painel Admin</span>
+                    </span>
+                </a>
+            <?php endif; ?>
+        </nav>
+
+        <div class="cb-drawer-footer">
+            <a href="logout.php" class="cb-drawer-nav-item cb-drawer-logout">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75" />
+                    </svg>
+                    <span>Sair da Conta</span>
+                </span>
+            </a>
+        </div>
+    </aside>
+
+    <!-- Barra de Navegação Inferior Fixa para Celular (Acesso Rápido com o Polegar) -->
+    <nav class="cb-mobile-bottom-nav cb-mobile-only" aria-label="Navegação Rápida Mobile">
+        <button type="button" class="cb-bottom-nav-btn active" data-tab-target="tab-contador" onclick="switchUserTab('tab-contador', document.getElementById('btn-tab-contador'))">
+            <svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+            </svg>
+            <span>Contagem</span>
+        </button>
+
+        <button type="button" class="cb-bottom-nav-btn" data-tab-target="tab-historico" onclick="switchUserTab('tab-historico', document.getElementById('btn-tab-historico'))">
+            <svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
+            </svg>
+            <span>Dashboard</span>
+        </button>
+
+        <button type="button" class="cb-bottom-nav-btn" onclick="toggleMobileDrawer()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+            </svg>
+            <span>Menu</span>
+        </button>
+    </nav>
 </body>
 </html>

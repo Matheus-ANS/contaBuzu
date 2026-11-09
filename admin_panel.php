@@ -862,6 +862,35 @@ foreach ($sistemas as $s) {
             background: linear-gradient(135deg, #002D5E 0%, #004385 100%) !important;
             transform: translateY(-1px) !important;
         }
+
+        @media (max-width: 768px) {
+            body.admin-body .dashboard-header {
+                padding: 14px 16px !important;
+                margin-bottom: 16px !important;
+                flex-direction: row !important;
+                align-items: center !important;
+                justify-content: space-between !important;
+            }
+            body.admin-body .dashboard-header .user-avatar {
+                width: 40px !important;
+                height: 40px !important;
+                border-radius: 10px !important;
+            }
+            body.admin-body .dashboard-header h2 {
+                font-size: 1.05rem !important;
+            }
+            body.admin-body .tabs-navigation {
+                display: none !important;
+            }
+            body.admin-body .admin-toolbar {
+                flex-direction: column !important;
+                align-items: stretch !important;
+            }
+            body.admin-body .admin-toolbar > div {
+                min-width: 0 !important;
+                width: 100% !important;
+            }
+        }
     </style>
     <script>
         var activeTabId = '<?php echo htmlspecialchars($activeTab); ?>';
@@ -908,6 +937,45 @@ foreach ($sistemas as $s) {
 
             var searchInput = document.getElementById('search-input');
             if (searchInput) handleSearch(searchInput.value);
+
+            var adminTabLabels = {
+                'tab-linhas': 'Linhas',
+                'tab-locais': 'Locais',
+                'tab-usuarios': 'Usuários',
+                'tab-veiculos': 'Veículos',
+                'tab-empresas': 'Empresas',
+                'tab-sistemas': 'Sistemas'
+            };
+            var pillName = document.getElementById('cb-admin-current-tab-name');
+            if (pillName && adminTabLabels[tabId]) {
+                pillName.textContent = adminTabLabels[tabId];
+            }
+            var drawerItems = document.querySelectorAll('.cb-drawer-nav-item[data-admin-tab]');
+            drawerItems.forEach(function(item) {
+                item.classList.toggle('active', item.getAttribute('data-admin-tab') === tabId);
+            });
+            closeAdminMobileDrawer();
+        }
+
+        function toggleAdminMobileDrawer() {
+            var drawer = document.getElementById('cb-admin-mobile-drawer');
+            var backdrop = document.getElementById('cb-admin-mobile-backdrop');
+            var trigger = document.getElementById('cb-admin-hamburger-trigger');
+            if (!drawer || !backdrop) return;
+            var isOpen = drawer.classList.toggle('open');
+            backdrop.classList.toggle('open', isOpen);
+            if (trigger) trigger.classList.toggle('is-active', isOpen);
+            document.body.style.overflow = isOpen ? 'hidden' : '';
+        }
+
+        function closeAdminMobileDrawer() {
+            var drawer = document.getElementById('cb-admin-mobile-drawer');
+            var backdrop = document.getElementById('cb-admin-mobile-backdrop');
+            var trigger = document.getElementById('cb-admin-hamburger-trigger');
+            if (drawer) drawer.classList.remove('open');
+            if (backdrop) backdrop.classList.remove('open');
+            if (trigger) trigger.classList.remove('is-active');
+            document.body.style.overflow = '';
         }
 
         document.addEventListener("DOMContentLoaded", function() {
@@ -1228,7 +1296,7 @@ foreach ($sistemas as $s) {
                     </div>
                 </div>
 
-                <div style="display: flex; gap: 12px; align-items: center;">
+                <div class="header-right-actions" style="display: flex; gap: 12px; align-items: center;">
                     <!-- Botão Voltar para Início -->
                     <a href="index.php" class="btn-secondary-action" style="text-decoration: none; border: 1px solid #cbd5e1; display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: 10px; font-weight: 600; font-size: 0.9rem; transition: all 0.2s;">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" width="18" height="18">
@@ -1245,6 +1313,24 @@ foreach ($sistemas as $s) {
                         Sair
                     </a>
                 </div>
+
+                <!-- Botão Menu Hamburguer Mobile no Admin (Oculto no Desktop) -->
+                <div class="cb-mobile-header-controls cb-mobile-only">
+                    <button type="button" class="cb-hamburger-btn" id="cb-admin-hamburger-trigger" onclick="toggleAdminMobileDrawer()" aria-label="Abrir Menu Administrativo">
+                        <span class="cb-hamburger-line"></span>
+                        <span class="cb-hamburger-line"></span>
+                        <span class="cb-hamburger-line"></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Barra Indicadora da Aba Ativa no Mobile (Admin) -->
+            <div class="cb-mobile-active-tab-pill cb-mobile-only" onclick="toggleAdminMobileDrawer()" style="margin: 0 0 16px 0;">
+                <div class="cb-pill-left">
+                    <span style="width: 8px; height: 8px; border-radius: 50%; background: #0054A6; display: inline-block;"></span>
+                    <span>Seção: <strong id="cb-admin-current-tab-name">Linhas</strong></span>
+                </div>
+                <span class="cb-pill-action">Trocar seção ☰</span>
             </div>
 
             <!-- Título e Subtítulo Principal -->
@@ -2097,6 +2183,108 @@ foreach ($sistemas as $s) {
             </form>
         </div>
     </div>
+
+    <!-- Menu Hamburguer Slide-Out (Drawer Mobile Admin na Raiz do Body) -->
+    <div class="cb-mobile-backdrop cb-mobile-only" id="cb-admin-mobile-backdrop" onclick="closeAdminMobileDrawer()"></div>
+    <aside class="cb-mobile-drawer cb-mobile-only" id="cb-admin-mobile-drawer" aria-label="Menu Administrativo Mobile">
+        <div class="cb-drawer-header">
+            <div class="cb-drawer-user">
+                <div class="user-avatar">
+                    <?php echo htmlspecialchars($initials); ?>
+                </div>
+                <div class="user-info">
+                    <h3><?php echo htmlspecialchars($loggedNome); ?></h3>
+                    <p>@<?php echo htmlspecialchars($loggedLogin); ?> • Administrador</p>
+                </div>
+            </div>
+            <button type="button" class="cb-drawer-close" onclick="closeAdminMobileDrawer()" aria-label="Fechar Menu">&times;</button>
+        </div>
+
+        <div class="cb-drawer-section-label">Gerenciar Cadastros</div>
+        <nav class="cb-drawer-nav">
+            <button type="button" class="cb-drawer-nav-item active" data-admin-tab="tab-linhas" onclick="switchTab('tab-linhas')">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                    </svg>
+                    <span>Linhas</span>
+                </span>
+                <span class="cb-drawer-badge"><?php echo $countLinhas; ?></span>
+            </button>
+
+            <button type="button" class="cb-drawer-nav-item" data-admin-tab="tab-locais" onclick="switchTab('tab-locais')">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0z" />
+                    </svg>
+                    <span>Locais</span>
+                </span>
+                <span class="cb-drawer-badge"><?php echo $countLocais; ?></span>
+            </button>
+
+            <button type="button" class="cb-drawer-nav-item" data-admin-tab="tab-usuarios" onclick="switchTab('tab-usuarios')">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6 0 3.375 3.375 0 0 1 6 0zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0z" />
+                    </svg>
+                    <span>Usuários</span>
+                </span>
+                <span class="cb-drawer-badge"><?php echo $countUsuarios; ?></span>
+            </button>
+
+            <button type="button" class="cb-drawer-nav-item" data-admin-tab="tab-veiculos" onclick="switchTab('tab-veiculos')">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 18.75a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm9 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM3.75 9h16.5m-16.5 0L5.25 4.5h13.5L20.25 9m-16.5 0v6.75A1.5 1.5 0 0 0 5.25 17.25h13.5a1.5 1.5 0 0 0 1.5-1.5V9" />
+                    </svg>
+                    <span>Veículos</span>
+                </span>
+                <span class="cb-drawer-badge"><?php echo $countVeiculos; ?></span>
+            </button>
+
+            <button type="button" class="cb-drawer-nav-item" data-admin-tab="tab-empresas" onclick="switchTab('tab-empresas')">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 21h19.5m-18-18v18m10.5-18v18m6-13.5V21M6.75 6.75h.75m-.75 3h.75m-.75 3h.75m3-6h.75m-.75 3h.75m-.75 3h.75M6.75 21v-3a1.5 1.5 0 0 1 1.5-1.5h3a1.5 1.5 0 0 1 1.5 1.5v3" />
+                    </svg>
+                    <span>Empresas</span>
+                </span>
+                <span class="cb-drawer-badge"><?php echo $countEmpresas; ?></span>
+            </button>
+
+            <button type="button" class="cb-drawer-nav-item" data-admin-tab="tab-sistemas" onclick="switchTab('tab-sistemas')">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19 14.5M9.75 3.104c.251.023.501.05.75.082m5.25-.082c.25.023.5.05.75.082m-7.5 0a24.238 24.238 0 0 0-4.5.57M19 14.5A2.25 2.25 0 0 1 21.25 16.75v1.5A2.25 2.25 0 0 1 19 20.5H5a2.25 2.25 0 0 1-2.225-2.25v-1.5A2.25 2.25 0 0 1 5 14.5m14 0H5" />
+                    </svg>
+                    <span>Sistemas</span>
+                </span>
+                <span class="cb-drawer-badge"><?php echo $countSistemas; ?></span>
+            </button>
+
+            <div class="cb-drawer-section-label" style="padding-left: 4px; margin-top: 8px;">Atalhos</div>
+            <a href="index.php" class="cb-drawer-nav-item">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+                    </svg>
+                    <span>Voltar para Início</span>
+                </span>
+            </a>
+        </nav>
+
+        <div class="cb-drawer-footer">
+            <a href="logout.php" class="cb-drawer-nav-item cb-drawer-logout">
+                <span class="cb-item-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75" />
+                    </svg>
+                    <span>Sair da Conta</span>
+                </span>
+            </a>
+        </div>
+    </aside>
 
 </body>
 </html>
