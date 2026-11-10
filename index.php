@@ -1839,40 +1839,21 @@ try {
                                                     </label>
                                                 </div>
 
-                                                <!-- Bloco interativo quando 'Registrar' está ativo -->
-                                                <div id="box-veiculo-registrar" style="display: none;">
-                                                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
-                                                        <button type="button" onclick="openModalVeiculos()" style="display: inline-flex; align-items: center; gap: 8px; background: #2563eb; color: #ffffff; border: none; padding: 9px 16px; border-radius: 8px; font-weight: 700; font-size: 0.88rem; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.25); transition: all 0.2s;">
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                                                <circle cx="11" cy="11" r="8"></circle>
-                                                                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                                                            </svg>
-                                                            <span>Pesquisar e Registrar Veículo(s)</span>
-                                                        </button>
-                                                        <span id="badge-contador-veiculos" style="font-size: 0.82rem; font-weight: 700; color: #64748b; background: #f1f5f9; padding: 4px 10px; border-radius: 6px;">0 selecionado(s)</span>
-                                                    </div>
-
-                                                    <!-- Container de badges dos veículos selecionados -->
-                                                    <div id="container-veiculos-chips" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 44px; padding: 10px 12px; background: #f8fafc; border: 1.5px dashed #cbd5e1; border-radius: 10px; align-items: center;">
-                                                        <span id="txt-sem-veiculo-hint" style="font-size: 0.82rem; color: #94a3b8; font-style: italic;">
-                                                            Nenhum veículo selecionado ainda. Clique no botão acima para escolher os veículos para a contagem.
-                                                        </span>
-                                                    </div>
-
-                                                    <!-- Bloco de Confirmação/Status logo abaixo dos veículos registrados -->
-                                                    <div id="box-confirmar-veiculos-main" style="display: none; margin-top: 8px; padding: 10px 14px; background: #f0fdf4; border: 1.5px solid #bbf7d0; border-radius: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
-                                                        <div style="display: flex; align-items: center; gap: 8px;">
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #16a34a;"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                                                            <span style="font-size: 0.85rem; font-weight: 700; color: #166534;">Veículos registrados e salvos com sucesso!</span>
-                                                        </div>
-                                                        <div style="display: flex; gap: 8px; align-items: center;">
-                                                            <button type="button" onclick="openModalVeiculos()" style="padding: 5px 12px; background: #ffffff; color: #15803d; border: 1px solid #86efac; border-radius: 6px; font-weight: 700; font-size: 0.8rem; cursor: pointer;">Alterar Veículos</button>
-                                                            <button type="button" onclick="desmarcarTodosVeiculosModal()" style="padding: 5px 10px; background: transparent; color: #dc2626; border: none; font-weight: 700; font-size: 0.8rem; cursor: pointer; text-decoration: underline;">Limpar</button>
-                                                        </div>
-                                                    </div>
-
-                                                    <!-- Inputs ocultos para submissão -->
-                                                    <input type="hidden" name="idVeiculo" id="select_idVeiculo" value="">
+                                                <!-- Bloco quando 'Registrar' está ativo: Seleção direta do veículo cadastrado -->
+                                                <div id="box-veiculo-registrar" style="display: none; margin-top: 8px;">
+                                                    <select name="idVeiculo" id="select_idVeiculo" class="form-select-custom cb-searchable-select" data-placeholder="Digite o prefixo ou placa do veículo..." onchange="aoSelecionarVeiculoDireto(this)">
+                                                        <option value="">-- Selecione o Veículo --</option>
+                                                        <?php foreach ($veiculosDisponiveis as $v): ?>
+                                                            <?php 
+                                                                $numFmt = htmlspecialchars(formatarNumeroVeiculo($v['prefixo']));
+                                                                $plFmt = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
+                                                                $labelV = $numFmt . ($plFmt ? ' (' . $plFmt . ')' : '');
+                                                            ?>
+                                                            <option value="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $numFmt; ?>" data-placa="<?php echo $plFmt; ?>">
+                                                                <?php echo $labelV; ?>
+                                                            </option>
+                                                        <?php endforeach; ?>
+                                                    </select>
                                                     <input type="hidden" name="veiculosSelecionados" id="input_veiculosSelecionados" value="">
                                                 </div>
 
@@ -2566,30 +2547,28 @@ try {
                             <?php endif; ?>
                         </div>
 
-                        <?php if ($canViewAllContagens): ?>
                         <!-- BOTÃO COMPACTO DE EXPORTAR RELATÓRIO GERAL (CONSOLIDADO) -->
                         <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block;">
-                            <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório Geral Consolidado de Contagens">
+                            <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                                 <span>Exportar Relatório</span>
                                 <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
                             </button>
                             <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 210px; z-index: 100; padding: 6px 0;">
                                 <div style="padding: 6px 14px 4px; font-size: 0.72rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f1f5f9; margin-bottom: 4px;">
-                                    Relatório Consolidado
+                                    Relatório de Contagens
                                 </div>
-                                <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'pdf', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'pdf', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
                                     📄 Exportar para PDF
                                 </a>
-                                <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'csv', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'csv', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
                                     📊 Exportar para CSV
                                 </a>
-                                <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'doc', 'Relatorio_Consolidado_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'doc', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
                                     📝 Exportar para DOC
                                 </a>
                             </div>
                         </div>
-                        <?php endif; ?>
                     </div>
 
                     <!-- TABELA 1: GERAL -->
@@ -2600,26 +2579,6 @@ try {
                                     <span>📊 Geral — Auditoria Detalhada de Contagens</span>
                                 </h3>
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Detalhamento operacional por data, horário, empresa, local, linha e veículo com totais para repasse</p>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                <input type="text" oninput="filterTableRows('tbl-t1', this.value)" placeholder="Buscar data, empresa, local, linha, veículo..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; width: 260px; outline: none; background: #ffffff;">
-                                <div class="export-dropdown-wrapper" style="position: relative; display: inline-block;">
-                                    <button type="button" onclick="toggleExportMenu('export-menu-t1', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2);">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                        <span>Exportar</span>
-                                    </button>
-                                    <div id="export-menu-t1" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 110%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 170px; z-index: 100; padding: 6px 0;">
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'pdf', 'Relatorio_Auditoria_Contagens_Geral')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none;">
-                                            📄 Exportar para PDF
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'csv', 'Relatorio_Auditoria_Contagens_Geral')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none;">
-                                            📊 Exportar para CSV
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t1', 'doc', 'Relatorio_Auditoria_Contagens_Geral')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none;">
-                                            📝 Exportar para DOC
-                                        </a>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                         <div style="overflow-x: auto; padding: 12px 20px 20px;">
@@ -2744,26 +2703,6 @@ try {
                                 </h3>
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de embarques, desembarques e taxa de ocupação por linha</p>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                <input type="text" oninput="filterTableRows('tbl-t2', this.value)" placeholder="Buscar data, linha, viagem..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; width: 220px; outline: none; background: #ffffff;">
-                                <div class="export-dropdown-wrapper" style="position: relative; display: inline-block;">
-                                    <button type="button" onclick="toggleExportMenu('export-menu-t2', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2);">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                        <span>Exportar</span>
-                                    </button>
-                                    <div id="export-menu-t2" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 110%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 170px; z-index: 100; padding: 6px 0;">
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t2', 'pdf', 'Total_Passageiros_Por_Linha')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none;">
-                                            📄 Exportar para PDF
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t2', 'csv', 'Total_Passageiros_Por_Linha')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none;">
-                                            📊 Exportar para CSV
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t2', 'doc', 'Total_Passageiros_Por_Linha')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none;">
-                                            📝 Exportar para DOC
-                                        </a>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
                         <div style="overflow-x: auto; padding: 12px 20px 20px;">
                             <table class="apps-table" id="tbl-t2" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
@@ -2825,26 +2764,6 @@ try {
                                 </h3>
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Fluxo de passageiros e ocupação agrupados por ponto ou estação</p>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                <input type="text" oninput="filterTableRows('tbl-t3', this.value)" placeholder="Buscar local, viagem..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; width: 220px; outline: none; background: #ffffff;">
-                                <div class="export-dropdown-wrapper" style="position: relative; display: inline-block;">
-                                    <button type="button" onclick="toggleExportMenu('export-menu-t3', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2);">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                        <span>Exportar</span>
-                                    </button>
-                                    <div id="export-menu-t3" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 110%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 170px; z-index: 100; padding: 6px 0;">
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t3', 'pdf', 'Embarques_Desembarques_Ocupacao_Por_Local')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none;">
-                                            📄 Exportar para PDF
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t3', 'csv', 'Embarques_Desembarques_Ocupacao_Por_Local')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none;">
-                                            📊 Exportar para CSV
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t3', 'doc', 'Embarques_Desembarques_Ocupacao_Por_Local')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none;">
-                                            📝 Exportar para DOC
-                                        </a>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
                         <div style="overflow-x: auto; padding: 12px 20px 20px;">
                             <table class="apps-table" id="tbl-t3" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
@@ -2901,26 +2820,6 @@ try {
                                     <span>🏢 Embarques/ desembarques / Ocupação por EMPRESA/COOPERATIVA</span>
                                 </h3>
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de movimentação por operadora ou empresa de transporte</p>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                <input type="text" oninput="filterTableRows('tbl-t4', this.value)" placeholder="Buscar empresa, viagem..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; width: 220px; outline: none; background: #ffffff;">
-                                <div class="export-dropdown-wrapper" style="position: relative; display: inline-block;">
-                                    <button type="button" onclick="toggleExportMenu('export-menu-t4', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2);">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                        <span>Exportar</span>
-                                    </button>
-                                    <div id="export-menu-t4" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 110%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 170px; z-index: 100; padding: 6px 0;">
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t4', 'pdf', 'Embarques_Desembarques_Ocupacao_Por_Empresa')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none;">
-                                            📄 Exportar para PDF
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t4', 'csv', 'Embarques_Desembarques_Ocupacao_Por_Empresa')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none;">
-                                            📊 Exportar para CSV
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t4', 'doc', 'Embarques_Desembarques_Ocupacao_Por_Empresa')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none;">
-                                            📝 Exportar para DOC
-                                        </a>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                         <div style="overflow-x: auto; padding: 12px 20px 20px;">
@@ -2979,26 +2878,6 @@ try {
                                     <span>👥 Total de passageiros por pesquisador / usuário</span>
                                 </h3>
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de viagens, embarques, desembarques e passageiros registrados por cada pesquisador</p>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                <input type="text" oninput="filterTableRows('tbl-t5', this.value)" placeholder="Buscar pesquisador, cargo..." style="padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.85rem; width: 220px; outline: none; background: #ffffff;">
-                                <div class="export-dropdown-wrapper" style="position: relative; display: inline-block;">
-                                    <button type="button" onclick="toggleExportMenu('export-menu-t5', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2);">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                        <span>Exportar</span>
-                                    </button>
-                                    <div id="export-menu-t5" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 110%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 170px; z-index: 100; padding: 6px 0;">
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t5', 'pdf', 'Total_Passageiros_Por_Pesquisador')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none;">
-                                            📄 Exportar para PDF
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t5', 'csv', 'Total_Passageiros_Por_Pesquisador')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none;">
-                                            📊 Exportar para CSV
-                                        </a>
-                                        <a href="javascript:void(0)" onclick="exportTable('tbl-t5', 'doc', 'Total_Passageiros_Por_Pesquisador')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none;">
-                                            📝 Exportar para DOC
-                                        </a>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                         <div style="overflow-x: auto; padding: 12px 20px 20px;">
@@ -4506,6 +4385,25 @@ try {
         // ==========================================
         var veiculosSelecionadosState = [];
 
+        function aoSelecionarVeiculoDireto(el) {
+            var val = el ? el.value : '';
+            var inpMulti = document.getElementById('input_veiculosSelecionados');
+            if (inpMulti) inpMulti.value = val;
+            if (val) {
+                var opt = el.options[el.selectedIndex];
+                veiculosSelecionadosState = [{
+                    id: parseInt(val, 10),
+                    prefixo: opt.getAttribute('data-prefixo') || opt.text,
+                    placa: opt.getAttribute('data-placa') || ''
+                }];
+            } else {
+                veiculosSelecionadosState = [];
+            }
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
+        }
+
         function selecionarModoVeiculo(modo) {
             var radioReg = document.getElementById('radio_modo_registrar');
             var radioNao = document.getElementById('radio_modo_nao_informado');
@@ -4513,6 +4411,8 @@ try {
             var cardNao = document.getElementById('card-modo-nao-informado');
             var boxReg = document.getElementById('box-veiculo-registrar');
             var boxNao = document.getElementById('box-veiculo-nao-informado');
+            var selV = document.getElementById('select_idVeiculo');
+            var inpMulti = document.getElementById('input_veiculosSelecionados');
 
             if (modo === 'registrar') {
                 if (radioReg) radioReg.checked = true;
@@ -4527,9 +4427,6 @@ try {
                 }
                 if (boxReg) boxReg.style.display = 'block';
                 if (boxNao) boxNao.style.display = 'none';
-
-                // Abre o modal para o usuário buscar e marcar os veículos
-                openModalVeiculos();
             } else {
                 if (radioReg) radioReg.checked = false;
                 if (radioNao) radioNao.checked = true;
@@ -4545,9 +4442,9 @@ try {
                 if (boxNao) boxNao.style.display = 'block';
 
                 // Limpa seleções ativas
+                if (selV) selV.value = '';
+                if (inpMulti) inpMulti.value = '';
                 veiculosSelecionadosState = [];
-                renderVeiculosChips();
-                atualizarInputsVeiculos();
             }
             if (typeof atualizarBotaoIniciar === 'function') {
                 atualizarBotaoIniciar();
@@ -5605,7 +5502,8 @@ try {
             var radioReg = document.getElementById('radio_modo_registrar');
             var isNaoInformado = radioNaoInf && radioNaoInf.checked;
             var isRegistrar = radioReg && radioReg.checked;
-            var temVeiculoRegistrado = (typeof veiculosSelecionadosState !== 'undefined' && veiculosSelecionadosState.length > 0);
+            var selVeic = document.getElementById('select_idVeiculo');
+            var temVeiculoRegistrado = (selVeic && selVeic.value && selVeic.value.trim() !== '') || (typeof veiculosSelecionadosState !== 'undefined' && veiculosSelecionadosState.length > 0);
             var veiculoValido = isNaoInformado || (isRegistrar && temVeiculoRegistrado);
 
             var faltaLinha = !idLinha || idLinha.trim() === '';
@@ -6009,6 +5907,7 @@ try {
 
             // Atualiza a paginação da tabela selecionada
             const selectedTableId = targetId.replace('dash-', 'tbl-');
+            window.currentDashActiveTable = (targetId === 'dash-all') ? 'tbl-t1' : selectedTableId;
             if (dashPaginationState[selectedTableId]) {
                 renderDashTablePagination(selectedTableId);
             }

@@ -178,6 +178,10 @@ try {
                 if (!in_array('ativo', $colsVeic)) {
                     $pdo->exec("ALTER TABLE `$targetVeicTable` ADD COLUMN ativo TINYINT(1) NOT NULL DEFAULT 1");
                 }
+                try {
+                    $pdo->exec("ALTER TABLE `$targetVeicTable` MODIFY COLUMN placa VARCHAR(50) NULL");
+                    $pdo->exec("ALTER TABLE `$targetVeicTable` MODIFY COLUMN prefixo VARCHAR(50) NOT NULL");
+                } catch (\Exception $exCol) {}
             }
         }
     } catch (\PDOException $ex) {

@@ -310,28 +310,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // --- TABELA: VEÍCULO ---
-        elseif ($action === 'create_veiculo') {
-            $prefixo = isset($_POST['prefixo']) ? trim((string)$_POST['prefixo']) : (isset($_POST['ordem']) ? trim((string)$_POST['ordem']) : '');
-            $placa   = isset($_POST['placa']) ? trim((string)$_POST['placa']) : '';
-            $ativo   = isset($_POST['ativo']) ? (int)$_POST['ativo'] : 1;
-            if ($prefixo !== '') {
-                $vTable = $getRealTable('veiculo', 'veiculos');
-                $stmt = $pdo->prepare("INSERT INTO `$vTable` (prefixo, placa, ativo) VALUES (:prefixo, :placa, :ativo)");
-                $stmt->execute([':prefixo' => $prefixo, ':placa' => $placa, ':ativo' => $ativo]);
-                $mensagemSucesso = "Veículo prefixo '$prefixo' cadastrado com sucesso!";
-            } else {
-                $mensagemErro = "Preencha o prefixo do veículo.";
-            }
-        } elseif ($action === 'update_veiculo') {
+        elseif ($action === 'create_veiculo' || $action === 'update_veiculo') {
             $idVeiculo = isset($_POST['idVeiculo']) ? (int)$_POST['idVeiculo'] : 0;
-            $prefixo   = isset($_POST['prefixo']) ? trim((string)$_POST['prefixo']) : (isset($_POST['ordem']) ? trim((string)$_POST['ordem']) : '');
-            $placa     = isset($_POST['placa']) ? trim((string)$_POST['placa']) : '';
-            $ativo     = isset($_POST['ativo']) ? (int)$_POST['ativo'] : 1;
-            if ($idVeiculo > 0 && $prefixo !== '') {
-                $vTable = $getRealTable('veiculo', 'veiculos');
-                $stmt = $pdo->prepare("UPDATE `$vTable` SET prefixo = :prefixo, placa = :placa, ativo = :ativo WHERE idVeiculo = :id");
-                $stmt->execute([':prefixo' => $prefixo, ':placa' => $placa, ':ativo' => $ativo, ':id' => $idVeiculo]);
-                $mensagemSucesso = "Veículo ID #$idVeiculo atualizado com sucesso!";
+            $nomePlaca = isset($_POST['placa']) && trim($_POST['placa']) !== '' ? trim($_POST['placa']) : (isset($_POST['prefixo']) ? trim($_POST['prefixo']) : '');
+            
+            // Valida e normaliza para o formato exigido: AAA - 9X99
+            $vClean = strtoupper(trim((string)$nomePlaca));
+            $limpo = preg_replace('/[^A-Z0-9]/', '', $vClean);
+            $formatoValido = (strlen($limpo) === 7 && preg_match('/^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/', $limpo));
+
+            if (!$formatoValido) {
+                $mensagemErro = "O nome/placa do veículo deve seguir obrigatoriamente o formato AAA - 9X99 (ex: ABC - 1234 ou ABC - 1D23).";
+            } else {
+                $placaFormatada = substr($limpo, 0, 3) . ' - ' . substr($limpo, 3, 1) . substr($limpo, 4, 1) . substr($limpo, 5, 2);
+                $prefixo = isset($_POST['prefixo']) && trim($_POST['prefixo']) !== '' ? trim($_POST['prefixo']) : $placaFormatada;
+                $placa   = $placaFormatada;
+                $ativo   = isset($_POST['ativo']) ? (int)$_POST['ativo'] : 1;
+                $vTable  = $getRealTable('veiculo', 'veiculos');
+
+                if ($action === 'create_veiculo') {
+                    $stmt = $pdo->prepare("INSERT INTO `$vTable` (prefixo, placa, ativo) VALUES (:prefixo, :placa, :ativo)");
+                    $stmt->execute([':prefixo' => $prefixo, ':placa' => $placa, ':ativo' => $ativo]);
+                    $mensagemSucesso = "Veículo '$placaFormatada' cadastrado com sucesso!";
+                } else {
+                    if ($idVeiculo > 0) {
+                        $stmt = $pdo->prepare("UPDATE `$vTable` SET prefixo = :prefixo, placa = :placa, ativo = :ativo WHERE idVeiculo = :id");
+                        $stmt->execute([':prefixo' => $prefixo, ':placa' => $placa, ':ativo' => $ativo, ':id' => $idVeiculo]);
+                        $mensagemSucesso = "Veículo '$placaFormatada' atualizado com sucesso!";
+                    } else {
+                        $mensagemErro = "ID do veículo inválido para edição.";
+                    }
+                }
             }
         } elseif ($action === 'delete_veiculo') {
             $idVeiculo = isset($_POST['idVeiculo']) ? (int)$_POST['idVeiculo'] : 0;
@@ -1062,6 +1071,28 @@ foreach ($sistemas as $s) {
             // Aplica o filtro inicial se a aba de usuários estiver visível
             var searchInput = document.getElementById('search-input');
             handleSearch(searchInput ? searchInput.value : '');
+
+            // Máscara dinâmica para o formato AAA - 9X99 no cadastro de veículo
+            var inputPlacaVeic = document.getElementById('veiculo-placa');
+            if (inputPlacaVeic) {
+                inputPlacaVeic.addEventListener('input', function() {
+                    var raw = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    var formatted = '';
+                    for (var i = 0; i < raw.length && i < 7; i++) {
+                        var ch = raw[i];
+                        if (i < 3) {
+                            if (/[A-Z]/.test(ch)) formatted += ch;
+                        } else if (i === 3) {
+                            if (/[0-9]/.test(ch)) formatted += ' - ' + ch;
+                        } else if (i === 4) {
+                            if (/[A-Z0-9]/.test(ch)) formatted += ch;
+                        } else {
+                            if (/[0-9]/.test(ch)) formatted += ch;
+                        }
+                    }
+                    this.value = formatted;
+                });
+            }
         });
 
 
@@ -1242,7 +1273,7 @@ foreach ($sistemas as $s) {
             document.getElementById('veiculo-action').value = 'update_veiculo';
             document.getElementById('veiculo-id').value = data.idVeiculo || data.idveiculo || data.id || data.id_veiculo || '';
             document.getElementById('veiculo-prefixo').value = data.prefixo !== undefined ? data.prefixo : '';
-            document.getElementById('veiculo-placa').value = data.placa !== undefined ? data.placa : '';
+            document.getElementById('veiculo-placa').value = (data.placa && data.placa !== '0') ? data.placa : (data.prefixo || '');
             var ativoVal = (data.ativo !== undefined && data.ativo !== null && data.ativo !== '') ? String(data.ativo) : '1';
             document.getElementById('veiculo-ativo').value = ativoVal;
             document.getElementById('modal-veiculo-title').innerText = 'Editar Veículo';
@@ -1697,8 +1728,8 @@ foreach ($sistemas as $s) {
                         <thead>
                             <tr style="background: #f8fafc;">
                                 <th style="text-align: left; padding: 14px 20px; width: 100px;">ID</th>
-                                <th style="text-align: left; padding: 14px 20px; width: 140px;">Prefixo</th>
-                                <th style="text-align: left; padding: 14px 20px;">Placa do Veículo</th>
+                                <th style="text-align: left; padding: 14px 20px;">Nome / Placa (AAA - 9X99)</th>
+                                <th style="text-align: left; padding: 14px 20px; width: 160px;">Prefixo</th>
                                 <th style="text-align: left; padding: 14px 20px;">Status</th>
                                 <th style="text-align: center; padding: 14px 20px; width: 130px;">Ações</th>
                             </tr>
@@ -1709,8 +1740,10 @@ foreach ($sistemas as $s) {
                                     <?php $isRowActive = !isset($row['ativo']) || (int)$row['ativo'] === 1; ?>
                                     <tr data-status="<?php echo $isRowActive ? '1' : '0'; ?>">
                                         <td style="padding: 14px 20px;"><span class="badge-id">#<?php echo $row['idVeiculo']; ?></span></td>
+                                        <td style="padding: 14px 20px; font-weight: 700; color: #0f172a; font-family: monospace; font-size: 0.95rem;">
+                                            <?php echo !empty($row['placa']) ? htmlspecialchars($row['placa']) : htmlspecialchars($row['prefixo']); ?>
+                                        </td>
                                         <td style="padding: 14px 20px;"><span class="badge-numero" style="font-weight: 700; color: #0054A6; background: #eff6ff; padding: 4px 10px; border-radius: 6px; border: 1px solid #bfdbfe; display: inline-block;"><?php echo htmlspecialchars($row['prefixo']); ?></span></td>
-                                        <td style="padding: 14px 20px; font-weight: 600; color: #1e293b;"><?php echo !empty($row['placa']) ? htmlspecialchars($row['placa']) : '—'; ?></td>
                                         <td style="padding: 14px 20px;">
                                             <?php if ($isRowActive): ?>
                                                 <span class="badge-status-active"><span class="status-dot"></span> Ativo</span>
@@ -2073,12 +2106,13 @@ foreach ($sistemas as $s) {
                     <input type="hidden" name="action" id="veiculo-action" value="create_veiculo">
                     <input type="hidden" name="idVeiculo" id="veiculo-id">
                     <div class="form-group">
-                        <label for="veiculo-prefixo" class="form-label">Prefixo do Veículo</label>
-                        <input type="text" name="prefixo" id="veiculo-prefixo" class="form-control" placeholder="Ex: 1001" required maxlength="5">
+                        <label for="veiculo-placa" class="form-label">Nome / Placa do Veículo <span style="color: #ef4444;">*</span></label>
+                        <input type="text" name="placa" id="veiculo-placa" class="form-control" placeholder="AAA - 9X99 (ex: ABC - 1234 ou ABC - 1D23)" required maxlength="10" autocomplete="off" style="text-transform: uppercase; font-family: monospace; font-weight: 700; letter-spacing: 1px;">
+                        <small style="color: #64748b; font-size: 0.78rem;">Formato obrigatório: <strong>AAA - 9X99</strong> (letras, hífen, números ou Mercosul)</small>
                     </div>
                     <div class="form-group">
-                        <label for="veiculo-placa" class="form-label">Placa do Veículo</label>
-                        <input type="text" name="placa" id="veiculo-placa" class="form-control" placeholder="Ex: ABC-1234">
+                        <label for="veiculo-prefixo" class="form-label">Prefixo / Número de Ordem (Opcional)</label>
+                        <input type="text" name="prefixo" id="veiculo-prefixo" class="form-control" placeholder="Ex: 1001 (se vazio, usa a placa)">
                     </div>
                     <div class="form-group">
                         <label for="veiculo-ativo" class="form-label">Status do Veículo</label>
