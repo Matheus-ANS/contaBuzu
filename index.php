@@ -2529,20 +2529,7 @@ try {
                             </div>
                         </div>
 
-                        <!-- Card 4: Ocupação % -->
-                        <div style="background: #dbeafe; border: 1px solid #bfdbfe; border-radius: 16px; padding: 18px 20px;">
-                            <div style="color: #1d4ed8; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
-                                <span>🚌 Total Ocupação</span>
-                            </div>
-                            <div id="kpi-media-ocupacao" class="kpi-metric-val" style="color: #1d4ed8; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
-                                <?php echo $dashKpisMap['dash-t1']['ocupacao']; ?>
-                            </div>
-                            <div class="kpi-sub-label" style="color: #1e40af; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
-                                <?php echo $dashKpisMap['dash-t1']['contextLabel']; ?>
-                            </div>
-                        </div>
-
-                        <!-- Card 5: Passageiros Totais -->
+                        <!-- Card 4: Passageiros Totais -->
                         <div style="background: #faf5ff; border: 1px solid #f3e8ff; border-radius: 16px; padding: 18px 20px;">
                             <div style="color: #7c3aed; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
                                 <span>👥 Passageiros Totais</span>
@@ -2734,8 +2721,8 @@ try {
                                         <td style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
                                             <?php echo number_format($t1TotalPassageiros, 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: center; color: #0f172a; font-size: 0.95rem;">
-                                            <?php echo $t1MediaOcupacao; ?>%
+                                        <td style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.95rem;">
+                                            —
                                         </td>
                                         <?php if ($canViewAllContagens): ?>
                                             <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
@@ -6175,7 +6162,7 @@ try {
                 <strong>Gerado em:</strong> ${new Date().toLocaleString('pt-BR')} &nbsp;|&nbsp; 
                 <strong>Total Registros:</strong> ${totalLinhas}`;
             if (kpiEmbDoc && kpiDesDoc && kpiPaxDoc) {
-                resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Embarques:</strong> ${kpiEmbDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Desembarques:</strong> ${kpiDesDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiPaxDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Ocupação Média:</strong> ${kpiOcupDoc ? kpiOcupDoc.innerText.trim() : '-'}`;
+                resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Embarques:</strong> ${kpiEmbDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Desembarques:</strong> ${kpiDesDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiPaxDoc.innerText.trim()}`;
             }
             resumoKpiHtml += `</p>`;
 
@@ -6289,7 +6276,7 @@ try {
 
             let pdfSubtitle = generatedAt + '   |   Total de registros: ' + body.length;
             if (kpiEmbPdf && kpiDesPdf && kpiPaxPdf) {
-                pdfSubtitle += '   |   Embarques: ' + kpiEmbPdf.innerText.trim() + '   |   Desembarques: ' + kpiDesPdf.innerText.trim() + '   |   Pax: ' + kpiPaxPdf.innerText.trim() + '   |   Ocupação: ' + (kpiOcupPdf ? kpiOcupPdf.innerText.trim() : '-');
+                pdfSubtitle += '   |   Embarques: ' + kpiEmbPdf.innerText.trim() + '   |   Desembarques: ' + kpiDesPdf.innerText.trim() + '   |   Pax: ' + kpiPaxPdf.innerText.trim();
             }
 
             // MÉTODO 1: jsPDF + autoTable (Vetorizado, sem limite de canvas, paginação infinita e sem cortar colunas)
