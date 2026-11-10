@@ -1839,21 +1839,29 @@ try {
                                                     </label>
                                                 </div>
 
-                                                <!-- Bloco quando 'Registrar' está ativo: Seleção direta do veículo cadastrado -->
-                                                <div id="box-veiculo-registrar" style="display: none; margin-top: 8px;">
-                                                    <select name="idVeiculo" id="select_idVeiculo" class="form-select-custom cb-searchable-select" data-placeholder="Digite o prefixo ou placa do veículo..." onchange="aoSelecionarVeiculoDireto(this)">
-                                                        <option value="">-- Selecione o Veículo --</option>
-                                                        <?php foreach ($veiculosDisponiveis as $v): ?>
-                                                            <?php 
-                                                                $numFmt = htmlspecialchars(formatarNumeroVeiculo($v['prefixo']));
-                                                                $plFmt = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
-                                                                $labelV = $numFmt . ($plFmt ? ' (' . $plFmt . ')' : '');
-                                                            ?>
-                                                            <option value="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $numFmt; ?>" data-placa="<?php echo $plFmt; ?>">
-                                                                <?php echo $labelV; ?>
-                                                            </option>
-                                                        <?php endforeach; ?>
-                                                    </select>
+                                                <!-- Bloco interativo quando 'Registrar' está ativo -->
+                                                <div id="box-veiculo-registrar" style="display: none;">
+                                                    <!-- Container de badges dos veículos selecionados -->
+                                                    <div id="container-veiculos-chips" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 44px; padding: 10px 12px; background: #f8fafc; border: 1.5px dashed #cbd5e1; border-radius: 10px; align-items: center; cursor: pointer;" onclick="openModalVeiculos()" title="Clique para abrir a seleção de veículos">
+                                                        <span id="txt-sem-veiculo-hint" style="font-size: 0.82rem; color: #94a3b8; font-style: italic;">
+                                                            Nenhum veículo selecionado ainda. Clique para escolher os veículos para a contagem.
+                                                        </span>
+                                                    </div>
+
+                                                    <!-- Bloco de Confirmação/Status logo abaixo dos veículos registrados -->
+                                                    <div id="box-confirmar-veiculos-main" style="display: none; margin-top: 8px; padding: 10px 14px; background: #f0fdf4; border: 1.5px solid #bbf7d0; border-radius: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #166534;"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                                            <span style="font-size: 0.85rem; font-weight: 700; color: #166534;">Veículos registrados e salvos com sucesso!</span>
+                                                        </div>
+                                                        <div style="display: flex; gap: 8px; align-items: center;">
+                                                            <button type="button" onclick="openModalVeiculos()" style="padding: 5px 12px; background: #ffffff; color: #15803d; border: 1px solid #86efac; border-radius: 6px; font-weight: 700; font-size: 0.8rem; cursor: pointer;">Alterar Veículos</button>
+                                                            <button type="button" onclick="desmarcarTodosVeiculosModal()" style="padding: 5px 10px; background: transparent; color: #dc2626; border: none; font-weight: 700; font-size: 0.8rem; cursor: pointer; text-decoration: underline;">Limpar</button>
+                                                        </div>
+                                                    </div>
+
+                                                    <!-- Inputs ocultos para submissão -->
+                                                    <input type="hidden" name="idVeiculo" id="select_idVeiculo" value="">
                                                     <input type="hidden" name="veiculosSelecionados" id="input_veiculosSelecionados" value="">
                                                 </div>
 
@@ -4385,25 +4393,6 @@ try {
         // ==========================================
         var veiculosSelecionadosState = [];
 
-        function aoSelecionarVeiculoDireto(el) {
-            var val = el ? el.value : '';
-            var inpMulti = document.getElementById('input_veiculosSelecionados');
-            if (inpMulti) inpMulti.value = val;
-            if (val) {
-                var opt = el.options[el.selectedIndex];
-                veiculosSelecionadosState = [{
-                    id: parseInt(val, 10),
-                    prefixo: opt.getAttribute('data-prefixo') || opt.text,
-                    placa: opt.getAttribute('data-placa') || ''
-                }];
-            } else {
-                veiculosSelecionadosState = [];
-            }
-            if (typeof atualizarBotaoIniciar === 'function') {
-                atualizarBotaoIniciar();
-            }
-        }
-
         function selecionarModoVeiculo(modo) {
             var radioReg = document.getElementById('radio_modo_registrar');
             var radioNao = document.getElementById('radio_modo_nao_informado');
@@ -4411,8 +4400,6 @@ try {
             var cardNao = document.getElementById('card-modo-nao-informado');
             var boxReg = document.getElementById('box-veiculo-registrar');
             var boxNao = document.getElementById('box-veiculo-nao-informado');
-            var selV = document.getElementById('select_idVeiculo');
-            var inpMulti = document.getElementById('input_veiculosSelecionados');
 
             if (modo === 'registrar') {
                 if (radioReg) radioReg.checked = true;
@@ -4427,6 +4414,9 @@ try {
                 }
                 if (boxReg) boxReg.style.display = 'block';
                 if (boxNao) boxNao.style.display = 'none';
+
+                // Abre o modal ("quadrado") para pesquisar e salvar veículos
+                openModalVeiculos();
             } else {
                 if (radioReg) radioReg.checked = false;
                 if (radioNao) radioNao.checked = true;
@@ -4442,9 +4432,9 @@ try {
                 if (boxNao) boxNao.style.display = 'block';
 
                 // Limpa seleções ativas
-                if (selV) selV.value = '';
-                if (inpMulti) inpMulti.value = '';
                 veiculosSelecionadosState = [];
+                renderVeiculosChips();
+                atualizarInputsVeiculos();
             }
             if (typeof atualizarBotaoIniciar === 'function') {
                 atualizarBotaoIniciar();
