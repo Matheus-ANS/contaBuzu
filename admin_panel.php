@@ -94,13 +94,13 @@ $getColsLinha = function() use ($pdo) {
 };
 
 $formatNumeroLinha = function($val) {
-    $val = trim((string)$val);
+    $val = strtoupper(trim((string)$val));
     if ($val === '') return '';
-    $digits = preg_replace('/\D/', '', $val);
-    if (strlen($digits) >= 6) {
-        return substr($digits, 0, 4) . '-' . substr($digits, 4, 2);
-    } elseif (strlen($digits) > 0) {
-        $padded = str_pad($digits, 6, '0', STR_PAD_LEFT);
+    $alnum = preg_replace('/[^A-Z0-9]/', '', $val);
+    if (strlen($alnum) >= 6) {
+        return substr($alnum, 0, 4) . '-' . substr($alnum, 4, 2);
+    } elseif (strlen($alnum) > 0) {
+        $padded = str_pad($alnum, 6, '0', STR_PAD_LEFT);
         return substr($padded, 0, 4) . '-' . substr($padded, 4, 2);
     }
     return $val;
@@ -130,10 +130,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         // --- TABELA: LINHA ---
         if ($action === 'create_linha') {
-            $numero    = isset($_POST['numero']) ? $formatNumeroLinha($_POST['numero']) : '';
+            $rawNumero = isset($_POST['numero']) ? strtoupper(trim((string)$_POST['numero'])) : '';
+            $alnumNum  = preg_replace('/[^A-Z0-9]/', '', $rawNumero);
+            $numero    = $formatNumeroLinha($rawNumero);
             $descricao = isset($_POST['descricao']) ? $formatDescricaoLinha($_POST['descricao']) : (isset($_POST['linha']) ? $formatDescricaoLinha($_POST['linha']) : '');
             $ativo     = isset($_POST['ativo']) ? (int)$_POST['ativo'] : 1;
-            if ($numero !== '' || $descricao !== '') {
+            if ($rawNumero !== '' && strlen($alnumNum) !== 6) {
+                $mensagemErro = "O número da linha deve seguir o formato XXXX-XX (6 caracteres entre números ou letras, ex: 0101-00 ou A102-B1).";
+            } elseif ($numero !== '' || $descricao !== '') {
                 $colsLinha = $getColsLinha();
                 if (in_array('numero', $colsLinha) && in_array('descricao', $colsLinha)) {
                     if (in_array('linha', $colsLinha)) {
@@ -163,10 +167,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } elseif ($action === 'update_linha') {
             $idLinha   = (int)$_POST['idLinha'];
-            $numero    = isset($_POST['numero']) ? $formatNumeroLinha($_POST['numero']) : '';
+            $rawNumero = isset($_POST['numero']) ? strtoupper(trim((string)$_POST['numero'])) : '';
+            $alnumNum  = preg_replace('/[^A-Z0-9]/', '', $rawNumero);
+            $numero    = $formatNumeroLinha($rawNumero);
             $descricao = isset($_POST['descricao']) ? $formatDescricaoLinha($_POST['descricao']) : (isset($_POST['linha']) ? $formatDescricaoLinha($_POST['linha']) : '');
             $ativo     = isset($_POST['ativo']) ? (int)$_POST['ativo'] : 1;
-            if ($idLinha > 0 && ($numero !== '' || $descricao !== '')) {
+            if ($rawNumero !== '' && strlen($alnumNum) !== 6) {
+                $mensagemErro = "O número da linha deve seguir o formato XXXX-XX (6 caracteres entre números ou letras, ex: 0101-00 ou A102-B1).";
+            } elseif ($idLinha > 0 && ($numero !== '' || $descricao !== '')) {
                 $colsLinha = $getColsLinha();
                 if (in_array('numero', $colsLinha) && in_array('descricao', $colsLinha)) {
                     if (in_array('linha', $colsLinha)) {
@@ -1218,7 +1226,7 @@ foreach ($sistemas as $s) {
         }
 
         function formatLinhaNumeroInput(el) {
-            var v = el.value.replace(/\D/g, '');
+            var v = el.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
             if (v.length > 6) v = v.substring(0, 6);
             if (v.length > 4) {
                 el.value = v.substring(0, 4) + '-' + v.substring(4);
@@ -1959,8 +1967,8 @@ foreach ($sistemas as $s) {
                     <input type="hidden" name="idLinha" id="linha-id">
                     <div class="form-group">
                         <label for="linha-numero" class="form-label">Número da Linha</label>
-                        <input type="text" name="numero" id="linha-numero" class="form-control" placeholder="Ex: 0101-00" maxlength="7" oninput="formatLinhaNumeroInput(this)" required>
-                        <small style="color: #64748b; font-size: 0.78rem; display: block; margin-top: 4px;">Formato: 0000-00</small>
+                        <input type="text" name="numero" id="linha-numero" class="form-control" placeholder="Ex: 0101-00 ou A102-B1" maxlength="7" pattern="[A-Za-z0-9]{4}-[A-Za-z0-9]{2}" title="Formato XXXX-XX onde X pode ser letra ou número" style="text-transform: uppercase;" oninput="formatLinhaNumeroInput(this)" required>
+                        <small style="color: #64748b; font-size: 0.78rem; display: block; margin-top: 4px;">Formato: XXXX-XX (números ou letras)</small>
                     </div>
                     <div class="form-group">
                         <label for="linha-descricao" class="form-label">Nome / Descrição da Linha</label>

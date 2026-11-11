@@ -403,7 +403,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmtInfo->execute([$idContagem]);
                         $infoUpdated = $stmtInfo->fetch();
 
-                        $nL = !empty($infoUpdated['linhaNumero']) ? $infoUpdated['linhaNumero'] . ' - ' . $infoUpdated['linhaDescricao'] : (!empty($infoUpdated['idLinha']) ? 'Linha #'.$infoUpdated['idLinha'] : 'N/A');
+                        $nL = !empty($infoUpdated['linhaNumero']) ? $infoUpdated['linhaNumero'] : (!empty($infoUpdated['idLinha']) ? 'Linha #'.$infoUpdated['idLinha'] : 'N/A');
                         $veic = !empty($infoUpdated['veiculoPrefixo']) ? $infoUpdated['veiculoPrefixo'] : (!empty($infoUpdated['idVeiculo']) ? 'Prefixo #'.$infoUpdated['idVeiculo'] : 'N/A');
                         $turnText = !empty($infoUpdated['turno']) ? $infoUpdated['turno'] : 'Matutino';
 
@@ -857,13 +857,16 @@ try {
     $whereSql = implode(" AND ", $whereClauses);
 
     // Subquery única reutilizada nas consultas consolidadas (evita duplicação e respeita filtro de veículo)
-    $vpWhereFilter = ($filtroVeiculo > 0) ? "WHERE vp.idVeiculo = " . (int)$filtroVeiculo : "";
+    $vpWhereFilter = ($filtroVeiculo > 0)
+        ? "WHERE (vp.idVeiculo = " . (int)$filtroVeiculo . " OR (vp.idVeiculo IS NULL AND p_sub.idVeiculo = " . (int)$filtroVeiculo . "))"
+        : "";
     $subqueryCalcVp = "
         SELECT 
-            vp.idPesquisa,
-            COUNT(DISTINCT vp.idVeiculoPesquisado) as qtdVeiculos,
-            SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
-        FROM veiculoPesquisado vp
+            p_sub.idPesquisa,
+            COUNT(DISTINCT COALESCE(vp.idVeiculoPesquisado, CONCAT('p_', p_sub.idPesquisa))) as qtdVeiculos,
+            SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, p_sub.totalPassageiros, 0)) as qtdTotal
+        FROM pesquisa p_sub
+        LEFT JOIN veiculoPesquisado vp ON p_sub.idPesquisa = vp.idPesquisa
         LEFT JOIN (
             SELECT 
                 idPesquisa,
@@ -872,9 +875,12 @@ try {
                 SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
             FROM contagem
             GROUP BY idPesquisa, idVeiculoPesquisado
-        ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
+        ) cnt ON (
+            (vp.idVeiculoPesquisado IS NOT NULL AND cnt.idVeiculoPesquisado = vp.idVeiculoPesquisado)
+            OR (vp.idVeiculoPesquisado IS NULL AND cnt.idPesquisa = p_sub.idPesquisa)
+        )
         $vpWhereFilter
-        GROUP BY vp.idPesquisa
+        GROUP BY p_sub.idPesquisa
     ";
     $vpExtraRowFilter = ($filtroVeiculo > 0)
         ? " AND (vp.idVeiculo = " . (int)$filtroVeiculo . " OR (vp.idVeiculo IS NULL AND c.idVeiculo = " . (int)$filtroVeiculo . "))"
@@ -940,23 +946,26 @@ try {
         $totalCorrecoesUsuario = (int)$stmtStatsCorr->fetchColumn();
     }
 
-    // --- HELPER DE OCUPAÇÃO PARA O DASHBOARD ---
+    // --- HELPER DE OCUPAÇÃO PARA O DASHBOARD (SEGUE A REGRA DO PAINEL DE CONTAGEM) ---
     if (!function_exists('cbCalcularOcupacao')) {
         function cbCalcularOcupacao($row) {
-            if (!empty($row['ocupacaoInformada']) && (int)$row['ocupacaoInformada'] > 0) {
-                return (int)$row['ocupacaoInformada'];
-            }
-            if (!empty($row['mediaPercentual']) && (float)$row['mediaPercentual'] > 0) {
-                return round((float)$row['mediaPercentual']);
-            }
             $emb = isset($row['embarques']) ? (int)$row['embarques'] : 0;
             $des = isset($row['desembarques']) ? (int)$row['desembarques'] : 0;
-            $saldo = max($emb, $emb - $des);
-            if ($saldo >= 100) return 80;
-            if ($saldo >= 60) return 70;
-            if ($saldo >= 40) return 60;
-            if ($saldo >= 20) return 40;
-            if ($saldo > 0) return 30;
+            $ocupInf = isset($row['ocupacaoInformada']) ? (int)$row['ocupacaoInformada'] : 0;
+            $totPax = isset($row['totalPassageiros']) ? (int)$row['totalPassageiros'] : 0;
+
+            $total = max($emb, $des, $ocupInf, $totPax);
+            $qtdOnibus = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
+            if ($qtdOnibus > 1) {
+                $total = (int)round($total / $qtdOnibus);
+            }
+
+            if ($total >= 100) return 120;
+            if ($total >= 82) return 100;
+            if ($total >= 54) return 65;
+            if ($total >= 42) return 50;
+            if ($total >= 30) return 35;
+            if ($total >= 13) return 15;
             return 0;
         }
     }
@@ -984,7 +993,7 @@ try {
                 $pax += $rowPax;
                 $onibus += $rowBus;
                 $viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : (isset($r['totalViagens']) ? (int)$r['totalViagens'] : 1);
-                $somaOcup += !empty($r['mediaPercentual']) ? (float)$r['mediaPercentual'] : cbCalcularOcupacao($r);
+                $somaOcup += cbCalcularOcupacao($r);
             }
             $medOcup = ($count > 0) ? round($somaOcup / $count, 1) : 0;
             return [
@@ -1029,6 +1038,7 @@ try {
                 COALESCE(NULLIF(v_vp.prefixo, 0), v_vp.placa, NULLIF(v.prefixo, 0), v.placa, 'S/ Veículo') as veiculoPrefixo,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
                 COALESCE(u.nome, u.login, CONCAT('Pesquisador #', c.idUsuario)) as pesquisadorNome,
+                COALESCE(u.cargo, 'Pesquisador') as pesquisadorCargo,
                 CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
                     COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
                 ELSE 0 END as embarques,
@@ -1366,11 +1376,10 @@ try {
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body style="padding-bottom: 60px;">
 
-    <div class="dashboard-container" style="max-width: 1440px; margin: 20px auto; padding: 0 16px;">
+    <div class="dashboard-container" style="max-width: 1920px; width: 98%; margin: 16px auto; padding: 0 12px;">
         <div class="dashboard-card">
 
             <!-- Header da Aplicação -->
@@ -1485,7 +1494,7 @@ try {
             </div>
 
             <!-- ÁREA PRINCIPAL DA APLICAÇÃO -->
-            <div class="dashboard-main-area" style="padding: 24px;">
+            <div class="dashboard-main-area" style="padding: 20px 14px;">
                 
                 <!-- ABA 1: PAINEL DO CONTADOR (SESSÃO ATIVA OU NOVO INÍCIO) -->
                 <div id="user-tab-contador" class="user-tab-content">
@@ -1638,12 +1647,12 @@ try {
                                                         <span>Linha</span>
                                                         <span class="required-star">*</span>
                                                     </label>
-                                                    <select name="idLinha" id="select_idLinha" required class="form-select-custom cb-searchable-select" data-placeholder="Digite o número ou nome da linha (ex: 0201, Barra)...">
+                                                    <select name="idLinha" id="select_idLinha" required class="form-select-custom cb-searchable-select" data-placeholder="Digite o número da linha (ex: 0201-00)...">
                                                         <option value="">-- Selecione a Linha --</option>
                                                         <?php foreach ($linhasDisponiveis as $l): ?>
                                                             <option value="<?php echo $l['idLinha']; ?>">
                                                                 <?php 
-                                                                    $nomeL = !empty($l['numero']) ? $l['numero'] . ' - ' . $l['descricao'] : (!empty($l['linha']) ? $l['linha'] : 'Linha #' . $l['idLinha']);
+                                                                    $nomeL = !empty($l['numero']) ? $l['numero'] : (!empty($l['linha']) ? $l['linha'] : 'Linha #' . $l['idLinha']);
                                                                     echo htmlspecialchars($nomeL);
                                                                 ?>
                                                             </option>
@@ -1973,7 +1982,7 @@ try {
                                             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
                                         </div>
                                         <span id="session-linha-text" style="font-weight: 700; color: #1e3a8a;">
-                                            <?php echo htmlspecialchars(!empty($sessaoAtiva['linhaNumero']) ? $sessaoAtiva['linhaNumero'] . ' - ' . $sessaoAtiva['linhaDescricao'] : 'Linha #'.$sessaoAtiva['idLinha']); ?>
+                                            <?php echo htmlspecialchars(!empty($sessaoAtiva['linhaNumero']) ? $sessaoAtiva['linhaNumero'] : 'Linha #'.$sessaoAtiva['idLinha']); ?>
                                         </span>
                                     </div>
 
@@ -2550,16 +2559,6 @@ try {
                         </div>
 
                         <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                            <!-- Opção para alternar entre Ocupação (%) e Média de Pessoas por Ônibus nas tabelas -->
-                            <div class="dash-metric-mode-switch" role="group" aria-label="Modo de exibição da coluna de ocupação">
-                                <button type="button" class="dash-mode-btn active" id="btn-mode-ocupacao" onclick="setDashMetricMode('ocupacao')" title="Exibir porcentagem de ocupação">
-                                    📊 Ocupação (%)
-                                </button>
-                                <button type="button" class="dash-mode-btn" id="btn-mode-media-pax" onclick="setDashMetricMode('media_pax')" title="Exibir média de passageiros de acordo com a quantidade de ônibus filtrados">
-                                    👥 Média Pax / Ônibus
-                                </button>
-                            </div>
-
                             <!-- BOTÃO COMPACTO DE EXPORTAR RELATÓRIO GERAL (CONSOLIDADO) -->
                             <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block;">
                                 <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório">
@@ -2567,17 +2566,17 @@ try {
                                     <span>Exportar Relatório</span>
                                     <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
                                 </button>
-                                <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 210px; z-index: 100; padding: 6px 0;">
+                                <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 220px; z-index: 100; padding: 6px 0;">
                                     <div style="padding: 6px 14px 4px; font-size: 0.72rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f1f5f9; margin-bottom: 4px;">
                                         Relatório de Contagens
                                     </div>
-                                    <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'pdf', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                    <a href="javascript:void(0)" onclick="exportTable('all', 'pdf', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
                                         📄 Exportar para PDF
                                     </a>
-                                    <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'csv', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                    <a href="javascript:void(0)" onclick="exportTable('all', 'csv', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
                                         📊 Exportar para CSV
                                     </a>
-                                    <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'doc', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                    <a href="javascript:void(0)" onclick="exportTable('all', 'doc', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
                                         📝 Exportar para DOC
                                     </a>
                                 </div>
@@ -2595,23 +2594,23 @@ try {
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Detalhamento operacional por data, horário, empresa, local, linha e veículo com totais para repasse</p>
                             </div>
                         </div>
-                        <div style="overflow-x: auto; padding: 12px 20px 20px;">
-                            <table class="apps-table" id="tbl-t1" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
+                            <table class="apps-table dash-fullfit-table" id="tbl-t1" style="width: 100%; table-layout: auto; border-collapse: collapse; font-size: 0.85rem;">
                                 <thead>
-                                    <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
-                                        <th style="padding: 12px 10px; text-align: center;">Data</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Hora</th>
-                                        <th style="padding: 12px 10px; text-align: left;">Empresa</th>
-                                        <th style="padding: 12px 10px; text-align: left;">Local</th>
-                                        <th style="padding: 12px 10px; text-align: left;">Linha</th>
-                                        <th style="padding: 12px 10px; text-align: left;">Veículo</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Viagem</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Embarques</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
-                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
-                                        <th class="col-metric-ocup-header" data-ocup-label="Ocupação (%)" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                    <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.3px;">
+                                        <th style="padding: 10px 7px; text-align: center;">Data</th>
+                                        <th style="padding: 10px 7px; text-align: center;">Hora</th>
+                                        <th style="padding: 10px 8px; text-align: left;">Empresa</th>
+                                        <th style="padding: 10px 8px; text-align: left;">Local</th>
+                                        <th style="padding: 10px 8px; text-align: left;">Linha</th>
+                                        <th style="padding: 10px 7px; text-align: left;">Veículo</th>
+                                        <th style="padding: 10px 7px; text-align: center;">Viagem</th>
+                                        <th style="padding: 10px 7px; text-align: right;">Embarques</th>
+                                        <th style="padding: 10px 7px; text-align: right;">Desembarques</th>
+                                        <th style="padding: 10px 7px; text-align: right; color: #1d4ed8;">Total Pax</th>
+                                        <th class="col-metric-ocup-header" style="padding: 10px 7px; text-align: center;">Ocupação (%)</th>
                                         <?php if ($canViewAllContagens): ?>
-                                            <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
+                                            <th style="padding: 10px 8px; text-align: left;">Pesquisador</th>
                                         <?php endif; ?>
                                     </tr>
                                 </thead>
@@ -2627,52 +2626,52 @@ try {
                                             $ocup = cbCalcularOcupacao($row);
                                             $mediaPaxRowStr = number_format($pax, 1, ',', '.') . ' pax';
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;">
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 600; color: #475569; white-space: nowrap;">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $pax; ?>" data-onibus="1" data-pesquisador="<?php echo htmlspecialchars($row['pesquisadorNome']); ?>" data-cargo="<?php echo htmlspecialchars(isset($row['pesquisadorCargo']) ? $row['pesquisadorCargo'] : 'Pesquisador'); ?>">
+                                                <td style="padding: 10px 7px; text-align: center; font-weight: 600; color: #475569; white-space: nowrap;">
                                                     <?php echo htmlspecialchars($row['dataFormatada']); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 700; color: #2563eb; white-space: nowrap;">
+                                                <td style="padding: 10px 7px; text-align: center; font-weight: 700; color: #2563eb; white-space: nowrap;">
                                                     <?php echo htmlspecialchars($row['horaFormatada']); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; font-weight: 600; color: #334155; white-space: nowrap;">
+                                                <td style="padding: 10px 8px; font-weight: 600; color: #334155;">
                                                     <?php echo htmlspecialchars($row['empresaNome']); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; font-weight: 600; color: #334155; white-space: nowrap;">
+                                                <td style="padding: 10px 8px; font-weight: 600; color: #334155;">
                                                     <?php echo htmlspecialchars($row['localNome']); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; font-weight: 700; color: #0f172a; white-space: nowrap;">
+                                                <td style="padding: 10px 8px; font-weight: 700; color: #0f172a;">
                                                     <?php echo htmlspecialchars($row['linhaNumero']); ?>
                                                     <?php if (!empty($row['linhaDescricao'])): ?>
-                                                        <span style="font-size: 0.75rem; color: #64748b; font-weight: 500; display: block;"><?php echo htmlspecialchars($row['linhaDescricao']); ?></span>
+                                                        <span style="font-size: 0.74rem; color: #64748b; font-weight: 500; display: block;"><?php echo htmlspecialchars($row['linhaDescricao']); ?></span>
                                                     <?php endif; ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; font-weight: 600; color: #334155; white-space: nowrap;">
+                                                <td style="padding: 10px 7px; font-weight: 600; color: #334155; white-space: nowrap;">
                                                     <?php echo htmlspecialchars(formatarNumeroVeiculo($row['veiculoPrefixo'])); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
-                                                    <span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; <?php echo (strtolower($row['sentido']) === 'volta') ? 'background: #fef3c7; color: #b45309; border: 1px solid #fde68a;' : 'background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;'; ?>">
+                                                <td style="padding: 10px 7px; text-align: center; white-space: nowrap;">
+                                                    <span style="display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; <?php echo (strtolower($row['sentido']) === 'volta') ? 'background: #fef3c7; color: #b45309; border: 1px solid #fde68a;' : 'background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;'; ?>">
                                                         <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
                                                     </span>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #15803d; white-space: nowrap;">
+                                                <td style="padding: 10px 7px; text-align: right; font-weight: 700; color: #15803d; white-space: nowrap;">
                                                     <?php echo number_format($emb, 0, ',', '.'); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c; white-space: nowrap;">
+                                                <td style="padding: 10px 7px; text-align: right; font-weight: 700; color: #be123c; white-space: nowrap;">
                                                     <?php echo number_format($des, 0, ',', '.'); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; white-space: nowrap; background: rgba(37,99,235,0.03);">
+                                                <td style="padding: 10px 7px; text-align: right; font-weight: 800; color: #1d4ed8; white-space: nowrap; background: rgba(37,99,235,0.03);">
                                                     <?php echo number_format($pax, 0, ',', '.'); ?>
                                                 </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="1 ônibus neste registro" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.92rem; color: #0f172a; white-space: nowrap;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="1 ônibus neste registro" style="padding: 10px 7px; text-align: center; font-weight: 800; font-size: 0.88rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                                 <?php if ($canViewAllContagens): ?>
-                                                    <td style="padding: 12px 10px; font-weight: 600; color: #0f172a; white-space: nowrap;">
+                                                    <td style="padding: 10px 8px; font-weight: 600; color: #0f172a;">
                                                         <span style="display: inline-flex; align-items: center; gap: 6px;">
-                                                            <span style="width: 22px; height: 22px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700;">
+                                                            <span class="cb-avatar-initial" style="width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700;">
                                                                 <?php echo strtoupper(substr($row['pesquisadorNome'], 0, 1)); ?>
                                                             </span>
-                                                            <?php echo htmlspecialchars($row['pesquisadorNome']); ?>
+                                                            <span><?php echo htmlspecialchars($row['pesquisadorNome']); ?></span>
                                                         </span>
                                                     </td>
                                                 <?php endif; ?>
@@ -2683,20 +2682,20 @@ try {
                                 <?php if (!empty($dadosTabelaLinhaVeiculoDataHora)): ?>
                                 <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
                                     <tr>
-                                        <td colspan="7" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                        <td colspan="7" class="foot-label-onibus" data-suffix="ônibus auditados" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
                                             <span>📊 TOTAL GERAL (<?php echo number_format($t1TotalRegistros, 0, ',', '.'); ?> ônibus auditados):</span>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
                                             <?php echo number_format($t1TotalEmbarques, 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
                                             <?php echo number_format($t1TotalDesembarques, 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
+                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
                                             <?php echo number_format($t1TotalPassageiros, 0, ',', '.'); ?>
                                         </td>
-                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t1_mediaPaxFmt . ' pax/ôn.'); ?>" title="Média de pessoas por ônibus nos filtros selecionados" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
-                                            —
+                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t1_mediaPaxFmt); ?> pax/ôn.
                                         </td>
                                         <?php if ($canViewAllContagens): ?>
                                             <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
@@ -2719,8 +2718,8 @@ try {
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de embarques, desembarques e taxa de ocupação por linha</p>
                             </div>
                         </div>
-                        <div style="overflow-x: auto; padding: 12px 20px 20px;">
-                            <table class="apps-table" id="tbl-t2" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
+                            <table class="apps-table dash-fullfit-table" id="tbl-t2" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
                                 <thead>
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
                                         <th style="padding: 12px 10px; text-align: center;">Data</th>
@@ -2728,7 +2727,7 @@ try {
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
-                                        <th class="col-metric-ocup-header" data-ocup-label="Ocupação (%)" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                        <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2744,7 +2743,7 @@ try {
                                             $ocup = cbCalcularOcupacao($row);
                                             $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>">
                                                 <td style="padding: 12px 10px; text-align: center; font-weight: 600; color: #475569;">
                                                     <?php echo htmlspecialchars($row['dataFormatada']); ?>
                                                 </td>
@@ -2772,17 +2771,17 @@ try {
                                 <?php if (!empty($dadosTabelaTotalPorLinha)): ?>
                                 <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
                                     <tr>
-                                        <td colspan="3" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            📊 TOTAL GERAL (<?php echo number_format($t2_resumo['onibus'], 0, ',', '.'); ?> ônibus):
+                                        <td colspan="3" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            <span>📊 TOTAL GERAL (<?php echo number_format($t2_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
                                             <?php echo number_format($t2_resumo['emb'], 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
                                             <?php echo number_format($t2_resumo['des'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t2_resumo['mediaPaxFmt'] . ' pax/ôn.'); ?>" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
-                                            —
+                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t2_resumo['mediaPaxFmt']); ?> pax/ôn.
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -2802,15 +2801,15 @@ try {
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Fluxo de passageiros e ocupação agrupados por ponto ou estação</p>
                             </div>
                         </div>
-                        <div style="overflow-x: auto; padding: 12px 20px 20px;">
-                            <table class="apps-table" id="tbl-t3" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
+                            <table class="apps-table dash-fullfit-table" id="tbl-t3" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
                                 <thead>
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
                                         <th style="padding: 12px 10px; text-align: left;">LOCAL</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
-                                        <th class="col-metric-ocup-header" data-ocup-label="Ocupação (%)" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                        <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2826,7 +2825,7 @@ try {
                                             $ocup = cbCalcularOcupacao($row);
                                             $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
                                                     <?php echo htmlspecialchars($row['nomeLocal']); ?>
                                                 </td>
@@ -2851,17 +2850,17 @@ try {
                                 <?php if (!empty($dadosTabelaPorLocal)): ?>
                                 <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
                                     <tr>
-                                        <td colspan="2" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            📊 TOTAL GERAL (<?php echo number_format($t3_resumo['onibus'], 0, ',', '.'); ?> ônibus):
+                                        <td colspan="2" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            <span>📊 TOTAL GERAL (<?php echo number_format($t3_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
                                             <?php echo number_format($t3_resumo['emb'], 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
                                             <?php echo number_format($t3_resumo['des'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t3_resumo['mediaPaxFmt'] . ' pax/ôn.'); ?>" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
-                                            —
+                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t3_resumo['mediaPaxFmt']); ?> pax/ôn.
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -2881,15 +2880,15 @@ try {
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de movimentação por operadora ou empresa de transporte</p>
                             </div>
                         </div>
-                        <div style="overflow-x: auto; padding: 12px 20px 20px;">
-                            <table class="apps-table" id="tbl-t4" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
+                            <table class="apps-table dash-fullfit-table" id="tbl-t4" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
                                 <thead>
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
                                         <th style="padding: 12px 10px; text-align: left;">EMPRESA</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
-                                        <th class="col-metric-ocup-header" data-ocup-label="Ocupação (%)" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                        <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2905,7 +2904,7 @@ try {
                                             $ocup = cbCalcularOcupacao($row);
                                             $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
                                                     <?php echo htmlspecialchars($row['nomeEmpresa']); ?>
                                                 </td>
@@ -2930,17 +2929,17 @@ try {
                                 <?php if (!empty($dadosTabelaPorEmpresa)): ?>
                                 <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
                                     <tr>
-                                        <td colspan="2" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            📊 TOTAL GERAL (<?php echo number_format($t4_resumo['onibus'], 0, ',', '.'); ?> ônibus):
+                                        <td colspan="2" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            <span>📊 TOTAL GERAL (<?php echo number_format($t4_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
                                             <?php echo number_format($t4_resumo['emb'], 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
                                             <?php echo number_format($t4_resumo['des'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t4_resumo['mediaPaxFmt'] . ' pax/ôn.'); ?>" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
-                                            —
+                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t4_resumo['mediaPaxFmt']); ?> pax/ôn.
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -2961,8 +2960,8 @@ try {
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de viagens, embarques, desembarques e passageiros registrados por cada pesquisador</p>
                             </div>
                         </div>
-                        <div style="overflow-x: auto; padding: 12px 20px 20px;">
-                            <table class="apps-table" id="tbl-t5" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
+                            <table class="apps-table dash-fullfit-table" id="tbl-t5" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
                                 <thead>
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
                                         <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
@@ -2971,7 +2970,7 @@ try {
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Total Passageiros</th>
-                                        <th class="col-metric-ocup-header" data-ocup-label="Média Ocupação" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Média Ocupação</th>
+                                        <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Média Ocupação</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2984,13 +2983,13 @@ try {
                                             $totPax = (int)$row['totalPassageiros'];
                                             $viag = (int)$row['totalViagens'];
                                             $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
-                                            $medOcup = !empty($row['mediaPercentual']) ? round((float)$row['mediaPercentual']) : cbCalcularOcupacao(['embarques' => $emb, 'desembarques' => $des]);
+                                            $medOcup = cbCalcularOcupacao($row);
                                             $mediaPaxRowStr = cbFormatarMediaPax($totPax, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $totPax; ?>" data-viag="<?php echo $viag; ?>" data-onibus="<?php echo $qtdBusRow; ?>">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
                                                     <span style="display: inline-flex; align-items: center; gap: 8px;">
-                                                        <span style="width: 28px; height: 28px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.78rem; font-weight: 800;">
+                                                        <span class="cb-avatar-initial" style="width: 28px; height: 28px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.78rem; font-weight: 800;">
                                                             <?php echo strtoupper(substr($row['pesquisadorNome'], 0, 1)); ?>
                                                         </span>
                                                         <?php echo htmlspecialchars($row['pesquisadorNome']); ?>
@@ -3023,23 +3022,23 @@ try {
                                 <?php if (!empty($dadosTabelaPorPesquisador)): ?>
                                 <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
                                     <tr>
-                                        <td colspan="2" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            📊 TOTAL GERAL (<?php echo number_format($t5_resumo['onibus'], 0, ',', '.'); ?> ônibus):
+                                        <td colspan="2" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            <span>📊 TOTAL GERAL (<?php echo number_format($t5_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: center; color: #0f172a; font-size: 0.95rem;">
+                                        <td class="foot-val-viag" style="padding: 14px 10px; text-align: center; color: #0f172a; font-size: 0.95rem;">
                                             <?php echo number_format($t5_resumo['viag'], 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
                                             <?php echo number_format($t5_resumo['emb'], 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
                                             <?php echo number_format($t5_resumo['des'], 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: right; color: #7c3aed; font-size: 1rem; background: #faf5ff;">
+                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #7c3aed; font-size: 1rem; background: #faf5ff;">
                                             <?php echo number_format($t5_resumo['pax'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t5_resumo['mediaPaxFmt'] . ' pax/ôn.'); ?>" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
-                                            —
+                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t5_resumo['mediaPaxFmt']); ?> pax/ôn.
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -5558,6 +5557,52 @@ try {
             }
         }
 
+        function updateDashTableFooterTotals(tableId, rows) {
+            const table = document.getElementById(tableId);
+            if (!table) return;
+            const tfoot = table.querySelector('tfoot');
+            if (!tfoot) return;
+
+            let totalEmb = 0;
+            let totalDes = 0;
+            let totalPax = 0;
+            let totalBus = 0;
+            let totalViag = 0;
+
+            rows.forEach(r => {
+                totalEmb += parseInt(r.getAttribute('data-emb') || '0', 10) || 0;
+                totalDes += parseInt(r.getAttribute('data-des') || '0', 10) || 0;
+                totalPax += parseInt(r.getAttribute('data-pax') || '0', 10) || 0;
+                totalBus += parseInt(r.getAttribute('data-onibus') || '1', 10) || 0;
+                totalViag += parseInt(r.getAttribute('data-viag') || '0', 10) || 0;
+            });
+
+            const labelCell = tfoot.querySelector('.foot-label-onibus');
+            if (labelCell) {
+                const suffix = labelCell.getAttribute('data-suffix') || 'ônibus';
+                labelCell.innerHTML = `<span>📊 TOTAL GERAL (${totalBus.toLocaleString('pt-BR')} ${suffix}):</span>`;
+            }
+
+            const viagCell = tfoot.querySelector('.foot-val-viag');
+            if (viagCell) viagCell.textContent = totalViag.toLocaleString('pt-BR');
+
+            const embCell = tfoot.querySelector('.foot-val-emb');
+            if (embCell) embCell.textContent = totalEmb.toLocaleString('pt-BR');
+
+            const desCell = tfoot.querySelector('.foot-val-des');
+            if (desCell) desCell.textContent = totalDes.toLocaleString('pt-BR');
+
+            const paxCell = tfoot.querySelector('.foot-val-pax');
+            if (paxCell) paxCell.textContent = totalPax.toLocaleString('pt-BR');
+
+            const ocupFootCell = tfoot.querySelector('.col-metric-ocup-foot');
+            if (ocupFootCell) {
+                const mediaVal = totalBus > 0 ? (totalPax / totalBus) : 0;
+                const mediaFmt = mediaVal.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+                ocupFootCell.textContent = `Média: ${mediaFmt} pax/ôn.`;
+            }
+        }
+
         function renderDashTablePagination(tableId) {
             const table = document.getElementById(tableId);
             if (!table) return;
@@ -5583,6 +5628,9 @@ try {
                     row.style.display = 'none';
                 }
             });
+
+            // Atualizar TOTAL GERAL e Média de Passageiros por Ônibus no rodapé (na coluna de Ocupação)
+            updateDashTableFooterTotals(tableId, matchingRows);
 
             const totalMatching = matchingRows.length;
             const containerPg = document.getElementById(tableId + '-pagination');
@@ -5710,38 +5758,6 @@ try {
         }
 
         const dashKpisByTable = <?php echo json_encode($dashKpisMap, JSON_UNESCAPED_UNICODE); ?>;
-        window.currentDashMetricMode = 'ocupacao';
-
-        function setDashMetricMode(mode) {
-            const isMedia = (mode === 'media_pax');
-            window.currentDashMetricMode = isMedia ? 'media_pax' : 'ocupacao';
-            try { localStorage.setItem('cb_dash_metric_mode', window.currentDashMetricMode); } catch (e) {}
-
-            const btnOcup = document.getElementById('btn-mode-ocupacao');
-            const btnMedia = document.getElementById('btn-mode-media-pax');
-            if (btnOcup) btnOcup.classList.toggle('active', !isMedia);
-            if (btnMedia) btnMedia.classList.toggle('active', isMedia);
-
-            const cardMedia = document.getElementById('card-kpi-media-pax');
-            if (cardMedia) cardMedia.style.display = isMedia ? 'block' : 'none';
-
-            document.querySelectorAll('.col-metric-ocup-header').forEach(th => {
-                th.textContent = isMedia
-                    ? (th.getAttribute('data-media-label') || 'Média Pax / Ônibus')
-                    : (th.getAttribute('data-ocup-label') || 'Ocupação (%)');
-            });
-
-            document.querySelectorAll('.col-metric-ocup-cell').forEach(td => {
-                td.textContent = isMedia ? (td.getAttribute('data-media') || '0,0') : (td.getAttribute('data-ocup') || '0%');
-                td.style.color = isMedia ? '#1d4ed8' : '';
-            });
-
-            document.querySelectorAll('.col-metric-ocup-foot').forEach(td => {
-                td.textContent = isMedia ? (td.getAttribute('data-media') || '0,0 pax/ôn.') : (td.getAttribute('data-ocup') || '—');
-                td.style.color = isMedia ? '#1e3a8a' : '#64748b';
-                td.style.background = isMedia ? '#eff6ff' : '';
-            });
-        }
 
         function updateDashKpiCards(targetId) {
             if (!dashKpisByTable) return;
@@ -5887,105 +5903,330 @@ try {
             const allMenus = document.querySelectorAll('.export-menu-box');
             allMenus.forEach(m => m.style.display = 'none');
 
+            const exportName = filename || 'Relatorio_Contagens_contaBuzu';
+
             if (format === 'csv') {
-                exportToCSV(tableId, filename);
+                exportToCSV('all', exportName);
             } else if (format === 'doc') {
-                exportToDOC(tableId, filename);
+                exportToDOC('all', exportName);
             } else if (format === 'pdf') {
-                exportToPDF(tableId, filename);
+                exportAllDashTablesToPDF(exportName);
             }
+        }
+        window.exportTable = exportTable;
+
+        function sanitizeTextForPDF(str) {
+            if (str === null || str === undefined) return '';
+            let s = String(str);
+            if (typeof s.normalize === 'function') {
+                s = s.normalize('NFC');
+            }
+            s = s
+                .replace(/[\u2014\u2013\u2212]/g, '-')
+                .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+                .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+                .replace(/\u2026/g, '...')
+                .replace(/\u2022/g, '-')
+                .replace(/\u00A0/g, ' ')
+                .replace(/[\u200B-\u200D\uFEFF\uFE0E\uFE0F]/g, '');
+
+            let clean = '';
+            for (let i = 0; i < s.length; i++) {
+                const code = s.charCodeAt(i);
+                if (code === 10 || (code >= 32 && code <= 255)) {
+                    clean += s[i];
+                }
+            }
+            return clean
+                .split('\n')
+                .map(line => line.replace(/\s+/g, ' ').trim())
+                .filter(Boolean)
+                .join('\n');
+        }
+
+        function extractCleanCellText(cell, forPdf) {
+            if (!cell) return '';
+            const clone = cell.cloneNode(true);
+            clone.querySelectorAll('.cb-avatar-initial').forEach(el => el.remove());
+            clone.querySelectorAll('span').forEach(sp => {
+                if (sp.style && sp.style.display === 'block') {
+                    sp.insertAdjacentText('beforebegin', forPdf ? '\n' : ' - ');
+                }
+            });
+            const raw = clone.textContent || '';
+            if (forPdf) {
+                return sanitizeTextForPDF(raw);
+            }
+            return sanitizeTextForPDF(raw).replace(/\n+/g, ' ');
+        }
+
+        function parseCssColorToRgb(cssStr, fallbackRgb) {
+            if (!cssStr) return fallbackRgb || null;
+            const s = String(cssStr).trim();
+            if (!s || s === 'transparent' || s === 'inherit' || s === 'initial') return fallbackRgb || null;
+            const hexMatch = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+            if (hexMatch) {
+                let hex = hexMatch[1];
+                if (hex.length === 3) {
+                    hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+                }
+                return [
+                    parseInt(hex.substring(0, 2), 16),
+                    parseInt(hex.substring(2, 4), 16),
+                    parseInt(hex.substring(4, 6), 16)
+                ];
+            }
+            const rgbMatch = s.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)/i);
+            if (rgbMatch) {
+                const a = rgbMatch[4] !== undefined ? parseFloat(rgbMatch[4]) : 1;
+                if (a === 0) return fallbackRgb || null;
+                if (a < 1) {
+                    return [
+                        Math.round(parseInt(rgbMatch[1], 10) * a + 255 * (1 - a)),
+                        Math.round(parseInt(rgbMatch[2], 10) * a + 255 * (1 - a)),
+                        Math.round(parseInt(rgbMatch[3], 10) * a + 255 * (1 - a))
+                    ];
+                }
+                return [
+                    parseInt(rgbMatch[1], 10),
+                    parseInt(rgbMatch[2], 10),
+                    parseInt(rgbMatch[3], 10)
+                ];
+            }
+            return fallbackRgb || null;
+        }
+
+        function getDashboardTableTitles(tableId, fallbackFilename) {
+            const cardId = 'container-' + String(tableId).replace(/^tbl-/, 'dash-');
+            const card = document.getElementById(cardId);
+            let mainTitle = (fallbackFilename || 'Relatorio Contagens contaBuzu').replace(/_/g, ' ');
+            let subDesc = '';
+            if (card) {
+                const h3 = card.querySelector('.panel-card-header h3');
+                const p = card.querySelector('.panel-card-header p');
+                if (h3) {
+                    const cleanH3 = sanitizeTextForPDF(h3.textContent);
+                    if (cleanH3) mainTitle = cleanH3;
+                }
+                if (p) {
+                    const cleanP = sanitizeTextForPDF(p.textContent);
+                    if (cleanP) subDesc = cleanP;
+                }
+            }
+            return { mainTitle, subDesc };
+        }
+
+        function getDashTablesListForExport(tableId) {
+            if (!tableId || tableId === 'all' || /^tbl-t[1-5]$/.test(String(tableId))) {
+                return ['tbl-t1', 'tbl-t2', 'tbl-t3', 'tbl-t4', 'tbl-t5'].filter(id => !!document.getElementById(id));
+            }
+            return document.getElementById(tableId) ? [tableId] : [];
+        }
+
+        function syncTableFooterWithAllFilteredRows(tableId) {
+            const table = document.getElementById(tableId);
+            if (!table) return [];
+            const tbody = table.querySelector('tbody');
+            if (!tbody) return [];
+            const allFilterRows = Array.from(tbody.querySelectorAll('tr')).filter(r => {
+                if (r.classList.contains('dash-empty-filter-row')) return false;
+                if (r.children.length === 1 && r.children[0].colSpan > 1) return false;
+                return true;
+            });
+            try {
+                if (typeof updateDashTableFooterTotals === 'function') {
+                    updateDashTableFooterTotals(tableId, allFilterRows);
+                }
+            } catch (e) {}
+            return allFilterRows;
         }
 
         function exportToCSV(tableId, filename) {
-            const table = document.getElementById(tableId);
+            const table = document.getElementById('tbl-t1');
             if (!table) return;
-            
+
+            const allFilterRows = syncTableFooterWithAllFilteredRows('tbl-t1');
+            const ocupHeaderEl = table.querySelector('thead .col-metric-ocup-header');
+            const ocupHeaderLabel = ocupHeaderEl ? extractCleanCellText(ocupHeaderEl, false) : 'Ocupação (%)';
+
+            const headers = [
+                'Data',
+                'Hora',
+                'Empresa',
+                'Local',
+                'Linha',
+                'Veículo',
+                'Viagem',
+                'Embarques',
+                'Desembarques',
+                'Total Pax',
+                ocupHeaderLabel || 'Ocupação (%)',
+                'Pesquisador',
+                'Função / Cargo'
+            ];
+
+            const toCsvLine = (arr) => arr.map(val => {
+                const s = sanitizeTextForPDF(val == null ? '' : String(val)).replace(/\n+/g, ' ').replace(/"/g, '""');
+                return '"' + s + '"';
+            }).join(';');
+
             let csv = [];
-            const rows = table.querySelectorAll('tr');
-            
-            rows.forEach(row => {
-                if (row.classList.contains('dash-empty-filter-row')) return;
-                if (row.getAttribute('data-search-hidden') === 'true') return;
-                if (row.style.display === 'none' && !row.hasAttribute('data-page-hidden')) return;
-                let rowData = [];
-                const cols = row.querySelectorAll('th, td');
-                
-                cols.forEach(col => {
-                    let text = col.innerText.replace(/(\r\n|\n|\r)/gm, ' ').replace(/\s+/g, ' ').trim();
-                    text = text.replace(/"/g, '""');
-                    rowData.push('"' + text + '"');
-                });
-                
-                if (rowData.length > 0) {
-                    csv.push(rowData.join(';'));
-                }
+            csv.push(toCsvLine(headers));
+
+            allFilterRows.forEach(row => {
+                const cols = row.querySelectorAll('td');
+                if (cols.length < 11) return;
+
+                const dataVal = extractCleanCellText(cols[0], false);
+                const horaVal = extractCleanCellText(cols[1], false);
+                const empVal  = extractCleanCellText(cols[2], false);
+                const locVal  = extractCleanCellText(cols[3], false);
+                const linVal  = extractCleanCellText(cols[4], false);
+                const veicVal = extractCleanCellText(cols[5], false);
+                const viagVal = extractCleanCellText(cols[6], false);
+                const embVal  = extractCleanCellText(cols[7], false);
+                const desVal  = extractCleanCellText(cols[8], false);
+                const paxVal  = extractCleanCellText(cols[9], false);
+                const ocupVal = extractCleanCellText(cols[10], false);
+                const pesqVal = cols[11] ? extractCleanCellText(cols[11], false) : (row.getAttribute('data-pesquisador') || '');
+                const cargoVal = row.getAttribute('data-cargo') || 'Pesquisador';
+
+                csv.push(toCsvLine([
+                    dataVal,
+                    horaVal,
+                    empVal,
+                    locVal,
+                    linVal,
+                    veicVal,
+                    viagVal,
+                    embVal,
+                    desVal,
+                    paxVal,
+                    ocupVal,
+                    pesqVal,
+                    cargoVal
+                ]));
             });
-            
+
+            const tfoot = table.querySelector('tfoot');
+            if (tfoot && allFilterRows.length > 0) {
+                const lblEl  = tfoot.querySelector('.foot-label-onibus');
+                const embEl  = tfoot.querySelector('.foot-val-emb');
+                const desEl  = tfoot.querySelector('.foot-val-des');
+                const paxEl  = tfoot.querySelector('.foot-val-pax');
+                const ocupEl = tfoot.querySelector('.col-metric-ocup-foot');
+
+                csv.push(toCsvLine([
+                    lblEl ? extractCleanCellText(lblEl, false).replace(/:$/, '') : 'TOTAL GERAL',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    embEl ? extractCleanCellText(embEl, false) : '0',
+                    desEl ? extractCleanCellText(desEl, false) : '0',
+                    paxEl ? extractCleanCellText(paxEl, false) : '0',
+                    ocupEl ? extractCleanCellText(ocupEl, false) : '',
+                    '',
+                    ''
+                ]));
+            }
+
             const csvContent = '\uFEFF' + csv.join('\n');
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
-            link.setAttribute('download', filename + '.csv');
+            link.setAttribute('download', (filename || 'Relatorio_Contagens_contaBuzu') + '.csv');
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
         }
 
-        function getExportKpiMetrics() {
+        function getExportKpiMetrics(tableId) {
+            if (tableId && typeof dashKpisByTable === 'object' && dashKpisByTable) {
+                const dashKey = String(tableId).replace(/^tbl-/, 'dash-');
+                const mapData = dashKpisByTable[dashKey];
+                if (mapData) {
+                    return {
+                        viag: sanitizeTextForPDF(mapData.viagens),
+                        emb: sanitizeTextForPDF(mapData.embarques),
+                        des: sanitizeTextForPDF(mapData.desembarques),
+                        pax: sanitizeTextForPDF(mapData.passageiros),
+                        mediaPax: mapData.mediaPax ? sanitizeTextForPDF(mapData.mediaPax + ' pax/on.') : null
+                    };
+                }
+            }
+            const kpiViag = document.getElementById('kpi-total-viagens');
             const kpiEmb = document.getElementById('kpi-total-embarques');
             const kpiDes = document.getElementById('kpi-total-desembarques');
             const kpiPax = document.getElementById('kpi-total-passageiros');
-            const kpiMed = document.getElementById('kpi-media-pax-onibus');
             if (!kpiEmb || !kpiDes || !kpiPax) return null;
             return {
-                emb: kpiEmb.innerText.trim(),
-                des: kpiDes.innerText.trim(),
-                pax: kpiPax.innerText.trim(),
-                mediaPax: (window.currentDashMetricMode === 'media_pax' && kpiMed) ? kpiMed.innerText.trim() : null
+                viag: kpiViag ? sanitizeTextForPDF(kpiViag.innerText) : null,
+                emb: sanitizeTextForPDF(kpiEmb.innerText),
+                des: sanitizeTextForPDF(kpiDes.innerText),
+                pax: sanitizeTextForPDF(kpiPax.innerText),
+                mediaPax: null
             };
         }
 
         function exportToDOC(tableId, filename) {
-            const table = document.getElementById(tableId);
-            if (!table) return;
-            
-            const clone = table.cloneNode(true);
-            const hiddenRows = clone.querySelectorAll('tr[data-search-hidden="true"], tr.dash-empty-filter-row');
-            hiddenRows.forEach(r => r.remove());
+            const tableIds = getDashTablesListForExport(tableId);
+            if (tableIds.length === 0) return;
 
-            // Garantir que as linhas de outras páginas fiquem visíveis no documento exportado
-            const pagedRows = clone.querySelectorAll('tr[data-page-hidden="true"]');
-            pagedRows.forEach(r => {
-                r.removeAttribute('data-page-hidden');
-                r.style.display = '';
-            });
+            const generatedAt = new Date().toLocaleString('pt-BR');
+            let sectionsHtml = '';
 
-            const otherHidden = clone.querySelectorAll('tr[style*="display: none"]');
-            otherHidden.forEach(r => r.remove());
-            
-            clone.style.borderCollapse = 'collapse';
-            clone.style.width = '100%';
-            const cells = clone.querySelectorAll('th, td');
-            cells.forEach(cell => {
-                cell.style.border = '1px solid #cbd5e1';
-                cell.style.padding = '8px';
-                cell.style.fontFamily = 'Arial, sans-serif';
-            });
+            tableIds.forEach((tId, idx) => {
+                const table = document.getElementById(tId);
+                if (!table) return;
 
-            const headerTitle = filename.replace(/_/g, ' ');
-            const totalLinhas = clone.querySelectorAll('tbody tr').length;
-            const kpiResumo = getExportKpiMetrics();
+                const allFilterRows = syncTableFooterWithAllFilteredRows(tId);
+                const clone = table.cloneNode(true);
+                clone.querySelectorAll('tr.dash-empty-filter-row').forEach(r => r.remove());
 
-            let resumoKpiHtml = `<p style="text-align: center; color: #475569; font-size: 10pt; margin: 0 0 15px;">
-                <strong>Gerado em:</strong> ${new Date().toLocaleString('pt-BR')} &nbsp;|&nbsp; 
-                <strong>Total Registros:</strong> ${totalLinhas}`;
-            if (kpiResumo) {
-                resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Embarques:</strong> ${kpiResumo.emb} &nbsp;|&nbsp; <strong>Desembarques:</strong> ${kpiResumo.des} &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiResumo.pax}`;
-                if (kpiResumo.mediaPax) {
-                    resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Média Pax/Ônibus:</strong> ${kpiResumo.mediaPax}`;
+                // Garante que 100% das linhas do filtro fiquem visíveis no documento exportado
+                clone.querySelectorAll('tr').forEach(r => {
+                    r.removeAttribute('data-page-hidden');
+                    r.removeAttribute('data-search-hidden');
+                    r.style.display = '';
+                });
+
+                clone.querySelectorAll('.cb-avatar-initial').forEach(el => el.remove());
+
+                clone.style.borderCollapse = 'collapse';
+                clone.style.width = '100%';
+                const cells = clone.querySelectorAll('th, td');
+                cells.forEach(cell => {
+                    cell.style.border = '1px solid #94a3b8';
+                    cell.style.padding = '8px';
+                    cell.style.fontFamily = 'Arial, sans-serif';
+                });
+
+                const titles = getDashboardTableTitles(tId, filename);
+                const kpiResumo = getExportKpiMetrics(tId);
+
+                let resumoKpiHtml = `<p style="color: #475569; font-size: 9.5pt; margin: 0 0 10px;">
+                    <strong>Gerado em:</strong> ${generatedAt} &nbsp;|&nbsp; 
+                    <strong>Total Registros:</strong> ${allFilterRows.length}`;
+                if (kpiResumo) {
+                    resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Embarques:</strong> ${kpiResumo.emb} &nbsp;|&nbsp; <strong>Desembarques:</strong> ${kpiResumo.des} &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiResumo.pax}`;
+                    if (kpiResumo.mediaPax) {
+                        resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Média:</strong> ${kpiResumo.mediaPax}`;
+                    }
                 }
-            }
-            resumoKpiHtml += `</p>`;
+                resumoKpiHtml += `</p>`;
+
+                sectionsHtml += `
+                    <div style="${idx > 0 ? 'page-break-before: always; margin-top: 28px;' : ''}">
+                        <h3 style="color: #0f172a; font-size: 13.5pt; margin: 0 0 4px;">Relatório contaBuzu - ${titles.mainTitle}</h3>
+                        ${titles.subDesc ? `<p style="color: #64748b; font-size: 9.5pt; margin: 0 0 4px;">${titles.subDesc}</p>` : ''}
+                        ${resumoKpiHtml}
+                        ${clone.outerHTML}
+                    </div>
+                `;
+            });
 
             const htmlContent = `
                 <html xmlns:o='urn:schemas-microsoft-microsoft-com:office:office' 
@@ -5993,19 +6234,17 @@ try {
                       xmlns='http://www.w3.org/TR/REC-html40'>
                 <head>
                     <meta charset='utf-8'>
-                    <title>${headerTitle}</title>
+                    <title>Relatório Completo contaBuzu</title>
                     <style>
+                        @page { size: landscape; margin: 12mm; }
                         body { font-family: Arial, sans-serif; margin: 20px; color: #0f172a; }
-                        h2 { color: #0f172a; text-align: center; font-size: 18pt; margin-bottom: 5px; }
-                        table { border-collapse: collapse; width: 100%; margin-top: 15px; }
-                        th { background-color: #2563eb; color: #ffffff; font-weight: bold; font-size: 11pt; padding: 10px; border: 1px solid #1d4ed8; }
-                        td { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 10.5pt; }
+                        table { border-collapse: collapse; width: 100%; margin-top: 10px; margin-bottom: 18px; }
+                        th { background-color: #f8fafc; color: #475569; font-weight: bold; font-size: 9.5pt; padding: 8px 10px; border: 1px solid #94a3b8; text-transform: uppercase; }
+                        td { border: 1px solid #94a3b8; padding: 7px 9px; font-size: 9.5pt; }
                     </style>
                 </head>
                 <body>
-                    <h2>Relatório contaBuzu — ${headerTitle}</h2>
-                    ${resumoKpiHtml}
-                    ${clone.outerHTML}
+                    ${sectionsHtml}
                 </body>
                 </html>
             `;
@@ -6013,94 +6252,534 @@ try {
             const blob = new Blob(['\uFEFF' + htmlContent], { type: 'application/msword;charset=utf-8;' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
-            link.setAttribute('download', filename + '.doc');
+            link.setAttribute('download', (filename || 'Relatorio_Contagens_contaBuzu') + '.doc');
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
         }
 
-        function exportToPDF(tableId, filename) {
-            const table = document.getElementById(tableId);
-            if (!table) return;
+        function extractUnifiedTableDataForPDF(fallbackFilename) {
+            const table = document.getElementById('tbl-t1');
+            if (!table) return null;
 
-            const titleText = filename.replace(/_/g, ' ');
-            const generatedAt = 'Gerado em: ' + new Date().toLocaleString('pt-BR');
+            const allFilterRows = syncTableFooterWithAllFilteredRows('tbl-t1');
+            const titles = getDashboardTableTitles('tbl-t1', fallbackFilename);
+            const titleText = sanitizeTextForPDF('Relatório contaBuzu - ' + titles.mainTitle);
+            const generatedAt = sanitizeTextForPDF('Gerado em: ' + new Date().toLocaleString('pt-BR'));
 
-            // 1. Extrai cabeçalhos e linhas (respeitando se houver filtro ativo de busca na tela)
+            const ocupHeaderEl = table.querySelector('thead .col-metric-ocup-header');
+            const ocupHeaderLabel = (ocupHeaderEl ? extractCleanCellText(ocupHeaderEl, true) : 'Ocupação (%)').toUpperCase();
+
+            const headersDef = [
+                { label: 'DATA', align: 'center', color: [71, 85, 105] },
+                { label: 'HORA', align: 'center', color: [71, 85, 105] },
+                { label: 'EMPRESA', align: 'left', color: [71, 85, 105] },
+                { label: 'LOCAL', align: 'left', color: [71, 85, 105] },
+                { label: 'LINHA', align: 'left', color: [71, 85, 105] },
+                { label: 'VEÍCULO', align: 'left', color: [71, 85, 105] },
+                { label: 'VIAGEM', align: 'center', color: [71, 85, 105] },
+                { label: 'EMBARQUES', align: 'right', color: [71, 85, 105] },
+                { label: 'DESEMBARQUES', align: 'right', color: [71, 85, 105] },
+                { label: 'TOTAL PAX', align: 'right', color: [29, 78, 216] },
+                { label: ocupHeaderLabel || 'OCUPAÇÃO (%)', align: 'center', color: [71, 85, 105] },
+                { label: 'PESQUISADOR', align: 'left', color: [71, 85, 105] },
+                { label: 'FUNÇÃO / CARGO', align: 'left', color: [71, 85, 105] }
+            ];
+
+            const columnAlignments = {};
+            const headerRow = headersDef.map((h, idx) => {
+                columnAlignments[idx] = h.align;
+                return {
+                    content: sanitizeTextForPDF(h.label),
+                    styles: {
+                        halign: h.align,
+                        textColor: h.color,
+                        fillColor: [248, 250, 252],
+                        fontStyle: 'bold'
+                    }
+                };
+            });
+            const head = [headerRow];
+            const body = [];
+            const badgeMetaMap = {};
+
+            if (allFilterRows.length === 0) {
+                body.push([{
+                    content: sanitizeTextForPDF('Nenhum registro localizado para os filtros selecionados.'),
+                    colSpan: headersDef.length,
+                    styles: { halign: 'center', textColor: [148, 163, 184], fontStyle: 'normal' }
+                }]);
+            } else {
+                allFilterRows.forEach(tr => {
+                    const tds = tr.querySelectorAll('td');
+                    if (tds.length < 11) return;
+
+                    const rowIdx = body.length;
+                    const rowData = [];
+
+                    for (let colIdx = 0; colIdx <= 10; colIdx++) {
+                        const td = tds[colIdx];
+                        const txt = extractCleanCellText(td, true);
+                        const halign = columnAlignments[colIdx] || 'left';
+
+                        let textColor = parseCssColorToRgb(td.style && td.style.color ? td.style.color : '', null);
+                        let fillColor = parseCssColorToRgb(td.style && td.style.backgroundColor ? td.style.backgroundColor : (td.style ? td.style.background : ''), null);
+
+                        const fw = (td.style && td.style.fontWeight) ? parseInt(td.style.fontWeight, 10) : 400;
+                        let fontStyle = (fw >= 700) ? 'bold' : 'normal';
+
+                        const badgeSpan = td.querySelector('span[style*="background"]');
+                        if (badgeSpan && !badgeSpan.classList.contains('cb-avatar-initial')) {
+                            const spanColor = parseCssColorToRgb(badgeSpan.style.color, null);
+                            const spanBg = parseCssColorToRgb(badgeSpan.style.backgroundColor || badgeSpan.style.background, null);
+                            const spanBorder = parseCssColorToRgb(badgeSpan.style.borderColor, null);
+                            if (spanColor) textColor = spanColor;
+                            if (spanBg) {
+                                badgeMetaMap[rowIdx + ':' + colIdx] = {
+                                    bg: spanBg,
+                                    border: spanBorder || spanBg,
+                                    textColor: textColor || [15, 23, 42],
+                                    text: txt
+                                };
+                            }
+                            fontStyle = 'bold';
+                        }
+
+                        if (!textColor) textColor = [15, 23, 42];
+                        if (!fillColor) fillColor = [255, 255, 255];
+
+                        rowData.push({
+                            content: txt,
+                            styles: {
+                                halign: halign,
+                                textColor: textColor,
+                                fillColor: fillColor,
+                                fontStyle: fontStyle
+                            }
+                        });
+                    }
+
+                    const pesqVal = sanitizeTextForPDF(tds[11] ? extractCleanCellText(tds[11], true) : (tr.getAttribute('data-pesquisador') || ''));
+                    const cargoVal = sanitizeTextForPDF(tr.getAttribute('data-cargo') || 'Pesquisador');
+
+                    rowData.push({
+                        content: pesqVal,
+                        styles: {
+                            halign: 'left',
+                            textColor: [15, 23, 42],
+                            fillColor: [255, 255, 255],
+                            fontStyle: 'bold'
+                        }
+                    });
+
+                    rowData.push({
+                        content: cargoVal,
+                        styles: {
+                            halign: 'left',
+                            textColor: [71, 85, 105],
+                            fillColor: [255, 255, 255],
+                            fontStyle: 'normal'
+                        }
+                    });
+
+                    body.push(rowData);
+                });
+            }
+
+            const foot = [];
+            const tfoot = table.querySelector('tfoot');
+            if (tfoot && allFilterRows.length > 0) {
+                const lblEl  = tfoot.querySelector('.foot-label-onibus');
+                const embEl  = tfoot.querySelector('.foot-val-emb');
+                const desEl  = tfoot.querySelector('.foot-val-des');
+                const paxEl  = tfoot.querySelector('.foot-val-pax');
+                const ocupEl = tfoot.querySelector('.col-metric-ocup-foot');
+
+                foot.push([
+                    {
+                        content: lblEl ? extractCleanCellText(lblEl, true) : 'TOTAL GERAL:',
+                        colSpan: 7,
+                        styles: { halign: 'right', textColor: [15, 23, 42], fillColor: [248, 250, 252], fontStyle: 'bold' }
+                    },
+                    {
+                        content: embEl ? extractCleanCellText(embEl, true) : '0',
+                        styles: { halign: 'right', textColor: [21, 128, 61], fillColor: [248, 250, 252], fontStyle: 'bold' }
+                    },
+                    {
+                        content: desEl ? extractCleanCellText(desEl, true) : '0',
+                        styles: { halign: 'right', textColor: [190, 18, 60], fillColor: [248, 250, 252], fontStyle: 'bold' }
+                    },
+                    {
+                        content: paxEl ? extractCleanCellText(paxEl, true) : '0',
+                        styles: { halign: 'right', textColor: [29, 78, 216], fillColor: [239, 246, 255], fontStyle: 'bold' }
+                    },
+                    {
+                        content: ocupEl ? extractCleanCellText(ocupEl, true) : '',
+                        styles: { halign: 'center', textColor: [30, 58, 138], fillColor: [239, 246, 255], fontStyle: 'bold' }
+                    },
+                    {
+                        content: '-',
+                        colSpan: 2,
+                        styles: { halign: 'center', textColor: [100, 116, 139], fillColor: [248, 250, 252], fontStyle: 'bold' }
+                    }
+                ]);
+            }
+
+            const kpiResumo = getExportKpiMetrics('tbl-t1');
+            let pdfSubtitle = generatedAt + '   |   Total de registros na tabela: ' + allFilterRows.length;
+            if (kpiResumo) {
+                pdfSubtitle += '   |   Embarques: ' + kpiResumo.emb + '   |   Desembarques: ' + kpiResumo.des + '   |   Total Pax: ' + kpiResumo.pax;
+                if (kpiResumo.mediaPax) {
+                    pdfSubtitle += '   |   Média: ' + kpiResumo.mediaPax;
+                }
+            }
+            pdfSubtitle = sanitizeTextForPDF(pdfSubtitle);
+
+            return {
+                titles,
+                titleText,
+                pdfSubtitle,
+                head,
+                body,
+                foot,
+                columnAlignments,
+                badgeMetaMap
+            };
+        }
+
+        function extractTableDataForPDF(table, tableId, fallbackFilename) {
+            if (!tableId || tableId === 'all' || /^tbl-t[1-5]$/.test(String(tableId))) {
+                const unified = extractUnifiedTableDataForPDF(fallbackFilename);
+                if (unified) return unified;
+            }
+            syncTableFooterWithAllFilteredRows(tableId);
+            const titles = getDashboardTableTitles(tableId, fallbackFilename);
+            const titleText = sanitizeTextForPDF('Relatório contaBuzu - ' + titles.mainTitle);
+            const generatedAt = sanitizeTextForPDF('Gerado em: ' + new Date().toLocaleString('pt-BR'));
+
             const head = [];
             const body = [];
             const columnAlignments = {};
+            const badgeMetaMap = {};
 
             const ths = table.querySelectorAll('thead tr th');
             if (ths.length > 0) {
                 const headerRow = [];
                 ths.forEach((th, idx) => {
-                    const txt = th.innerText.replace(/\s+/g, ' ').trim();
-                    headerRow.push(txt);
-
-                    const computedAlign = window.getComputedStyle(th).textAlign;
-                    if (computedAlign === 'right' || /embarque|desembarque|passageiro/i.test(txt)) {
-                        columnAlignments[idx] = 'right';
-                    } else if (computedAlign === 'center' || /data|hora|viagem|ocup/i.test(txt)) {
-                        columnAlignments[idx] = 'center';
-                    } else {
-                        columnAlignments[idx] = 'left';
+                    const txt = extractCleanCellText(th, true).toUpperCase();
+                    const inlineAlign = (th.style && th.style.textAlign) ? th.style.textAlign : '';
+                    const computedAlign = inlineAlign || (window.getComputedStyle ? window.getComputedStyle(th).textAlign : '');
+                    let align = 'left';
+                    if (computedAlign === 'right' || /embarque|desembarque|passageiro|total pax/i.test(txt)) {
+                        align = 'right';
+                    } else if (computedAlign === 'center' || /data|hora|viagem|ocup|m[eé]dia|total viagens/i.test(txt)) {
+                        align = 'center';
                     }
+                    columnAlignments[idx] = align;
+
+                    const thColor = parseCssColorToRgb(th.style && th.style.color ? th.style.color : '', [71, 85, 105]);
+                    headerRow.push({
+                        content: txt,
+                        styles: {
+                            halign: align,
+                            textColor: thColor,
+                            fillColor: [248, 250, 252],
+                            fontStyle: 'bold'
+                        }
+                    });
                 });
                 head.push(headerRow);
             }
 
+            // Extrai TODAS as linhas do filtro (100% dos registros da tabela)
             const trs = table.querySelectorAll('tbody tr');
             trs.forEach(tr => {
                 if (tr.classList.contains('dash-empty-filter-row')) return;
-                if (tr.getAttribute('data-search-hidden') === 'true') return;
-                if (tr.style.display === 'none' && !tr.hasAttribute('data-page-hidden')) return;
                 const tds = tr.querySelectorAll('td');
                 if (tds.length === 0) return;
 
-                // Mensagem de tabela vazia
                 if (tds.length === 1 && tds[0].colSpan > 1) {
-                    body.push([tds[0].innerText.trim()]);
+                    const colCount = ths.length || parseInt(tds[0].colSpan, 10) || 6;
+                    body.push([{
+                        content: extractCleanCellText(tds[0], true),
+                        colSpan: colCount,
+                        styles: { halign: 'center', textColor: [148, 163, 184], fontStyle: 'normal' }
+                    }]);
                     return;
                 }
 
+                const rowIdx = body.length;
                 const rowData = [];
-                tds.forEach(td => {
-                    let txt = td.innerText.replace(/\s+/g, ' ').trim();
-                    rowData.push(txt);
+                tds.forEach((td, colIdx) => {
+                    const txt = extractCleanCellText(td, true);
+                    const inlineAlign = (td.style && td.style.textAlign) ? td.style.textAlign : '';
+                    const halign = inlineAlign || columnAlignments[colIdx] || 'left';
+
+                    let textColor = parseCssColorToRgb(td.style && td.style.color ? td.style.color : '', null);
+                    let fillColor = parseCssColorToRgb(td.style && td.style.backgroundColor ? td.style.backgroundColor : (td.style ? td.style.background : ''), null);
+
+                    const fw = (td.style && td.style.fontWeight) ? parseInt(td.style.fontWeight, 10) : 400;
+                    let fontStyle = (fw >= 700) ? 'bold' : 'normal';
+
+                    const badgeSpan = td.querySelector('span[style*="background"]');
+                    if (badgeSpan && !badgeSpan.classList.contains('cb-avatar-initial')) {
+                        const spanColor = parseCssColorToRgb(badgeSpan.style.color, null);
+                        const spanBg = parseCssColorToRgb(badgeSpan.style.backgroundColor || badgeSpan.style.background, null);
+                        const spanBorder = parseCssColorToRgb(badgeSpan.style.borderColor, null);
+                        if (spanColor) textColor = spanColor;
+                        if (spanBg) {
+                            badgeMetaMap[rowIdx + ':' + colIdx] = {
+                                bg: spanBg,
+                                border: spanBorder || spanBg,
+                                textColor: textColor || [15, 23, 42],
+                                text: txt
+                            };
+                        }
+                        fontStyle = 'bold';
+                    }
+
+                    if (!textColor) textColor = [15, 23, 42];
+                    if (!fillColor) fillColor = [255, 255, 255];
+
+                    rowData.push({
+                        content: txt,
+                        styles: {
+                            halign: halign,
+                            textColor: textColor,
+                            fillColor: fillColor,
+                            fontStyle: fontStyle
+                        }
+                    });
                 });
                 body.push(rowData);
             });
 
-            // 2. Extrai rodapé (tfoot) com totais se existir
             const foot = [];
             const tfoots = table.querySelectorAll('tfoot tr');
             tfoots.forEach(tr => {
                 const footRow = [];
+                let currentColIdx = 0;
                 tr.querySelectorAll('th, td').forEach(cell => {
-                    const txt = cell.innerText.replace(/\s+/g, ' ').trim();
+                    const txt = extractCleanCellText(cell, true);
                     const colspan = parseInt(cell.getAttribute('colspan') || '1', 10);
-                    if (colspan > 1) {
-                        footRow.push({ content: txt, colSpan: colspan, styles: { halign: 'right', fontStyle: 'bold' } });
-                    } else {
-                        footRow.push(txt);
-                    }
+                    const inlineAlign = (cell.style && cell.style.textAlign) ? cell.style.textAlign : '';
+                    const halign = inlineAlign || (colspan > 1 ? 'right' : (columnAlignments[currentColIdx] || 'center'));
+                    const textColor = parseCssColorToRgb(cell.style && cell.style.color ? cell.style.color : '', [15, 23, 42]);
+                    const fillColor = parseCssColorToRgb(cell.style && cell.style.backgroundColor ? cell.style.backgroundColor : (cell.style ? cell.style.background : ''), [248, 250, 252]);
+
+                    footRow.push({
+                        content: txt,
+                        colSpan: colspan,
+                        styles: {
+                            halign: halign,
+                            textColor: textColor,
+                            fillColor: fillColor,
+                            fontStyle: 'bold'
+                        }
+                    });
+                    currentColIdx += colspan;
                 });
                 if (footRow.length > 0) foot.push(footRow);
             });
 
-            // Resumo Gerencial de Métricas para o Cabeçalho do PDF
-            const kpiResumo = getExportKpiMetrics();
-
-            let pdfSubtitle = generatedAt + '   |   Total de registros: ' + body.length;
+            const kpiResumo = getExportKpiMetrics(tableId);
+            let pdfSubtitle = generatedAt + '   |   Total de registros na tabela: ' + body.length;
             if (kpiResumo) {
-                pdfSubtitle += '   |   Embarques: ' + kpiResumo.emb + '   |   Desembarques: ' + kpiResumo.des + '   |   Pax: ' + kpiResumo.pax;
+                pdfSubtitle += '   |   Embarques: ' + kpiResumo.emb + '   |   Desembarques: ' + kpiResumo.des + '   |   Total Pax: ' + kpiResumo.pax;
                 if (kpiResumo.mediaPax) {
-                    pdfSubtitle += '   |   Média Pax/Ônibus: ' + kpiResumo.mediaPax;
+                    pdfSubtitle += '   |   Média: ' + kpiResumo.mediaPax;
                 }
             }
+            pdfSubtitle = sanitizeTextForPDF(pdfSubtitle);
 
-            // MÉTODO 1: jsPDF + autoTable (Vetorizado, sem limite de canvas, paginação infinita e sem cortar colunas)
+            return {
+                titles,
+                titleText,
+                pdfSubtitle,
+                head,
+                body,
+                foot,
+                columnAlignments,
+                badgeMetaMap
+            };
+        }
+
+        function renderExtractedTableToJsPDF(doc, extracted, pageHeaderMetaMap) {
+            const columnStyles = {};
+            Object.keys(extracted.columnAlignments).forEach(idx => {
+                columnStyles[idx] = { halign: extracted.columnAlignments[idx] };
+            });
+
+            const headerMeta = {
+                titleText: extracted.titleText,
+                subDesc: extracted.titles.subDesc ? sanitizeTextForPDF(extracted.titles.subDesc) : '',
+                pdfSubtitle: extracted.pdfSubtitle
+            };
+
+            const currentPageBefore = doc.internal.getCurrentPageInfo().pageNumber;
+            pageHeaderMetaMap[currentPageBefore] = headerMeta;
+
+            doc.autoTable({
+                head: extracted.head,
+                body: extracted.body,
+                foot: extracted.foot.length > 0 ? extracted.foot : undefined,
+                showHead: 'firstPage',
+                showFoot: 'lastPage',
+                pageBreak: 'auto',
+                rowPageBreak: 'avoid',
+                startY: 64,
+                margin: { top: 28, left: 20, right: 20, bottom: 32 },
+                theme: 'grid',
+                styles: {
+                    font: 'helvetica',
+                    fontSize: 8,
+                    cellPadding: { top: 5.5, bottom: 5.5, left: 5, right: 5 },
+                    valign: 'middle',
+                    overflow: 'linebreak',
+                    lineColor: [180, 192, 208],
+                    lineWidth: 0.65
+                },
+                headStyles: {
+                    fillColor: [241, 245, 249],
+                    textColor: [51, 65, 85],
+                    fontStyle: 'bold',
+                    fontSize: 7.6,
+                    cellPadding: { top: 7, bottom: 7, left: 5, right: 5 },
+                    lineColor: [148, 163, 184],
+                    lineWidth: 0.8
+                },
+                footStyles: {
+                    fillColor: [241, 245, 249],
+                    textColor: [15, 23, 42],
+                    fontStyle: 'bold',
+                    fontSize: 8,
+                    cellPadding: { top: 7.5, bottom: 7.5, left: 5, right: 5 },
+                    lineColor: [100, 116, 139],
+                    lineWidth: 0.9
+                },
+                columnStyles: columnStyles,
+                willDrawCell: function(data) {
+                    if (data.section === 'body') {
+                        const key = data.row.index + ':' + data.column.index;
+                        const badge = extracted.badgeMetaMap[key];
+                        if (badge && badge.text) {
+                            // Limpa o texto padrão para desenhá-lo centralizado dentro da pílula em didDrawCell
+                            data.cell.text = [];
+                        }
+                    }
+                },
+                didDrawCell: function(data) {
+                    const pNum = doc.internal.getCurrentPageInfo().pageNumber;
+                    pageHeaderMetaMap[pNum] = headerMeta;
+
+                    if (data.section === 'body') {
+                        const key = data.row.index + ':' + data.column.index;
+                        const badge = extracted.badgeMetaMap[key];
+                        if (badge && badge.text) {
+                            doc.setFont('helvetica', 'bold');
+                            doc.setFontSize(7.4);
+                            const textWidth = doc.getTextWidth(badge.text);
+                            const pillW = Math.min(data.cell.width - 4, Math.max(34, textWidth + 12));
+                            const pillH = Math.min(data.cell.height - 4, 14);
+                            const pillX = (data.cell.styles.halign === 'center')
+                                ? (data.cell.x + (data.cell.width - pillW) / 2)
+                                : (data.cell.x + 5);
+                            const pillY = data.cell.y + (data.cell.height - pillH) / 2;
+
+                            doc.setFillColor(badge.bg[0], badge.bg[1], badge.bg[2]);
+                            doc.setDrawColor(badge.border[0], badge.border[1], badge.border[2]);
+                            doc.setLineWidth(0.6);
+                            doc.roundedRect(pillX, pillY, pillW, pillH, 3.5, 3.5, 'FD');
+
+                            doc.setTextColor(badge.textColor[0], badge.textColor[1], badge.textColor[2]);
+                            const textX = pillX + (pillW - textWidth) / 2;
+                            const textY = pillY + pillH / 2 + 2.5;
+                            doc.text(badge.text, textX, textY);
+
+                            // Restaura cores e espessura da grade padrão para as próximas células
+                            doc.setFillColor(255, 255, 255);
+                            doc.setDrawColor(180, 192, 208);
+                            doc.setLineWidth(0.65);
+                            doc.setTextColor(15, 23, 42);
+                        }
+                    }
+                },
+                didDrawPage: function() {
+                    const pNum = doc.internal.getCurrentPageInfo().pageNumber;
+                    pageHeaderMetaMap[pNum] = headerMeta;
+                }
+            });
+        }
+
+        function applyPdfHeadersAndFootersAllPages(doc, pageHeaderMetaMap, defaultMeta) {
+            const totalPages = doc.internal.getNumberOfPages();
+            const pageW = doc.internal.pageSize.getWidth();
+            const pageH = doc.internal.pageSize.getHeight();
+
+            for (let p = 1; p <= totalPages; p++) {
+                doc.setPage(p);
+                const meta = pageHeaderMetaMap[p] || defaultMeta;
+
+                // Cabeçalho do documento apenas na primeira página (igual ao CSV, com um único cabeçalho no topo)
+                if (p === 1) {
+                    doc.setFont('helvetica', 'bold');
+                    doc.setFontSize(12.5);
+                    doc.setTextColor(15, 23, 42);
+                    doc.text(meta.titleText, 20, 26);
+
+                    if (meta.subDesc) {
+                        doc.setFont('helvetica', 'normal');
+                        doc.setFontSize(8.2);
+                        doc.setTextColor(100, 116, 139);
+                        doc.text(meta.subDesc, 20, 39);
+
+                        doc.setFont('helvetica', 'bold');
+                        doc.setFontSize(8);
+                        doc.setTextColor(51, 65, 85);
+                        doc.text(meta.pdfSubtitle, 20, 51);
+                    } else {
+                        doc.setFont('helvetica', 'bold');
+                        doc.setFontSize(8.2);
+                        doc.setTextColor(51, 65, 85);
+                        doc.text(meta.pdfSubtitle, 20, 41);
+                    }
+
+                    doc.setDrawColor(180, 192, 208);
+                    doc.setLineWidth(0.7);
+                    doc.line(20, 56, pageW - 20, 56);
+                }
+
+                // Rodapé com numeração real (Página X de N) e aviso de continuação
+                if (p < totalPages) {
+                    doc.setFont('helvetica', 'italic');
+                    doc.setFontSize(7.8);
+                    doc.setTextColor(100, 116, 139);
+                    doc.text(sanitizeTextForPDF('Continua na próxima página...'), 20, pageH - 14);
+                }
+
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(8.2);
+                doc.setTextColor(71, 85, 105);
+                const pageLabel = sanitizeTextForPDF('Página ' + p + ' de ' + totalPages);
+                const labelW = doc.getTextWidth(pageLabel);
+                doc.text(pageLabel, pageW - 20 - labelW, pageH - 14);
+            }
+        }
+
+        function exportAllDashTablesToPDF(filename) {
+            const allMenus = document.querySelectorAll('.export-menu-box');
+            allMenus.forEach(m => m.style.display = 'none');
+
+            const tbl = document.getElementById('tbl-t1');
+            if (!tbl) return;
+
+            try {
+                if (typeof renderDashTablePagination === 'function') renderDashTablePagination('tbl-t1');
+            } catch (e) {}
+
+            const extracted = extractUnifiedTableDataForPDF(filename);
+            if (!extracted) return;
+
             if (window.jspdf && window.jspdf.jsPDF) {
                 try {
                     const { jsPDF } = window.jspdf;
@@ -6110,120 +6789,63 @@ try {
                         format: 'a4'
                     });
 
-                    // Define alinhamento individual de cada coluna
-                    const columnStyles = {};
-                    Object.keys(columnAlignments).forEach(idx => {
-                        columnStyles[idx] = { halign: columnAlignments[idx] };
-                    });
+                    const pageHeaderMetaMap = {};
+                    const firstDefaultMeta = {
+                        titleText: extracted.titleText,
+                        subDesc: extracted.titles.subDesc ? sanitizeTextForPDF(extracted.titles.subDesc) : '',
+                        pdfSubtitle: extracted.pdfSubtitle
+                    };
 
-                    // Cabeçalho do Documento
-                    doc.setFont('helvetica', 'bold');
-                    doc.setFontSize(13);
-                    doc.setTextColor(15, 23, 42);
-                    doc.text('Relatório contaBuzu — ' + titleText, 35, 32);
+                    renderExtractedTableToJsPDF(doc, extracted, pageHeaderMetaMap);
+                    applyPdfHeadersAndFootersAllPages(doc, pageHeaderMetaMap, firstDefaultMeta);
 
-                    doc.setFont('helvetica', 'normal');
-                    doc.setFontSize(8.5);
-                    doc.setTextColor(100, 116, 139);
-                    doc.text(pdfSubtitle, 35, 46);
-
-                    // Geração da Tabela com AutoTable
-                    doc.autoTable({
-                        head: head,
-                        body: body,
-                        foot: foot.length > 0 ? foot : undefined,
-                        footStyles: {
-                            fillColor: [241, 245, 249],
-                            textColor: [15, 23, 42],
-                            fontStyle: 'bold',
-                            fontSize: 8
-                        },
-                        startY: 55,
-                        theme: 'striped',
-                        styles: {
-                            font: 'helvetica',
-                            fontSize: 7.8,
-                            cellPadding: { top: 4, bottom: 4, left: 6, right: 6 },
-                            valign: 'middle',
-                            overflow: 'linebreak'
-                        },
-                        headStyles: {
-                            fillColor: [37, 99, 235],
-                            textColor: 255,
-                            fontStyle: 'bold',
-                            halign: 'center',
-                            fontSize: 8
-                        },
-                        alternateRowStyles: {
-                            fillColor: [248, 250, 252]
-                        },
-                        columnStyles: columnStyles,
-                        margin: { top: 55, left: 30, right: 30, bottom: 30 },
-                        didDrawPage: function(data) {
-                            const pageCount = doc.internal.getNumberOfPages();
-                            doc.setFontSize(8);
-                            doc.setTextColor(148, 163, 184);
-                            doc.text(
-                                'Página ' + data.pageNumber + ' de ' + pageCount,
-                                doc.internal.pageSize.getWidth() - 80,
-                                doc.internal.pageSize.getHeight() - 14
-                            );
-                        }
-                    });
-
-                    doc.save(filename + '.pdf');
+                    doc.save((filename || 'Relatorio_Contagens_contaBuzu') + '.pdf');
                     return;
                 } catch (err) {
-                    console.warn('Falha no jsPDF autoTable, aplicando fallback:', err);
+                    console.warn('Falha ao exportar tabela unificada via jsPDF:', err);
                 }
             }
 
-            // MÉTODO 2: Fallback com janela de impressão nativa do navegador (@page landscape)
+            // MÉTODO 2 (Fallback de impressão nativo com tabela única unificada e bordas de grade visíveis)
+            const clonePrint = tbl.cloneNode(true);
+            clonePrint.querySelectorAll('tr.dash-empty-filter-row').forEach(r => r.remove());
+            clonePrint.querySelectorAll('tr').forEach(r => {
+                r.removeAttribute('data-page-hidden');
+                r.removeAttribute('data-search-hidden');
+                r.style.display = 'table-row';
+            });
+            const sectionsHtml = `
+                <div>
+                    <h2>${extracted.titleText}</h2>
+                    ${extracted.titles.subDesc ? `<p class="desc">${extracted.titles.subDesc}</p>` : ''}
+                    <p class="sub">${extracted.pdfSubtitle}</p>
+                    ${clonePrint.outerHTML}
+                </div>
+            `;
+
             const printWin = window.open('', '_blank');
             if (printWin) {
-                let tableHtml = '<table style="width: 100%; border-collapse: collapse; font-size: 11px;">';
-                if (head.length > 0) {
-                    tableHtml += '<thead><tr style="background: #2563eb; color: #ffffff;">';
-                    head[0].forEach((h, i) => {
-                        const align = columnAlignments[i] || 'left';
-                        tableHtml += `<th style="border: 1px solid #cbd5e1; padding: 6px 8px; text-align: ${align};">${h}</th>`;
-                    });
-                    tableHtml += '</tr></thead>';
-                }
-                tableHtml += '<tbody>';
-                body.forEach(row => {
-                    tableHtml += '<tr>';
-                    row.forEach((cell, i) => {
-                        const align = columnAlignments[i] || 'left';
-                        tableHtml += `<td style="border: 1px solid #e2e8f0; padding: 5px 8px; text-align: ${align};">${cell}</td>`;
-                    });
-                    tableHtml += '</tr>';
-                });
-                tableHtml += '</tbody></table>';
-
                 printWin.document.write(`
                     <!DOCTYPE html>
                     <html>
                     <head>
                         <meta charset="utf-8">
-                        <title>${titleText}</title>
+                        <title>${filename || 'Relatorio Completo Dashboard contaBuzu'}</title>
                         <style>
                             @page { size: landscape; margin: 10mm; }
-                            body { font-family: Arial, sans-serif; margin: 0; padding: 15px; color: #0f172a; }
-                            h2 { text-align: center; color: #0f172a; margin: 0 0 4px; font-size: 16px; }
-                            p.sub { text-align: center; color: #64748b; font-size: 11px; margin: 0 0 16px; }
-                            table { width: 100%; border-collapse: collapse; }
+                            body { font-family: 'Plus Jakarta Sans', 'Inter', Arial, sans-serif; margin: 0; padding: 15px; color: #0f172a; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                            h2 { text-align: left; color: #0f172a; margin: 0 0 4px; font-size: 16px; }
+                            p.desc { text-align: left; color: #64748b; font-size: 11px; margin: 0 0 4px; }
+                            p.sub { text-align: left; color: #475569; font-size: 11px; margin: 0 0 14px; font-weight: 600; }
+                            table { width: 100%; border-collapse: collapse; font-size: 11px; page-break-inside: auto; border: 1px solid #94a3b8; }
                             thead { display: table-header-group; }
-                            tr { page-break-inside: avoid; }
-                            th, td { font-size: 10px; }
-                            th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-                            tr:nth-child(even) { background-color: #f8fafc; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                            tfoot { display: table-row-group; }
+                            tr { page-break-inside: avoid; page-break-after: auto; display: table-row !important; }
+                            th, td { border: 1px solid #94a3b8 !important; padding: 6px 8px !important; }
                         </style>
                     </head>
                     <body>
-                        <h2>Relatório contaBuzu — ${titleText}</h2>
-                        <p class="sub">${pdfSubtitle}</p>
-                        ${tableHtml}
+                        ${sectionsHtml}
                         <script>
                             window.onload = function() {
                                 window.print();
@@ -6235,6 +6857,91 @@ try {
                 printWin.document.close();
             }
         }
+        window.exportAllDashTablesToPDF = exportAllDashTablesToPDF;
+
+        function exportToPDF(tableId, filename) {
+            if (!tableId || tableId === 'all' || /^tbl-t[1-5]$/.test(String(tableId))) {
+                exportAllDashTablesToPDF(filename || 'Relatorio_Contagens_contaBuzu');
+                return;
+            }
+            const table = document.getElementById(tableId);
+            if (!table) return;
+
+            const extracted = extractTableDataForPDF(table, tableId, filename);
+
+            // MÉTODO 1: jsPDF + autoTable multi-página fiel ao layout da tabela do Dashboard com linhas de grade
+            if (window.jspdf && window.jspdf.jsPDF) {
+                try {
+                    const { jsPDF } = window.jspdf;
+                    const doc = new jsPDF({
+                        orientation: 'landscape',
+                        unit: 'pt',
+                        format: 'a4'
+                    });
+
+                    const pageHeaderMetaMap = {};
+                    const defaultMeta = {
+                        titleText: extracted.titleText,
+                        subDesc: extracted.titles.subDesc ? sanitizeTextForPDF(extracted.titles.subDesc) : '',
+                        pdfSubtitle: extracted.pdfSubtitle
+                    };
+
+                    renderExtractedTableToJsPDF(doc, extracted, pageHeaderMetaMap);
+                    applyPdfHeadersAndFootersAllPages(doc, pageHeaderMetaMap, defaultMeta);
+
+                    doc.save(filename + '.pdf');
+                    return;
+                } catch (err) {
+                    console.warn('Falha no jsPDF autoTable, aplicando fallback:', err);
+                }
+            }
+
+            // MÉTODO 2: Fallback com janela de impressão nativa do navegador (@page landscape) exibindo 100% das linhas e bordas
+            const clonePrint = table.cloneNode(true);
+            clonePrint.querySelectorAll('tr[data-search-hidden="true"], tr.dash-empty-filter-row').forEach(r => r.remove());
+            clonePrint.querySelectorAll('tr').forEach(r => {
+                r.removeAttribute('data-page-hidden');
+                r.style.display = 'table-row';
+            });
+
+            const printWin = window.open('', '_blank');
+            if (printWin) {
+                printWin.document.write(`
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="utf-8">
+                        <title>${extracted.titleText}</title>
+                        <style>
+                            @page { size: landscape; margin: 10mm; }
+                            body { font-family: 'Plus Jakarta Sans', 'Inter', Arial, sans-serif; margin: 0; padding: 15px; color: #0f172a; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                            h2 { text-align: left; color: #0f172a; margin: 0 0 4px; font-size: 16px; }
+                            p.desc { text-align: left; color: #64748b; font-size: 11px; margin: 0 0 4px; }
+                            p.sub { text-align: left; color: #475569; font-size: 11px; margin: 0 0 14px; font-weight: 600; }
+                            table { width: 100%; border-collapse: collapse; font-size: 11px; page-break-inside: auto; border: 1px solid #94a3b8; }
+                            thead { display: table-header-group; }
+                            tfoot { display: table-row-group; }
+                            tr { page-break-inside: avoid; page-break-after: auto; display: table-row !important; }
+                            th, td { border: 1px solid #94a3b8 !important; padding: 6px 8px !important; }
+                        </style>
+                    </head>
+                    <body>
+                        <h2>${extracted.titleText}</h2>
+                        ${extracted.titles.subDesc ? `<p class="desc">${extracted.titles.subDesc}</p>` : ''}
+                        <p class="sub">${extracted.pdfSubtitle}</p>
+                        ${clonePrint.outerHTML}
+                        <script>
+                            window.onload = function() {
+                                window.print();
+                            };
+                        <\/script>
+                    </body>
+                    </html>
+                `);
+                printWin.document.close();
+            }
+        }
+        window.exportToPDF = exportToPDF;
 
         // =============================================================================
         // MOTOR DE SELEÇÃO COM BUSCA E DIGITAÇÃO INTELIGENTE (CASE & ACCENT INSENSITIVE)
@@ -6744,14 +7451,6 @@ try {
 
             // Inicializar a paginação das tabelas do dashboard
             initDashTablesPagination();
-
-            // Restaurar modo de exibição (Ocupação % ou Média Pax / Ônibus)
-            try {
-                const savedMetricMode = localStorage.getItem('cb_dash_metric_mode');
-                if (savedMetricMode === 'media_pax') {
-                    setDashMetricMode('media_pax');
-                }
-            } catch (e) {}
 
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.has('data_inicio') || urlParams.has('data_fim') || urlParams.has('hora_inicio') || urlParams.has('hora_fim') || urlParams.has('idEmpresa') || urlParams.has('idLinha') || urlParams.has('idVeiculo') || urlParams.has('idLocal') || urlParams.has('tipoOperacao') || urlParams.has('idUsuario') || urlParams.get('tab') === 'historico') {

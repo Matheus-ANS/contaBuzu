@@ -810,8 +810,8 @@ mark.search-highlight {
 }
 
 .dashboard-header ~ * {
-    width: 94% !important;
-    max-width: 1400px !important;
+    width: 98% !important;
+    max-width: 1920px !important;
     margin-left: auto !important;
     margin-right: auto !important;
 }
@@ -4592,4 +4592,35 @@ body.modal-veiculos-open {
     background: #1e3a8a;
     color: #ffffff;
     box-shadow: 0 2px 6px rgba(30, 58, 138, 0.25);
+}
+
+/* Tabelas do Dashboard em largura total sem rolagem horizontal em telas de computador */
+@media (min-width: 769px) {
+    #user-tab-historico,
+    .dash-table-card {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+
+    .dash-table-scroll-wrap {
+        overflow-x: visible !important;
+        padding: 10px 12px 16px !important;
+    }
+
+    table.dash-fullfit-table {
+        width: 100% !important;
+        table-layout: auto !important;
+    }
+
+    table.dash-fullfit-table th,
+    table.dash-fullfit-table td {
+        padding: 10px 8px !important;
+        word-break: break-word;
+    }
+}
+
+@media (max-width: 768px) {
+    .dash-table-scroll-wrap {
+        overflow-x: auto !important;
+    }
 }
