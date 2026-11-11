@@ -2115,8 +2115,8 @@ foreach ($sistemas as $s) {
                     <input type="hidden" name="idVeiculo" id="veiculo-id">
                     <div class="form-group">
                         <label for="veiculo-placa" class="form-label">Nome / Placa do Veículo <span style="color: #ef4444;">*</span></label>
-                        <input type="text" name="placa" id="veiculo-placa" class="form-control" placeholder="AAA - 9X99 (ex: ABC - 1234 ou ABC - 1D23)" required maxlength="10" autocomplete="off" style="text-transform: uppercase; font-family: monospace; font-weight: 700; letter-spacing: 1px;">
-                        <small style="color: #64748b; font-size: 0.78rem;">Formato obrigatório: <strong>AAA - 9X99</strong> (letras, hífen, números ou Mercosul)</small>
+                        <input type="text" name="placa" id="veiculo-placa" class="form-control" placeholder="AAA-9X99" required maxlength="10" autocomplete="off" style="text-transform: uppercase; font-family: monospace; font-weight: 700; letter-spacing: 1px;">
+                        <small style="color: #64748b; font-size: 0.78rem;">Formato obrigatório: <strong>AAA-9X99</strong></small>
                     </div>
                     <div class="form-group">
                         <label for="veiculo-prefixo" class="form-label">Prefixo / Número de Ordem (Opcional)</label>
