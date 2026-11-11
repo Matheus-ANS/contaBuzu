@@ -4526,4 +4526,70 @@ html, body {
     #form-filtros-historico {
         margin-top: 12px !important;
     }
+
+    .dash-metric-mode-switch {
+        width: 100% !important;
+        justify-content: space-between !important;
+    }
+
+    .dash-mode-btn {
+        flex: 1 !important;
+        justify-content: center !important;
+        text-align: center !important;
+        font-size: 0.78rem !important;
+        padding: 8px 10px !important;
+    }
+}
+
+/* Trava de scroll da tela de fundo enquanto o modal de seleção de veículos estiver aberto */
+html.modal-veiculos-open,
+body.modal-veiculos-open {
+    overflow: hidden !important;
+    height: 100vh !important;
+    overscroll-behavior: none !important;
+}
+
+#modalSelecaoVeiculos,
+#modalSelecaoVeiculos #lista-veiculos-modal,
+#modalSelecaoVeiculos #lista-veiculos-selecionados-lateral {
+    overscroll-behavior: contain !important;
+}
+
+/* Seletor de Modo de Métrica (Ocupação % vs Média de Pessoas / Ônibus) no Dashboard */
+.dash-metric-mode-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #ffffff;
+    padding: 5px;
+    border-radius: 10px;
+    border: 1px solid #cbd5e1;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.dash-mode-btn {
+    background: transparent;
+    color: #475569;
+    border: none;
+    padding: 7px 12px;
+    border-radius: 7px;
+    font-weight: 700;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.dash-mode-btn:hover {
+    background: #f1f5f9;
+    color: #0f172a;
+}
+
+.dash-mode-btn.active {
+    background: #1e3a8a;
+    color: #ffffff;
+    box-shadow: 0 2px 6px rgba(30, 58, 138, 0.25);
 }

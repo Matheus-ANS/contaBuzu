@@ -738,11 +738,16 @@ if ($sessaoAtiva) {
 
 // Carregar empresas disponíveis para os filtros
 $empresasDisponiveis = [];
+$targetEmpTable = 'empresas';
+$empNomeExpr = "COALESCE(NULLIF(e.nome, ''), 'PLATAFORMA')";
 try {
-    $targetEmpTable = 'empresas';
     $checkEmpSingular = $pdo->query("SHOW TABLES LIKE 'empresa'");
     if ($checkEmpSingular && count($checkEmpSingular->fetchAll()) > 0) {
         $targetEmpTable = 'empresa';
+    }
+    $checkColNomeEmp = $pdo->query("SHOW COLUMNS FROM `$targetEmpTable` LIKE 'nomeEmpresa'");
+    if ($checkColNomeEmp && count($checkColNomeEmp->fetchAll()) > 0) {
+        $empNomeExpr = "COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'PLATAFORMA')";
     }
     $stmtEmp = $pdo->query("SELECT * FROM `$targetEmpTable` ORDER BY nome");
     if ($stmtEmp) $empresasDisponiveis = $stmtEmp->fetchAll();
@@ -823,7 +828,8 @@ try {
         $paramsHist[]   = $filtroLinha;
     }
     if ($filtroVeiculo > 0) {
-        $whereClauses[] = "c.idVeiculo = ?";
+        $whereClauses[] = "(c.idVeiculo = ? OR EXISTS (SELECT 1 FROM veiculoPesquisado vp_f WHERE vp_f.idPesquisa = c.idPesquisa AND vp_f.idVeiculo = ?))";
+        $paramsHist[]   = $filtroVeiculo;
         $paramsHist[]   = $filtroVeiculo;
     }
     if ($filtroLocal > 0) {
@@ -850,6 +856,30 @@ try {
 
     $whereSql = implode(" AND ", $whereClauses);
 
+    // Subquery única reutilizada nas consultas consolidadas (evita duplicação e respeita filtro de veículo)
+    $vpWhereFilter = ($filtroVeiculo > 0) ? "WHERE vp.idVeiculo = " . (int)$filtroVeiculo : "";
+    $subqueryCalcVp = "
+        SELECT 
+            vp.idPesquisa,
+            COUNT(DISTINCT vp.idVeiculoPesquisado) as qtdVeiculos,
+            SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
+        FROM veiculoPesquisado vp
+        LEFT JOIN (
+            SELECT 
+                idPesquisa,
+                idVeiculoPesquisado,
+                MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
+                SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
+            FROM contagem
+            GROUP BY idPesquisa, idVeiculoPesquisado
+        ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
+        $vpWhereFilter
+        GROUP BY vp.idPesquisa
+    ";
+    $vpExtraRowFilter = ($filtroVeiculo > 0)
+        ? " AND (vp.idVeiculo = " . (int)$filtroVeiculo . " OR (vp.idVeiculo IS NULL AND c.idVeiculo = " . (int)$filtroVeiculo . "))"
+        : "";
+
     $stmtHist = $pdo->prepare("
         SELECT c.*, c.idPesquisa as idContagem, c.viagem as sentido, c.condTempo as condicaoTempo,
                COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y %H:%i'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y %H:%i'), DATE_FORMAT(NOW(), '%d/%m/%Y %H:%i')) as dataInicioFormatada,
@@ -865,22 +895,7 @@ try {
         LEFT JOIN linha l ON c.idLinha = l.idLinha
         LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
         LEFT JOIN locais loc ON c.idLocal = loc.idLocal
-        LEFT JOIN (
-            SELECT 
-                vp.idPesquisa,
-                SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
-            FROM veiculoPesquisado vp
-            LEFT JOIN (
-                SELECT 
-                    idPesquisa,
-                    idVeiculoPesquisado,
-                    MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
-                    SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
-                FROM contagem
-                GROUP BY idPesquisa, idVeiculoPesquisado
-            ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
-            GROUP BY vp.idPesquisa
-        ) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
+        LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
         LEFT JOIN (
             SELECT idPesquisa, MAX(dataHora) as maxDataHora FROM contagem GROUP BY idPesquisa
         ) cnt_max ON c.idPesquisa = cnt_max.idPesquisa
@@ -946,7 +961,45 @@ try {
         }
     }
 
-    // --- CONSULTAS DAS 4 TABELAS DO DASHBOARD ---
+    if (!function_exists('cbFormatarMediaPax')) {
+        function cbFormatarMediaPax($pax, $qtdOnibus) {
+            if ((int)$qtdOnibus <= 0) return '0,0';
+            $media = (float)$pax / (int)$qtdOnibus;
+            return number_format($media, 1, ',', '.');
+        }
+    }
+
+    if (!function_exists('cbResumoTabelaConsolidada')) {
+        function cbResumoTabelaConsolidada($rows) {
+            $count = count($rows);
+            $viag = 0; $emb = 0; $des = 0; $pax = 0; $onibus = 0; $somaOcup = 0;
+            foreach ($rows as $r) {
+                $e = (int)$r['embarques'];
+                $d = (int)$r['desembarques'];
+                $oInf = isset($r['ocupacaoInformada']) ? (int)$r['ocupacaoInformada'] : 0;
+                $rowPax = ($e + $d > 0) ? ($e + $d) : $oInf;
+                $rowBus = isset($r['totalOnibus']) ? max(1, (int)$r['totalOnibus']) : (isset($r['totalSessoes']) ? max(1, (int)$r['totalSessoes']) : 1);
+                $emb += $e;
+                $des += $d;
+                $pax += $rowPax;
+                $onibus += $rowBus;
+                $viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : (isset($r['totalViagens']) ? (int)$r['totalViagens'] : 1);
+                $somaOcup += !empty($r['mediaPercentual']) ? (float)$r['mediaPercentual'] : cbCalcularOcupacao($r);
+            }
+            $medOcup = ($count > 0) ? round($somaOcup / $count, 1) : 0;
+            return [
+                'viag' => $viag,
+                'emb' => $emb,
+                'des' => $des,
+                'pax' => $pax,
+                'onibus' => $onibus,
+                'medOcup' => $medOcup,
+                'mediaPaxFmt' => cbFormatarMediaPax($pax, $onibus)
+            ];
+        }
+    }
+
+    // --- CONSULTAS DAS 5 TABELAS DO DASHBOARD ---
 
     // 1. Quantidade de passageiros por data / hora / linha / veículo (detalha todos os veículos contados)
     $dadosTabelaLinhaVeiculoDataHora = [];
@@ -969,11 +1022,11 @@ try {
                     DATE_FORMAT(c.dataInicio, '%H:%i'),
                     '00:00'
                 ) as horaFormatada,
-                COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'Plataforma') as empresaNome,
+                $empNomeExpr as empresaNome,
                 COALESCE(loc.local, 'Estação Lapa') as localNome,
                 COALESCE(NULLIF(l.numero, ''), CONCAT('Linha #', c.idLinha)) as linhaNumero,
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
-                COALESCE(NULLIF(v_vp.prefixo, 0), v_vp.placa, NULLIF(v_c.prefixo, 0), v_c.placa, 'S/ Veículo') as veiculoPrefixo,
+                COALESCE(NULLIF(v_vp.prefixo, 0), v_vp.placa, NULLIF(v.prefixo, 0), v.placa, 'S/ Veículo') as veiculoPrefixo,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
                 COALESCE(u.nome, u.login, CONCAT('Pesquisador #', c.idUsuario)) as pesquisadorNome,
                 CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
@@ -992,11 +1045,11 @@ try {
             FROM pesquisa c
             LEFT JOIN usuarios u ON c.idUsuario = u.idusuarios
             LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN veiculo v_c ON c.idVeiculo = v_c.idVeiculo
+            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
             LEFT JOIN veiculoPesquisado vp ON c.idPesquisa = vp.idPesquisa
             LEFT JOIN veiculo v_vp ON vp.idVeiculo = v_vp.idVeiculo
-            LEFT JOIN empresa e ON (c.idEmpresa = e.idEmpresa OR v_vp.idEmpresa = e.idEmpresa OR v_c.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa)
+            LEFT JOIN `$targetEmpTable` e ON (c.idEmpresa = e.idEmpresa OR v_vp.idEmpresa = e.idEmpresa OR v.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa)
             LEFT JOIN (
                 SELECT 
                     idPesquisa,
@@ -1010,7 +1063,7 @@ try {
                 (vp.idVeiculoPesquisado IS NOT NULL AND cnt_agg.idVeiculoPesquisado = vp.idVeiculoPesquisado)
                 OR (vp.idVeiculoPesquisado IS NULL AND cnt_agg.idPesquisa = c.idPesquisa)
             )
-            WHERE $whereSql
+            WHERE $whereSql $vpExtraRowFilter
             ORDER BY c.idPesquisa DESC, COALESCE(vp.idVeiculoPesquisado, 0) ASC
         ");
         $stmtT1->execute($paramsHist);
@@ -1021,7 +1074,7 @@ try {
             $e = (int)$rowT1['embarques'];
             $d = (int)$rowT1['desembarques'];
             $p = max($e, $d);
-            if ($p == 0 && ($e > 0 || $d > 0)) $p = $e + $d;
+            if ($p == 0 && !empty($rowT1['ocupacaoInformada'])) $p = (int)$rowT1['ocupacaoInformada'];
             $t1TotalEmbarques += $e;
             $t1TotalDesembarques += $d;
             $t1TotalPassageiros += $p;
@@ -1044,31 +1097,19 @@ try {
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
                 AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
-                COUNT(c.idPesquisa) as totalSessoes
+                COUNT(c.idPesquisa) as totalSessoes,
+                SUM(GREATEST(COALESCE(calc_vp.qtdVeiculos, 0), 1)) as totalOnibus,
+                MAX(DATE(COALESCE(c.dataInicio, cnt_max.maxDataHora, NOW()))) as dataOrd
             FROM pesquisa c
             LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN (
-                SELECT 
-                    vp.idPesquisa,
-                    SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
-                FROM veiculoPesquisado vp
-                LEFT JOIN (
-                    SELECT 
-                        idPesquisa,
-                        idVeiculoPesquisado,
-                        MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
-                        SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
-                    FROM contagem
-                    GROUP BY idPesquisa, idVeiculoPesquisado
-                ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
-                GROUP BY vp.idPesquisa
-            ) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
+            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
+            LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
             LEFT JOIN (
                 SELECT idPesquisa, MAX(dataHora) as maxDataHora FROM contagem GROUP BY idPesquisa
             ) cnt_max ON c.idPesquisa = cnt_max.idPesquisa
             WHERE $whereSql
             GROUP BY COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y'), DATE_FORMAT(NOW(), '%d/%m/%Y')), c.idLinha, l.numero, l.descricao, l.linha, COALESCE(NULLIF(c.viagem, ''), 'Ida')
-            ORDER BY DATE(COALESCE(c.dataInicio, cnt_max.maxDataHora, NOW())) DESC, embarques DESC
+            ORDER BY dataOrd DESC, embarques DESC
         ");
         $stmtT2->execute($paramsHist);
         $dadosTabelaTotalPorLinha = $stmtT2->fetchAll();
@@ -1087,26 +1128,13 @@ try {
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
                 AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
-                COUNT(c.idPesquisa) as totalSessoes
+                COUNT(c.idPesquisa) as totalSessoes,
+                SUM(GREATEST(COALESCE(calc_vp.qtdVeiculos, 0), 1)) as totalOnibus
             FROM pesquisa c
             LEFT JOIN locais loc ON c.idLocal = loc.idLocal
             LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN (
-                SELECT 
-                    vp.idPesquisa,
-                    SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
-                FROM veiculoPesquisado vp
-                LEFT JOIN (
-                    SELECT 
-                        idPesquisa,
-                        idVeiculoPesquisado,
-                        MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
-                        SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
-                    FROM contagem
-                    GROUP BY idPesquisa, idVeiculoPesquisado
-                ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
-                GROUP BY vp.idPesquisa
-            ) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
+            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
+            LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
             WHERE $whereSql
             GROUP BY c.idLocal, loc.local, loc.regiao, COALESCE(NULLIF(c.viagem, ''), 'Ida')
             ORDER BY embarques DESC
@@ -1121,35 +1149,21 @@ try {
         $stmtT4 = $pdo->prepare("
             SELECT 
                 COALESCE(e.idEmpresa, 1) as idEmpresa,
-                COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'PLATAFORMA') as nomeEmpresa,
+                $empNomeExpr as nomeEmpresa,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
                 AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
-                COUNT(DISTINCT c.idPesquisa) as totalSessoes
+                COUNT(DISTINCT c.idPesquisa) as totalSessoes,
+                SUM(GREATEST(COALESCE(calc_vp.qtdVeiculos, 0), 1)) as totalOnibus
             FROM pesquisa c
             LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN empresa e ON (c.idEmpresa = e.idEmpresa OR v.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa OR e.idEmpresa = 1)
-            LEFT JOIN (
-                SELECT 
-                    vp.idPesquisa,
-                    SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, 0)) as qtdTotal
-                FROM veiculoPesquisado vp
-                LEFT JOIN (
-                    SELECT 
-                        idPesquisa,
-                        idVeiculoPesquisado,
-                        MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
-                        SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
-                    FROM contagem
-                    GROUP BY idPesquisa, idVeiculoPesquisado
-                ) cnt ON vp.idVeiculoPesquisado = cnt.idVeiculoPesquisado
-                GROUP BY vp.idPesquisa
-            ) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
+            LEFT JOIN `$targetEmpTable` e ON (c.idEmpresa = e.idEmpresa OR v.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa OR e.idEmpresa = 1)
+            LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
             WHERE $whereSql
-            GROUP BY COALESCE(e.idEmpresa, 1), COALESCE(NULLIF(e.nome, ''), NULLIF(e.nomeEmpresa, ''), 'PLATAFORMA'), COALESCE(NULLIF(c.viagem, ''), 'Ida')
+            GROUP BY COALESCE(e.idEmpresa, 1), $empNomeExpr, COALESCE(NULLIF(c.viagem, ''), 'Ida')
             ORDER BY embarques DESC
         ");
         $stmtT4->execute($paramsHist);
@@ -1166,6 +1180,7 @@ try {
                     COALESCE(u.nome, CONCAT('Pesquisador #', c.idUsuario)) as pesquisadorNome,
                     COALESCE(u.cargo, 'Pesquisador') as pesquisadorCargo,
                     COUNT(DISTINCT c.idPesquisa) as totalViagens,
+                    COUNT(DISTINCT COALESCE(vp.idVeiculoPesquisado, CONCAT('p_', c.idPesquisa))) as totalOnibus,
                     SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
                         COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
                     ELSE 0 END) as embarques,
@@ -1178,6 +1193,8 @@ try {
                     ELSE NULL END) as mediaPercentual
                 FROM pesquisa c
                 LEFT JOIN usuarios u ON c.idUsuario = u.idusuarios
+                LEFT JOIN linha l ON c.idLinha = l.idLinha
+                LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
                 LEFT JOIN veiculoPesquisado vp ON c.idPesquisa = vp.idPesquisa
                 LEFT JOIN (
                     SELECT 
@@ -1191,7 +1208,7 @@ try {
                     (vp.idVeiculoPesquisado IS NOT NULL AND cnt_agg.idVeiculoPesquisado = vp.idVeiculoPesquisado)
                     OR (vp.idVeiculoPesquisado IS NULL AND cnt_agg.idPesquisa = c.idPesquisa)
                 )
-                WHERE $whereSql
+                WHERE $whereSql $vpExtraRowFilter
                 GROUP BY c.idUsuario, u.nome, u.cargo
                 ORDER BY totalPassageiros DESC, totalViagens DESC
             ");
@@ -1205,67 +1222,19 @@ try {
 $mediaOcupacaoVal = ($qtdPercentContagens > 0) ? round($somaOcupacaoPercent / $qtdPercentContagens, 1) : 0;
 $mediaOcupacaoFmt = number_format($mediaOcupacaoVal, 1, ',', '.') . '%';
 
-// --- RESUMO CONSOLIDADO DE MÉTRICAS POR TABELA DO DASHBOARD PARA OS CARDS DE KPI ---
-// T1: Passageiros por Data / Hora / Linha / Veículo
+// --- RESUMO CONSOLIDADO DE MÉTRICAS POR TABELA DO DASHBOARD PARA OS CARDS DE KPI E RODAPÉS ---
 $t1_viag = count($dadosTabelaLinhaVeiculoDataHora);
-$t1_emb = 0; $t1_des = 0; $t1_somaOcup = 0;
-foreach ($dadosTabelaLinhaVeiculoDataHora as $r) {
-    $t1_emb += (int)$r['embarques'];
-    $t1_des += (int)$r['desembarques'];
-    $t1_somaOcup += cbCalcularOcupacao($r);
-}
-$t1_medOcup = ($t1_viag > 0) ? round($t1_somaOcup / $t1_viag, 1) : 0;
-$t1_pax = $t1_emb + $t1_des;
+$t1_emb = $t1TotalEmbarques;
+$t1_des = $t1TotalDesembarques;
+$t1_pax = $t1TotalPassageiros;
+$t1_onibus = $t1TotalRegistros;
+$t1_medOcup = $t1MediaOcupacao;
+$t1_mediaPaxFmt = cbFormatarMediaPax($t1_pax, $t1_onibus);
 
-// T2: Total de passageiros por Linha
-$t2_count = count($dadosTabelaTotalPorLinha);
-$t2_viag = 0; $t2_emb = 0; $t2_des = 0; $t2_somaOcup = 0;
-foreach ($dadosTabelaTotalPorLinha as $r) {
-    $t2_emb += (int)$r['embarques'];
-    $t2_des += (int)$r['desembarques'];
-    $t2_viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : 1;
-    $t2_somaOcup += cbCalcularOcupacao($r);
-}
-$t2_medOcup = ($t2_count > 0) ? round($t2_somaOcup / $t2_count, 1) : 0;
-$t2_pax = $t2_emb + $t2_des;
-
-// T3: Embarques / Desembarques / Ocupação por Local
-$t3_count = count($dadosTabelaPorLocal);
-$t3_viag = 0; $t3_emb = 0; $t3_des = 0; $t3_somaOcup = 0;
-foreach ($dadosTabelaPorLocal as $r) {
-    $t3_emb += (int)$r['embarques'];
-    $t3_des += (int)$r['desembarques'];
-    $t3_viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : 1;
-    $t3_somaOcup += cbCalcularOcupacao($r);
-}
-$t3_medOcup = ($t3_count > 0) ? round($t3_somaOcup / $t3_count, 1) : 0;
-$t3_pax = $t3_emb + $t3_des;
-
-// T4: Embarques / Desembarques / Ocupação por Empresa / Cooperativa
-$t4_count = count($dadosTabelaPorEmpresa);
-$t4_viag = 0; $t4_emb = 0; $t4_des = 0; $t4_somaOcup = 0;
-foreach ($dadosTabelaPorEmpresa as $r) {
-    $t4_emb += (int)$r['embarques'];
-    $t4_des += (int)$r['desembarques'];
-    $t4_viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : 1;
-    $t4_somaOcup += cbCalcularOcupacao($r);
-}
-$t4_medOcup = ($t4_count > 0) ? round($t4_somaOcup / $t4_count, 1) : 0;
-$t4_pax = $t4_emb + $t4_des;
-
-// T5: Total de passageiros por Pesquisador / Usuário
-$t5_count = count($dadosTabelaPorPesquisador);
-$t5_viag = 0; $t5_emb = 0; $t5_des = 0; $t5_pax = 0; $t5_somaOcup = 0;
-foreach ($dadosTabelaPorPesquisador as $r) {
-    $e = (int)$r['embarques'];
-    $d = (int)$r['desembarques'];
-    $t5_emb += $e;
-    $t5_des += $d;
-    $t5_viag += (int)$r['totalViagens'];
-    $t5_pax += (int)$r['totalPassageiros'];
-    $t5_somaOcup += !empty($r['mediaPercentual']) ? (float)$r['mediaPercentual'] : cbCalcularOcupacao(['embarques' => $e, 'desembarques' => $d]);
-}
-$t5_medOcup = ($t5_count > 0) ? round($t5_somaOcup / $t5_count, 1) : 0;
+$t2_resumo = cbResumoTabelaConsolidada($dadosTabelaTotalPorLinha);
+$t3_resumo = cbResumoTabelaConsolidada($dadosTabelaPorLocal);
+$t4_resumo = cbResumoTabelaConsolidada($dadosTabelaPorEmpresa);
+$t5_resumo = cbResumoTabelaConsolidada($dadosTabelaPorPesquisador);
 
 $dashKpisMap = [
     'dash-all' => [
@@ -1274,6 +1243,8 @@ $dashKpisMap = [
         'desembarques' => number_format($totalDesembarquesPeriodo, 0, ',', '.'),
         'ocupacao' => $mediaOcupacaoFmt,
         'passageiros' => number_format($passageirosTotaisPeriodo, 0, ',', '.'),
+        'mediaPax' => $t1_mediaPaxFmt,
+        'qtdOnibus' => $t1_onibus,
         'contextLabel' => 'Consolidado Geral'
     ],
     'dash-t1' => [
@@ -1282,38 +1253,48 @@ $dashKpisMap = [
         'desembarques' => number_format($t1_des, 0, ',', '.'),
         'ocupacao' => number_format($t1_medOcup, 1, ',', '.') . '%',
         'passageiros' => number_format($t1_pax, 0, ',', '.'),
+        'mediaPax' => $t1_mediaPaxFmt,
+        'qtdOnibus' => $t1_onibus,
         'contextLabel' => 'Geral'
     ],
     'dash-t2' => [
-        'viagens' => number_format($t2_viag, 0, ',', '.'),
-        'embarques' => number_format($t2_emb, 0, ',', '.'),
-        'desembarques' => number_format($t2_des, 0, ',', '.'),
-        'ocupacao' => number_format($t2_medOcup, 1, ',', '.') . '%',
-        'passageiros' => number_format($t2_pax, 0, ',', '.'),
+        'viagens' => number_format($t2_resumo['viag'], 0, ',', '.'),
+        'embarques' => number_format($t2_resumo['emb'], 0, ',', '.'),
+        'desembarques' => number_format($t2_resumo['des'], 0, ',', '.'),
+        'ocupacao' => number_format($t2_resumo['medOcup'], 1, ',', '.') . '%',
+        'passageiros' => number_format($t2_resumo['pax'], 0, ',', '.'),
+        'mediaPax' => $t2_resumo['mediaPaxFmt'],
+        'qtdOnibus' => $t2_resumo['onibus'],
         'contextLabel' => 'Total por Linha'
     ],
     'dash-t3' => [
-        'viagens' => number_format($t3_viag, 0, ',', '.'),
-        'embarques' => number_format($t3_emb, 0, ',', '.'),
-        'desembarques' => number_format($t3_des, 0, ',', '.'),
-        'ocupacao' => number_format($t3_medOcup, 1, ',', '.') . '%',
-        'passageiros' => number_format($t3_pax, 0, ',', '.'),
+        'viagens' => number_format($t3_resumo['viag'], 0, ',', '.'),
+        'embarques' => number_format($t3_resumo['emb'], 0, ',', '.'),
+        'desembarques' => number_format($t3_resumo['des'], 0, ',', '.'),
+        'ocupacao' => number_format($t3_resumo['medOcup'], 1, ',', '.') . '%',
+        'passageiros' => number_format($t3_resumo['pax'], 0, ',', '.'),
+        'mediaPax' => $t3_resumo['mediaPaxFmt'],
+        'qtdOnibus' => $t3_resumo['onibus'],
         'contextLabel' => 'Por Local'
     ],
     'dash-t4' => [
-        'viagens' => number_format($t4_viag, 0, ',', '.'),
-        'embarques' => number_format($t4_emb, 0, ',', '.'),
-        'desembarques' => number_format($t4_des, 0, ',', '.'),
-        'ocupacao' => number_format($t4_medOcup, 1, ',', '.') . '%',
-        'passageiros' => number_format($t4_pax, 0, ',', '.'),
+        'viagens' => number_format($t4_resumo['viag'], 0, ',', '.'),
+        'embarques' => number_format($t4_resumo['emb'], 0, ',', '.'),
+        'desembarques' => number_format($t4_resumo['des'], 0, ',', '.'),
+        'ocupacao' => number_format($t4_resumo['medOcup'], 1, ',', '.') . '%',
+        'passageiros' => number_format($t4_resumo['pax'], 0, ',', '.'),
+        'mediaPax' => $t4_resumo['mediaPaxFmt'],
+        'qtdOnibus' => $t4_resumo['onibus'],
         'contextLabel' => 'Por Empresa / Cooperativa'
     ],
     'dash-t5' => [
-        'viagens' => number_format($t5_viag, 0, ',', '.'),
-        'embarques' => number_format($t5_emb, 0, ',', '.'),
-        'desembarques' => number_format($t5_des, 0, ',', '.'),
-        'ocupacao' => number_format($t5_medOcup, 1, ',', '.') . '%',
-        'passageiros' => number_format($t5_pax, 0, ',', '.'),
+        'viagens' => number_format($t5_resumo['viag'], 0, ',', '.'),
+        'embarques' => number_format($t5_resumo['emb'], 0, ',', '.'),
+        'desembarques' => number_format($t5_resumo['des'], 0, ',', '.'),
+        'ocupacao' => number_format($t5_resumo['medOcup'], 1, ',', '.') . '%',
+        'passageiros' => number_format($t5_resumo['pax'], 0, ',', '.'),
+        'mediaPax' => $t5_resumo['mediaPaxFmt'],
+        'qtdOnibus' => $t5_resumo['onibus'],
         'contextLabel' => 'Por Pesquisador / Usuário'
     ]
 ];
@@ -2531,9 +2512,22 @@ try {
                             </div>
                         </div>
 
+                        <!-- Card 5: Média Pessoas / Ônibus (exibido quando a opção Média Pax / Ônibus está ativa) -->
+                        <div id="card-kpi-media-pax" style="display: none; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 16px; padding: 18px 20px;">
+                            <div style="color: #1d4ed8; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
+                                <span>🚌 Média Pax / Ônibus</span>
+                            </div>
+                            <div id="kpi-media-pax-onibus" class="kpi-metric-val" style="color: #1e3a8a; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
+                                <?php echo $dashKpisMap['dash-t1']['mediaPax']; ?>
+                            </div>
+                            <div id="kpi-media-pax-sub" style="color: #1e40af; font-size: 0.78rem; font-weight: 600; opacity: 0.9;">
+                                Média em <?php echo number_format($dashKpisMap['dash-t1']['qtdOnibus'], 0, ',', '.'); ?> ônibus
+                            </div>
+                        </div>
+
                     </div>
 
-                    <!-- BARRA DE NAVEGAÇÃO DE TABELAS E BOTÃO COMPACTO DE EXPORTAÇÃO GERAL -->
+                    <!-- BARRA DE NAVEGAÇÃO DE TABELAS, OPÇÃO DE MÉDIA E BOTÃO COMPACTO DE EXPORTAÇÃO GERAL -->
                     <div class="dash-tables-header-bar" style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
                         <div class="dash-tables-nav" style="display: flex; gap: 8px; flex-wrap: wrap; background: #ffffff; padding: 8px 12px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.02); align-items: center;">
                             <button type="button" class="dash-nav-btn active" id="btn-dash-t1" onclick="switchDashTable('dash-t1', this)" style="background: #2563eb; color: #ffffff; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: none; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(37,99,235,0.25); white-space: nowrap;">
@@ -2555,26 +2549,38 @@ try {
                             <?php endif; ?>
                         </div>
 
-                        <!-- BOTÃO COMPACTO DE EXPORTAR RELATÓRIO GERAL (CONSOLIDADO) -->
-                        <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block;">
-                            <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                <span>Exportar Relatório</span>
-                                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                            </button>
-                            <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 210px; z-index: 100; padding: 6px 0;">
-                                <div style="padding: 6px 14px 4px; font-size: 0.72rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f1f5f9; margin-bottom: 4px;">
-                                    Relatório de Contagens
+                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                            <!-- Opção para alternar entre Ocupação (%) e Média de Pessoas por Ônibus nas tabelas -->
+                            <div class="dash-metric-mode-switch" role="group" aria-label="Modo de exibição da coluna de ocupação">
+                                <button type="button" class="dash-mode-btn active" id="btn-mode-ocupacao" onclick="setDashMetricMode('ocupacao')" title="Exibir porcentagem de ocupação">
+                                    📊 Ocupação (%)
+                                </button>
+                                <button type="button" class="dash-mode-btn" id="btn-mode-media-pax" onclick="setDashMetricMode('media_pax')" title="Exibir média de passageiros de acordo com a quantidade de ônibus filtrados">
+                                    👥 Média Pax / Ônibus
+                                </button>
+                            </div>
+
+                            <!-- BOTÃO COMPACTO DE EXPORTAR RELATÓRIO GERAL (CONSOLIDADO) -->
+                            <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block;">
+                                <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                    <span>Exportar Relatório</span>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                                </button>
+                                <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 210px; z-index: 100; padding: 6px 0;">
+                                    <div style="padding: 6px 14px 4px; font-size: 0.72rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f1f5f9; margin-bottom: 4px;">
+                                        Relatório de Contagens
+                                    </div>
+                                    <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'pdf', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                        📄 Exportar para PDF
+                                    </a>
+                                    <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'csv', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                        📊 Exportar para CSV
+                                    </a>
+                                    <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'doc', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                        📝 Exportar para DOC
+                                    </a>
                                 </div>
-                                <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'pdf', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
-                                    📄 Exportar para PDF
-                                </a>
-                                <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'csv', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
-                                    📊 Exportar para CSV
-                                </a>
-                                <a href="javascript:void(0)" onclick="exportTable(window.currentDashActiveTable || 'tbl-t1', 'doc', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
-                                    📝 Exportar para DOC
-                                </a>
                             </div>
                         </div>
                     </div>
@@ -2603,7 +2609,7 @@ try {
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
                                         <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                        <th class="col-metric-ocup-header" data-ocup-label="Ocupação (%)" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                         <?php if ($canViewAllContagens): ?>
                                             <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
                                         <?php endif; ?>
@@ -2617,8 +2623,9 @@ try {
                                             $emb = (int)$row['embarques'];
                                             $des = (int)$row['desembarques'];
                                             $pax = max($emb, $des);
-                                            if ($pax == 0 && ($emb > 0 || $des > 0)) $pax = $emb + $des;
+                                            if ($pax == 0 && !empty($row['ocupacaoInformada'])) $pax = (int)$row['ocupacaoInformada'];
                                             $ocup = cbCalcularOcupacao($row);
+                                            $mediaPaxRowStr = number_format($pax, 1, ',', '.') . ' pax';
                                         ?>
                                             <tr style="border-bottom: 1px solid #f1f5f9;">
                                                 <td style="padding: 12px 10px; text-align: center; font-weight: 600; color: #475569; white-space: nowrap;">
@@ -2656,7 +2663,7 @@ try {
                                                 <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; white-space: nowrap; background: rgba(37,99,235,0.03);">
                                                     <?php echo number_format($pax, 0, ',', '.'); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.92rem; color: #0f172a; white-space: nowrap;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="1 ônibus neste registro" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.92rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                                 <?php if ($canViewAllContagens): ?>
@@ -2677,7 +2684,7 @@ try {
                                 <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
                                     <tr>
                                         <td colspan="7" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            <span>📊 TOTAL GERAL (<?php echo number_format($t1TotalRegistros, 0, ',', '.'); ?> veículos auditados):</span>
+                                            <span>📊 TOTAL GERAL (<?php echo number_format($t1TotalRegistros, 0, ',', '.'); ?> ônibus auditados):</span>
                                         </td>
                                         <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
                                             <?php echo number_format($t1TotalEmbarques, 0, ',', '.'); ?>
@@ -2688,7 +2695,7 @@ try {
                                         <td style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
                                             <?php echo number_format($t1TotalPassageiros, 0, ',', '.'); ?>
                                         </td>
-                                        <td style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.95rem;">
+                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t1_mediaPaxFmt . ' pax/ôn.'); ?>" title="Média de pessoas por ônibus nos filtros selecionados" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
                                             —
                                         </td>
                                         <?php if ($canViewAllContagens): ?>
@@ -2721,7 +2728,7 @@ try {
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                        <th class="col-metric-ocup-header" data-ocup-label="Ocupação (%)" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2731,7 +2738,11 @@ try {
                                         <?php foreach ($dadosTabelaTotalPorLinha as $row): 
                                             $emb = (int)$row['embarques'];
                                             $des = (int)$row['desembarques'];
+                                            $ocupInf = isset($row['ocupacaoInformada']) ? (int)$row['ocupacaoInformada'] : 0;
+                                            $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
+                                            $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
                                             $ocup = cbCalcularOcupacao($row);
+                                            $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
                                         ?>
                                             <tr style="border-bottom: 1px solid #f1f5f9;">
                                                 <td style="padding: 12px 10px; text-align: center; font-weight: 600; color: #475569;">
@@ -2751,13 +2762,31 @@ try {
                                                 <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
                                                     <?php echo number_format($des, 0, ',', '.'); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
                                     <?php endif; ?>
                                 </tbody>
+                                <?php if (!empty($dadosTabelaTotalPorLinha)): ?>
+                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
+                                    <tr>
+                                        <td colspan="3" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            📊 TOTAL GERAL (<?php echo number_format($t2_resumo['onibus'], 0, ',', '.'); ?> ônibus):
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                            <?php echo number_format($t2_resumo['emb'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                            <?php echo number_format($t2_resumo['des'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t2_resumo['mediaPaxFmt'] . ' pax/ôn.'); ?>" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
+                                            —
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                                <?php endif; ?>
                             </table>
                         </div>
                         <div id="tbl-t2-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
@@ -2781,7 +2810,7 @@ try {
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                        <th class="col-metric-ocup-header" data-ocup-label="Ocupação (%)" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2791,7 +2820,11 @@ try {
                                         <?php foreach ($dadosTabelaPorLocal as $row): 
                                             $emb = (int)$row['embarques'];
                                             $des = (int)$row['desembarques'];
+                                            $ocupInf = isset($row['ocupacaoInformada']) ? (int)$row['ocupacaoInformada'] : 0;
+                                            $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
+                                            $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
                                             $ocup = cbCalcularOcupacao($row);
+                                            $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
                                         ?>
                                             <tr style="border-bottom: 1px solid #f1f5f9;">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
@@ -2808,13 +2841,31 @@ try {
                                                 <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
                                                     <?php echo number_format($des, 0, ',', '.'); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
                                     <?php endif; ?>
                                 </tbody>
+                                <?php if (!empty($dadosTabelaPorLocal)): ?>
+                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
+                                    <tr>
+                                        <td colspan="2" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            📊 TOTAL GERAL (<?php echo number_format($t3_resumo['onibus'], 0, ',', '.'); ?> ônibus):
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                            <?php echo number_format($t3_resumo['emb'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                            <?php echo number_format($t3_resumo['des'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t3_resumo['mediaPaxFmt'] . ' pax/ôn.'); ?>" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
+                                            —
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                                <?php endif; ?>
                             </table>
                         </div>
                         <div id="tbl-t3-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
@@ -2838,7 +2889,7 @@ try {
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
+                                        <th class="col-metric-ocup-header" data-ocup-label="Ocupação (%)" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2848,7 +2899,11 @@ try {
                                         <?php foreach ($dadosTabelaPorEmpresa as $row): 
                                             $emb = (int)$row['embarques'];
                                             $des = (int)$row['desembarques'];
+                                            $ocupInf = isset($row['ocupacaoInformada']) ? (int)$row['ocupacaoInformada'] : 0;
+                                            $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
+                                            $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
                                             $ocup = cbCalcularOcupacao($row);
+                                            $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
                                         ?>
                                             <tr style="border-bottom: 1px solid #f1f5f9;">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
@@ -2865,13 +2920,31 @@ try {
                                                 <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
                                                     <?php echo number_format($des, 0, ',', '.'); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
                                     <?php endif; ?>
                                 </tbody>
+                                <?php if (!empty($dadosTabelaPorEmpresa)): ?>
+                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
+                                    <tr>
+                                        <td colspan="2" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            📊 TOTAL GERAL (<?php echo number_format($t4_resumo['onibus'], 0, ',', '.'); ?> ônibus):
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                            <?php echo number_format($t4_resumo['emb'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                            <?php echo number_format($t4_resumo['des'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t4_resumo['mediaPaxFmt'] . ' pax/ôn.'); ?>" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
+                                            —
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                                <?php endif; ?>
                             </table>
                         </div>
                         <div id="tbl-t4-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
@@ -2898,7 +2971,7 @@ try {
                                         <th style="padding: 12px 10px; text-align: right;">Embarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
                                         <th style="padding: 12px 10px; text-align: right;">Total Passageiros</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Média Ocupação</th>
+                                        <th class="col-metric-ocup-header" data-ocup-label="Média Ocupação" data-media-label="Média Pax / Ônibus" style="padding: 12px 10px; text-align: center;">Média Ocupação</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -2910,7 +2983,9 @@ try {
                                             $des = (int)$row['desembarques'];
                                             $totPax = (int)$row['totalPassageiros'];
                                             $viag = (int)$row['totalViagens'];
+                                            $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
                                             $medOcup = !empty($row['mediaPercentual']) ? round((float)$row['mediaPercentual']) : cbCalcularOcupacao(['embarques' => $emb, 'desembarques' => $des]);
+                                            $mediaPaxRowStr = cbFormatarMediaPax($totPax, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
                                         ?>
                                             <tr style="border-bottom: 1px solid #f1f5f9;">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
@@ -2938,13 +3013,37 @@ try {
                                                 <td style="padding: 12px 10px; text-align: right; font-weight: 800; font-size: 0.95rem; color: #7c3aed;">
                                                     <?php echo number_format($totPax, 0, ',', '.'); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; color: #2563eb;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $medOcup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; color: #2563eb; white-space: nowrap;">
                                                     <?php echo $medOcup; ?>%
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
                                     <?php endif; ?>
                                 </tbody>
+                                <?php if (!empty($dadosTabelaPorPesquisador)): ?>
+                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
+                                    <tr>
+                                        <td colspan="2" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            📊 TOTAL GERAL (<?php echo number_format($t5_resumo['onibus'], 0, ',', '.'); ?> ônibus):
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: center; color: #0f172a; font-size: 0.95rem;">
+                                            <?php echo number_format($t5_resumo['viag'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
+                                            <?php echo number_format($t5_resumo['emb'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
+                                            <?php echo number_format($t5_resumo['des'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td style="padding: 14px 10px; text-align: right; color: #7c3aed; font-size: 1rem; background: #faf5ff;">
+                                            <?php echo number_format($t5_resumo['pax'], 0, ',', '.'); ?>
+                                        </td>
+                                        <td class="col-metric-ocup-foot" data-ocup="—" data-media="<?php echo htmlspecialchars($t5_resumo['mediaPaxFmt'] . ' pax/ôn.'); ?>" style="padding: 14px 10px; text-align: center; color: #64748b; font-size: 0.92rem; white-space: nowrap;">
+                                            —
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                                <?php endif; ?>
                             </table>
                         </div>
                         <div id="tbl-t5-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
@@ -2975,7 +3074,7 @@ try {
                         </div>
                         <div>
                             <div style="font-size: 1.05rem; font-weight: 700; color: #0f172a;">Pesquisar Veículos</div>
-                            <div style="font-size: 0.8rem; color: #64748b;">Marque quantos veículos desejar para a contagem</div>
+                            <div style="font-size: 0.8rem; color: #64748b;">Clique em um veículo para salvar automaticamente na fila</div>
                         </div>
                     </div>
                     <button type="button" onclick="closeModalVeiculos()" style="background: none; border: none; font-size: 1.6rem; color: #94a3b8; cursor: pointer; padding: 4px; line-height: 1;">&times;</button>
@@ -3004,7 +3103,7 @@ try {
                     <div id="aviso-veiculos-digite" style="text-align: center; padding: 45px 15px; color: #64748b; font-size: 0.92rem;">
                         <div style="font-size: 2.5rem; margin-bottom: 10px; opacity: 0.85;">🔍</div>
                         <div style="font-weight: 700; color: #1e293b; font-size: 1rem; margin-bottom: 4px;">Digite os números do prefixo</div>
-                        <p style="margin: 0; font-size: 0.82rem; color: #94a3b8;">Digite os números do prefixo para pesquisar o veículo.</p>
+                        <p style="margin: 0; font-size: 0.82rem; color: #94a3b8;">Digite os números do prefixo para pesquisar e clicar no veículo.</p>
                     </div>
 
                     <?php foreach ($veiculosDisponiveis as $v): ?>
@@ -3020,8 +3119,7 @@ try {
                              data-placa="<?php echo $plStr; ?>" 
                              data-prefixo-digitos="<?php echo $digitosPrefixo; ?>" 
                              data-search="<?php echo $digitosPrefixo; ?>" 
-                             onclick="selecionarVeiculoCandidato(this)"
-                             ondblclick="salvarVeiculoItemDireto(this)"
+                             onclick="adicionarESalvarVeiculoModal(this)"
                              style="display: none; align-items: center; justify-content: space-between; padding: 10px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px; cursor: pointer; transition: all 0.15s; background: #ffffff; user-select: none;">
                             <div style="display: flex; align-items: center; gap: 12px;">
                                 <input type="radio" name="radio_veiculo_candidato" class="radio-veiculo-modal" value="<?php echo $v['idVeiculo']; ?>" data-prefixo="<?php echo $pStr; ?>" data-placa="<?php echo $plStr; ?>" style="width: 19px; height: 19px; accent-color: #2563eb; cursor: pointer;">
@@ -3038,16 +3136,8 @@ try {
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span class="badge-veiculo-checked" style="display: none; font-size: 0.75rem; font-weight: 700; color: #16a34a; background: #dcfce7; padding: 4px 9px; border-radius: 6px; border: 1px solid #bbf7d0;">
-                                    ✓ Na Fila
+                                    ✓ Salvo
                                 </span>
-                                <button type="button" 
-                                        class="btn-salvar-item-modal" 
-                                        onclick="event.stopPropagation(); salvarVeiculoItemDireto(this);" 
-                                        style="padding: 5px 12px; background: #eff6ff; color: #2563eb; border: 1.5px solid #bfdbfe; border-radius: 7px; font-weight: 700; font-size: 0.8rem; cursor: pointer; transition: all 0.15s;"
-                                        onmouseover="this.style.background='#2563eb'; this.style.color='#ffffff';"
-                                        onmouseout="this.style.background='#eff6ff'; this.style.color='#2563eb';">
-                                    Salvar
-                                </button>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -3059,24 +3149,15 @@ try {
                 <!-- Rodapé do Modal Principal -->
                 <div style="padding: 14px 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: #f8fafc; flex-wrap: wrap; gap: 10px;">
                     <div id="info-veiculo-escolhido" style="font-size: 0.85rem; color: #64748b; font-weight: 600;">
-                        Digite apenas os números do prefixo no campo de busca acima
+                        Escolha um veículo acima para salvar automaticamente na fila
                     </div>
-                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                        <button type="button" onclick="cancelarSalvarVeiculosModal()" style="padding: 9px 16px; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
-                            Cancelar
-                        </button>
-                        <button type="button" id="btn-registrar-veiculo-modal" onclick="registrarVeiculoEscolhidoModal()" style="padding: 9px 18px; background: #2563eb; color: #ffffff; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,0.3); transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                                <line x1="12" y1="5" x2="12" y2="19"></line>
-                                <line x1="5" y1="12" x2="19" y2="12"></line>
-                            </svg>
-                            <span>Salvar Veículo</span>
-                        </button>
-                    </div>
+                    <button type="button" onclick="closeModalVeiculos()" style="padding: 9px 18px; background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; border-radius: 8px; font-weight: 700; cursor: pointer; transition: all 0.2s;" onmouseover="this.style.background='#e2e8f0';" onmouseout="this.style.background='#f1f5f9';">
+                        Cancelar
+                    </button>
                 </div>
             </div>
 
-            <!-- JANELA 2: JANELA EXTERNA AO LADO DO MODAL COM OS VEÍCULOS REGISTRADOS -->
+            <!-- JANELA 2: JANELA EXTERNA AO LADO DO MODAL COM OS VEÍCULOS SALVOS -->
             <div id="janela-externa-veiculos-selecionados" style="width: 320px; max-height: 85vh; background: #ffffff; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; overflow: hidden; border: 1.5px solid #bfdbfe; flex-shrink: 0;">
                 
                 <!-- Cabeçalho da Janela Externa -->
@@ -3084,72 +3165,28 @@ try {
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span style="font-size: 1.25rem;">📋</span>
                         <div>
-                            <div style="font-weight: 800; font-size: 0.94rem; color: #1e3a8a;">Veículos Registrados</div>
-                            <div style="font-size: 0.74rem; color: #3b82f6;">Conferência antes de salvar</div>
+                            <div style="font-weight: 800; font-size: 0.94rem; color: #1e3a8a;">Veículos na Fila</div>
+                            <div style="font-size: 0.74rem; color: #16a34a; font-weight: 700;">Salvos automaticamente ao escolher</div>
                         </div>
                     </div>
                     <span id="badge-lateral-qtd" style="background: #2563eb; color: #ffffff; padding: 3px 9px; border-radius: 9999px; font-size: 0.78rem; font-weight: 800; box-shadow: 0 1px 3px rgba(37,99,235,0.3);">0</span>
                 </div>
 
                 <!-- Lista dos Veículos Registrados na Janela Externa -->
-                <div id="lista-veiculos-selecionados-lateral" style="padding: 12px 14px; overflow-y: auto; flex: 1; max-height: 290px; display: flex; flex-direction: column; gap: 8px; background: #f8fafc;">
+                <div id="lista-veiculos-selecionados-lateral" style="padding: 12px 14px; overflow-y: auto; flex: 1; max-height: 360px; display: flex; flex-direction: column; gap: 8px; background: #f8fafc;">
                     <div id="vazio-lateral-hint" style="text-align: center; padding: 35px 15px; color: #94a3b8; font-size: 0.84rem;">
                         <div style="font-size: 2.2rem; margin-bottom: 8px; opacity: 0.6;">📋</div>
-                        <strong style="color: #64748b;">Nenhum veículo registrado</strong>
+                        <strong style="color: #64748b;">Nenhum veículo na fila</strong>
                         <p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">
-                            Pesquise o veículo e clique em "Salvar Veículo" para adicioná-lo à fila aqui.
+                            Pesquise e clique no veículo ao lado para salvá-lo automaticamente aqui.
                         </p>
-                    </div>
-                </div>
-
-                <!-- ÁREA DE CONFIRMAÇÃO: LOGO ABAIXO DOS VEÍCULOS REGISTRADOS -->
-                <div id="box-confirmar-salvar-veiculos" style="padding: 14px 16px; background: #ffffff; border-top: 1.5px solid #bfdbfe; box-shadow: 0 -4px 12px rgba(0,0,0,0.03);">
-                    <div style="text-align: center; margin-bottom: 10px;">
-                        <div style="font-size: 0.88rem; font-weight: 800; color: #1e3a8a; display: flex; align-items: center; justify-content: center; gap: 6px;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color: #2563eb;">
-                                <circle cx="12" cy="12" r="10"></circle>
-                                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
-                                <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                            </svg>
-                            <span>Deseja salvar os veículos registrados?</span>
-                        </div>
-                        <div id="subtitulo-confirmar-salvar" style="font-size: 0.74rem; color: #64748b; margin-top: 3px;">
-                            Confirme para gravar os veículos ou cancele o registro
-                        </div>
-                    </div>
-
-                    <div style="display: flex; gap: 8px;">
-                        <button type="button" 
-                                onclick="cancelarSalvarVeiculosModal()" 
-                                id="btn-cancelar-salvar-modal" 
-                                style="flex: 1; padding: 10px 8px; background: #fef2f2; color: #dc2626; border: 1.5px solid #fecaca; border-radius: 9px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; transition: all 0.2s;" 
-                                onmouseover="this.style.background='#fee2e2'; this.style.borderColor='#f87171';" 
-                                onmouseout="this.style.background='#fef2f2'; this.style.borderColor='#fecaca';">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                <line x1="18" y1="6" x2="6" y2="18"></line>
-                                <line x1="6" y1="6" x2="18" y2="18"></line>
-                            </svg>
-                            <span>Não, Cancelar</span>
-                        </button>
-
-                        <button type="button" 
-                                onclick="salvarVeiculosRegistradosModal()" 
-                                id="btn-confirmar-salvar-modal" 
-                                style="flex: 1.2; padding: 10px 8px; background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); color: #ffffff; border: none; border-radius: 9px; font-weight: 800; font-size: 0.84rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; box-shadow: 0 2px 6px rgba(22,163,74,0.3); transition: all 0.2s;" 
-                                onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 4px 10px rgba(22,163,74,0.4)';" 
-                                onmouseout="this.style.transform='none'; this.style.boxShadow='0 2px 6px rgba(22,163,74,0.3)';">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                                <polyline points="20 6 9 17 4 12"></polyline>
-                            </svg>
-                            <span>Sim, Salvar</span>
-                        </button>
                     </div>
                 </div>
 
                 <!-- Rodapé da Janela Externa -->
                 <div style="padding: 10px 16px; border-top: 1px solid #e2e8f0; background: #f8fafc; display: flex; justify-content: space-between; align-items: center;">
-                    <button type="button" onclick="limparFilaVeiculosTempModal()" style="background: none; border: none; color: #dc2626; font-size: 0.76rem; font-weight: 700; cursor: pointer; text-decoration: underline;">Limpar Fila</button>
-                    <span id="txt-modal-veiculos-selecionados" style="font-size: 0.76rem; font-weight: 700; color: #2563eb;">0 registrado(s)</span>
+                    <button type="button" onclick="desmarcarTodosVeiculosModal(true)" style="background: none; border: none; color: #dc2626; font-size: 0.76rem; font-weight: 700; cursor: pointer; text-decoration: underline;">Limpar Fila</button>
+                    <span id="txt-modal-veiculos-selecionados" style="font-size: 0.76rem; font-weight: 700; color: #2563eb;">0 salvo(s)</span>
                 </div>
             </div>
 
@@ -4442,21 +4479,37 @@ try {
         }
 
         var veiculoCandidatoSelecionado = null;
-        var veiculosTempModal = []; // Fila temporária no modal - só salva no banco/estado quando usuário confirma
+
+        function aplicarAlteracaoVeiculos(toastMsg) {
+            renderVeiculosChips();
+            atualizarInputsVeiculos();
+            atualizarPainelLateralSelecionados();
+            atualizarContadorModal();
+            sincronizarStatusVeiculosModal();
+
+            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
+                persistirVeiculosSessaoAtiva();
+            }
+            if (typeof atualizarBotaoIniciar === 'function') {
+                atualizarBotaoIniciar();
+            }
+            if (toastMsg) {
+                showToastNotification(toastMsg, 2200);
+            }
+        }
 
         function openModalVeiculos() {
             var modal = document.getElementById('modalSelecaoVeiculos');
             if (modal) {
                 modal.classList.add('active');
                 modal.style.display = 'flex';
+                document.documentElement.classList.add('modal-veiculos-open');
+                document.body.classList.add('modal-veiculos-open');
                 veiculoCandidatoSelecionado = null;
-
-                // Inicializa a fila temporária com cópia dos veículos já salvos
-                veiculosTempModal = JSON.parse(JSON.stringify(veiculosSelecionadosState || []));
 
                 var info = document.getElementById('info-veiculo-escolhido');
                 if (info) {
-                    info.innerHTML = 'Digite os números do prefixo no campo acima';
+                    info.innerHTML = 'Escolha um veículo acima para salvar automaticamente na fila';
                 }
                 var inputBusca = document.getElementById('inputBuscaVeiculoModal');
                 if (inputBusca) {
@@ -4470,17 +4523,12 @@ try {
                             if (e.key === 'Enter') {
                                 e.preventDefault();
                                 if (veiculoCandidatoSelecionado && veiculoCandidatoSelecionado.id) {
-                                    adicionarVeiculoNaFilaTemp(veiculoCandidatoSelecionado);
+                                    adicionarESalvarVeiculoModal(veiculoCandidatoSelecionado);
                                     return;
                                 }
                                 var primeiroVisivel = document.querySelector('#lista-veiculos-modal .item-veiculo-modal:not([style*="display: none"])');
                                 if (primeiroVisivel) {
-                                    var cand = {
-                                        id: primeiroVisivel.getAttribute('data-id'),
-                                        prefixo: primeiroVisivel.getAttribute('data-prefixo'),
-                                        placa: primeiroVisivel.getAttribute('data-placa')
-                                    };
-                                    adicionarVeiculoNaFilaTemp(cand);
+                                    adicionarESalvarVeiculoModal(primeiroVisivel);
                                 } else {
                                     var termoDigitos = (inputBusca.value || '').replace(/\D/g, '');
                                     if (!termoDigitos) {
@@ -4496,12 +4544,9 @@ try {
                                     var idxAtual = visiveis.findIndex(function(it) {
                                         return veiculoCandidatoSelecionado && String(it.getAttribute('data-id')) === String(veiculoCandidatoSelecionado.id);
                                     });
-                                    var novoIdx = 0;
-                                    if (e.key === 'ArrowDown') {
-                                        novoIdx = (idxAtual + 1) % visiveis.length;
-                                    } else {
-                                        novoIdx = (idxAtual - 1 + visiveis.length) % visiveis.length;
-                                    }
+                                    var novoIdx = (e.key === 'ArrowDown')
+                                        ? (idxAtual + 1) % visiveis.length
+                                        : (idxAtual - 1 + visiveis.length) % visiveis.length;
                                     selecionarVeiculoCandidato(visiveis[novoIdx]);
                                     visiveis[novoIdx].scrollIntoView({ block: 'nearest' });
                                 }
@@ -4521,6 +4566,8 @@ try {
                 modal.classList.remove('active');
                 modal.style.display = 'none';
             }
+            document.documentElement.classList.remove('modal-veiculos-open');
+            document.body.classList.remove('modal-veiculos-open');
         }
 
         // Filtra os veículos no modal utilizando EXCLUSIVAMENTE os números do prefixo
@@ -4539,14 +4586,13 @@ try {
                 if (avisoNenhum) avisoNenhum.style.display = 'none';
                 veiculoCandidatoSelecionado = null;
                 var infoV = document.getElementById('info-veiculo-escolhido');
-                if (infoV) infoV.innerHTML = 'Digite os números do prefixo no campo de busca acima';
+                if (infoV) infoV.innerHTML = 'Escolha um veículo acima para salvar automaticamente na fila';
                 return;
             }
 
             if (avisoDigite) avisoDigite.style.display = 'none';
 
             var visiveis = 0;
-            var tNum = parseInt(termoDigitos, 10);
             var itensCorrespondentes = [];
 
             items.forEach(function(item) {
@@ -4555,20 +4601,14 @@ try {
                 var pNum = parseInt(prefDigitos, 10);
 
                 var score = 999999;
-                // 1. Igualdade exata nos números do prefixo
                 if (prefDigitos === termoDigitos) {
                     score = 0;
-                }
-                // 2. Prefixo começa com os números digitados (ex: digitou 10 -> prefixo 1001, 1023...)
-                else if (prefDigitos.indexOf(termoDigitos) === 0) {
+                } else if (prefDigitos.indexOf(termoDigitos) === 0) {
                     score = 10 + (prefDigitos.length - termoDigitos.length);
-                }
-                // 3. Prefixo contém os números digitados em outra posição
-                else if (prefDigitos.indexOf(termoDigitos) > 0) {
+                } else if (prefDigitos.indexOf(termoDigitos) > 0) {
                     score = 100 + prefDigitos.indexOf(termoDigitos);
                 }
 
-                // O veículo SÓ é exibido se contiver os números do prefixo pesquisado
                 if (score < 999999) {
                     itensCorrespondentes.push({
                         elem: item,
@@ -4580,7 +4620,6 @@ try {
                 }
             });
 
-            // Ordena os itens pelos números de prefixo mais próximos e depois em ordem numérica
             itensCorrespondentes.sort(function(a, b) {
                 if (a.score !== b.score) return a.score - b.score;
                 return a.pNum - b.pNum;
@@ -4610,7 +4649,6 @@ try {
                 }
             }
 
-            // Seleciona automaticamente o veículo de prefixo mais próximo para salvar diretamente ao apertar Enter
             if (primeiroVisivel) {
                 selecionarVeiculoCandidato(primeiroVisivel);
             }
@@ -4635,10 +4673,9 @@ try {
                 placa: placa
             };
 
-            // Remove destaque de seleção dos outros itens que não estão na fila
             document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal').forEach(function(item) {
                 var itemId = String(item.getAttribute('data-id'));
-                var estaNaFila = veiculosTempModal.some(function(v) { return String(v.id) === itemId; });
+                var estaNaFila = veiculosSelecionadosState.some(function(v) { return String(v.id) === itemId; });
                 if (!estaNaFila) {
                     item.style.borderColor = '#e2e8f0';
                     item.style.background = '#ffffff';
@@ -4651,165 +4688,49 @@ try {
             }
             elem.style.borderColor = '#2563eb';
             elem.style.background = '#eff6ff';
-
-            var numFmt = formatarNumeroVeiculo(prefixo);
-            var info = document.getElementById('info-veiculo-escolhido');
-            if (info) {
-                info.innerHTML = 'Veículo selecionado: <strong style="color: #1e3a8a;">' + escapeHtml(numFmt) + '</strong>' + (placa ? ' (' + escapeHtml(placa) + ')' : '') + '. Clique em <strong>Salvar Veículo</strong>.';
-            }
         }
 
-        function registrarVeiculoEscolhidoModal() {
-            if (!veiculoCandidatoSelecionado || !veiculoCandidatoSelecionado.id) {
-                var checkedRadio = document.querySelector('#lista-veiculos-modal .radio-veiculo-modal:checked');
-                if (checkedRadio) {
-                    veiculoCandidatoSelecionado = {
-                        id: checkedRadio.value,
-                        prefixo: checkedRadio.getAttribute('data-prefixo') || checkedRadio.value,
-                        placa: checkedRadio.getAttribute('data-placa') || ''
-                    };
-                } else {
-                    alert('Por favor, digite os números do prefixo do veículo antes de salvar.');
-                    return;
+        // Escolhe e já salva automaticamente na fila lateral e no estado ativo
+        function adicionarESalvarVeiculoModal(elemOrObj) {
+            if (!elemOrObj) return;
+            var veiculo = (elemOrObj.getAttribute)
+                ? {
+                    id: elemOrObj.getAttribute('data-id'),
+                    prefixo: elemOrObj.getAttribute('data-prefixo'),
+                    placa: elemOrObj.getAttribute('data-placa') || ''
                 }
-            }
-            adicionarVeiculoNaFilaTemp(veiculoCandidatoSelecionado);
-        }
+                : elemOrObj;
 
-        // Salva diretamente o item clicado para os veículos registrados
-        function salvarVeiculoItemDireto(btnOrElem) {
-            if (!btnOrElem) return;
-            var item = (btnOrElem.classList && btnOrElem.classList.contains('item-veiculo-modal')) ? btnOrElem : btnOrElem.closest('.item-veiculo-modal');
-            if (!item) return;
-            var cand = {
-                id: item.getAttribute('data-id'),
-                prefixo: item.getAttribute('data-prefixo'),
-                placa: item.getAttribute('data-placa')
-            };
-            adicionarVeiculoNaFilaTemp(cand);
-        }
-
-        // Adiciona à fila de conferência no modal SEM salvar no banco/sessão
-        function adicionarVeiculoNaFilaTemp(veiculo) {
             if (!veiculo || !veiculo.id) return;
             var numFmt = formatarNumeroVeiculo(veiculo.prefixo);
 
-            // Verificar se o veículo já está na fila temporária
-            var jaExiste = veiculosTempModal.some(function(v) {
+            var jaExiste = veiculosSelecionadosState.some(function(v) {
                 return String(v.id) === String(veiculo.id);
             });
 
             if (jaExiste) {
-                showToastNotification('⚠️ O veículo ' + numFmt + ' já está registrado na fila!', 2500);
+                showToastNotification('⚠️ O veículo ' + numFmt + ' já está salvo na fila!', 2200);
                 return;
             }
 
-            // Registra na fila temporária (NÃO salva na contagem ainda)
-            veiculosTempModal.push({
+            veiculosSelecionadosState.push({
                 id: String(veiculo.id),
                 prefixo: String(veiculo.prefixo),
                 placa: String(veiculo.placa || '')
             });
 
-            // Atualiza a visualização da fila
-            atualizarPainelLateralSelecionados();
-            atualizarContadorModal();
-            sincronizarStatusVeiculosModal();
+            aplicarAlteracaoVeiculos('✓ Veículo ' + numFmt + ' salvo na fila!');
 
-            // Notifica e chama a atenção para o botão de confirmação "Sim, Salvar" no quadrado de veículos registrados
-            showToastNotification('✓ Veículo ' + numFmt + ' adicionado à fila! Clique em "Sim, Salvar" ao lado.', 2800);
-            destacarBoxConfirmacao();
-
-            // Limpa o termo de busca para a próxima pesquisa
             var inputBusca = document.getElementById('inputBuscaVeiculoModal');
             if (inputBusca) {
                 inputBusca.value = '';
                 filtrarVeiculosModal('');
-                setTimeout(function() { inputBusca.focus(); }, 100);
+                setTimeout(function() { inputBusca.focus(); }, 80);
             }
             veiculoCandidatoSelecionado = null;
             var info = document.getElementById('info-veiculo-escolhido');
             if (info) {
-                info.innerHTML = 'Veículo <strong style="color: #1e3a8a;">' + escapeHtml(numFmt) + '</strong> adicionado à fila. Salve em "Sim, Salvar" ou pesquise mais.';
-            }
-        }
-
-        // Destaca suavemente a caixa de confirmação abaixo dos veículos registrados
-        function destacarBoxConfirmacao() {
-            var box = document.getElementById('box-confirmar-salvar-veiculos');
-            if (box) {
-                box.style.transition = 'all 0.3s ease';
-                box.style.background = '#eff6ff';
-                box.style.borderTopColor = '#2563eb';
-                box.style.transform = 'scale(1.02)';
-                setTimeout(function() {
-                    box.style.background = '#ffffff';
-                    box.style.borderTopColor = '#bfdbfe';
-                    box.style.transform = 'scale(1)';
-                }, 500);
-            }
-        }
-
-        // CONFIRMAÇÃO: Salva os veículos registrados de forma definitiva (apenas quando clica em 'Sim, Salvar')
-        function salvarVeiculosRegistradosModal() {
-            if (veiculosTempModal.length === 0) {
-                if (!confirm('Nenhum veículo está registrado na fila. Deseja realmente salvar a contagem sem nenhum veículo informado?')) {
-                    return;
-                }
-            }
-
-            // EFETIVA O SALVAMENTO OFICIAL: transfere da fila temporária para o estado ativo
-            veiculosSelecionadosState = JSON.parse(JSON.stringify(veiculosTempModal));
-
-            // Atualiza os chips e inputs na tela principal
-            renderVeiculosChips();
-            atualizarInputsVeiculos();
-
-            // Se for sessão de contagem em andamento, persiste no banco de dados via AJAX
-            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
-                persistirVeiculosSessaoAtiva();
-            }
-
-            if (typeof atualizarBotaoIniciar === 'function') {
-                atualizarBotaoIniciar();
-            }
-
-            closeModalVeiculos();
-            showToastNotification('✓ ' + veiculosSelecionadosState.length + ' veículo(s) salvo(s) com sucesso!', 3000);
-        }
-
-        // CANCELAMENTO: Descarta as adições sem salvar
-        function cancelarSalvarVeiculosModal() {
-            var houveAlteracao = JSON.stringify(veiculosTempModal) !== JSON.stringify(veiculosSelecionadosState);
-            if (houveAlteracao) {
-                if (!confirm('Deseja realmente cancelar? Os veículos registrados nesta janela que ainda não foram salvos serão descartados.')) {
-                    return;
-                }
-            }
-            veiculosTempModal = JSON.parse(JSON.stringify(veiculosSelecionadosState));
-            closeModalVeiculos();
-            showToastNotification('Operação cancelada. Nenhuma alteração foi salva.', 2500);
-        }
-
-        // Remove um veículo da fila temporária antes de salvar
-        function removerVeiculoTempModal(id) {
-            veiculosTempModal = veiculosTempModal.filter(function(v) {
-                return String(v.id) !== String(id);
-            });
-            atualizarPainelLateralSelecionados();
-            atualizarContadorModal();
-            sincronizarStatusVeiculosModal();
-        }
-
-        // Limpa todos os veículos da fila temporária
-        function limparFilaVeiculosTempModal() {
-            if (veiculosTempModal.length === 0) return;
-            if (confirm('Deseja limpar todos os veículos registrados da lista?')) {
-                veiculosTempModal = [];
-                atualizarPainelLateralSelecionados();
-                atualizarContadorModal();
-                sincronizarStatusVeiculosModal();
-                showToastNotification('Fila temporária limpa.', 2000);
+                info.innerHTML = '✓ <strong style="color: #15803d;">' + escapeHtml(numFmt) + '</strong> salvo! Continue escolhendo ou clique em Cancelar para sair.';
             }
         }
 
@@ -4837,26 +4758,19 @@ try {
         }
 
         function sincronizarStatusVeiculosModal() {
-            var idsTemp = veiculosTempModal.map(function(v) { return String(v.id); });
+            var idsSalvos = veiculosSelecionadosState.map(function(v) { return String(v.id); });
             document.querySelectorAll('#lista-veiculos-modal .item-veiculo-modal').forEach(function(item) {
                 var id = String(item.getAttribute('data-id'));
                 var badge = item.querySelector('.badge-veiculo-checked');
                 var radio = item.querySelector('.radio-veiculo-modal');
-                var btnSalvar = item.querySelector('.btn-salvar-item-modal');
-                if (idsTemp.indexOf(id) !== -1) {
+                if (idsSalvos.indexOf(id) !== -1) {
                     if (badge) badge.style.display = 'inline-block';
-                    if (btnSalvar) btnSalvar.style.display = 'none';
-                    if (radio) {
-                        radio.checked = true;
-                    }
+                    if (radio) radio.checked = true;
                     item.style.borderColor = '#86efac';
                     item.style.background = '#f0fdf4';
                 } else {
                     if (badge) badge.style.display = 'none';
-                    if (btnSalvar) btnSalvar.style.display = 'inline-flex';
-                    if (radio) {
-                        radio.checked = false;
-                    }
+                    if (radio) radio.checked = false;
                     item.style.borderColor = '#e2e8f0';
                     item.style.background = '#ffffff';
                 }
@@ -4866,42 +4780,31 @@ try {
         function atualizarContadorModal() {
             var txt = document.getElementById('txt-modal-veiculos-selecionados');
             if (txt) {
-                txt.textContent = veiculosTempModal.length + ' registrado(s)';
+                txt.textContent = veiculosSelecionadosState.length + ' salvo(s)';
             }
             var badgeLateral = document.getElementById('badge-lateral-qtd');
             if (badgeLateral) {
-                badgeLateral.textContent = veiculosTempModal.length;
-            }
-            var subtitulo = document.getElementById('subtitulo-confirmar-salvar');
-            var btnSim = document.getElementById('btn-confirmar-salvar-modal');
-            if (subtitulo && btnSim) {
-                if (veiculosTempModal.length > 0) {
-                    subtitulo.innerHTML = '<strong>' + veiculosTempModal.length + ' veículo(s)</strong> pronto(s) para salvar';
-                    btnSim.style.opacity = '1';
-                } else {
-                    subtitulo.textContent = 'Pesquise e registre os veículos antes de salvar';
-                    btnSim.style.opacity = '0.7';
-                }
+                badgeLateral.textContent = veiculosSelecionadosState.length;
             }
         }
 
         function atualizarPainelLateralSelecionados() {
             var container = document.getElementById('lista-veiculos-selecionados-lateral');
             var badgeQtd = document.getElementById('badge-lateral-qtd');
-            if (badgeQtd) badgeQtd.textContent = veiculosTempModal.length;
+            if (badgeQtd) badgeQtd.textContent = veiculosSelecionadosState.length;
             if (!container) return;
 
-            if (veiculosTempModal.length === 0) {
+            if (veiculosSelecionadosState.length === 0) {
                 container.innerHTML = '<div id="vazio-lateral-hint" style="text-align: center; padding: 35px 15px; color: #94a3b8; font-size: 0.84rem;">' +
                     '<div style="font-size: 2.2rem; margin-bottom: 8px; opacity: 0.6;">📋</div>' +
-                    '<strong style="color: #64748b;">Nenhum veículo registrado</strong>' +
-                    '<p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">Pesquise o veículo e clique em "Salvar Veículo" para adicioná-lo à fila aqui.</p>' +
+                    '<strong style="color: #64748b;">Nenhum veículo na fila</strong>' +
+                    '<p style="margin: 6px 0 0; font-size: 0.78rem; color: #94a3b8; line-height: 1.4;">Pesquise e clique no veículo ao lado para salvá-lo automaticamente aqui.</p>' +
                     '</div>';
                 return;
             }
 
             var html = '';
-            veiculosTempModal.forEach(function(v) {
+            veiculosSelecionadosState.forEach(function(v) {
                 var id = v.id;
                 var prefixo = v.prefixo || id;
                 var numFmt = formatarNumeroVeiculo(prefixo);
@@ -4917,28 +4820,20 @@ try {
                 }
                 html += '    </div>';
                 html += '  </div>';
-                html += '  <button type="button" onclick="removerVeiculoTempModal(\'' + escapeHtml(id) + '\')" title="Remover da fila" style="background: none; border: none; color: #94a3b8; font-size: 1.3rem; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: 4px; transition: color 0.15s;" onmouseover="this.style.color=\'#dc2626\'" onmouseout="this.style.color=\'#94a3b8\'">&times;</button>';
+                html += '  <button type="button" onclick="removerVeiculoSelecionado(\'' + escapeHtml(id) + '\')" title="Remover da fila" style="background: none; border: none; color: #94a3b8; font-size: 1.3rem; cursor: pointer; padding: 2px 6px; line-height: 1; border-radius: 4px; transition: color 0.15s;" onmouseover="this.style.color=\'#dc2626\'" onmouseout="this.style.color=\'#94a3b8\'">&times;</button>';
                 html += '</div>';
             });
 
             container.innerHTML = html;
         }
 
-        function desmarcarTodosVeiculosModal() {
+        function desmarcarTodosVeiculosModal(pedirConfirmacao) {
+            if (veiculosSelecionadosState.length === 0) return;
+            if (pedirConfirmacao && !confirm('Deseja limpar todos os veículos salvos da fila?')) {
+                return;
+            }
             veiculosSelecionadosState = [];
-            veiculosTempModal = [];
-            renderVeiculosChips();
-            atualizarInputsVeiculos();
-            atualizarPainelLateralSelecionados();
-            atualizarContadorModal();
-            sincronizarStatusVeiculosModal();
-            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
-                persistirVeiculosSessaoAtiva();
-            }
-            if (typeof atualizarBotaoIniciar === 'function') {
-                atualizarBotaoIniciar();
-            }
-            showToastNotification('Lista de veículos selecionados limpa.', 2000);
+            aplicarAlteracaoVeiculos('Lista de veículos limpa.');
         }
 
         // Abre o modal para gerenciar os veículos selecionados da sessão ativa
@@ -5380,37 +5275,7 @@ try {
             veiculosSelecionadosState = veiculosSelecionadosState.filter(function(v) {
                 return String(v.id) !== String(id);
             });
-            veiculosTempModal = JSON.parse(JSON.stringify(veiculosSelecionadosState));
-            renderVeiculosChips();
-            atualizarInputsVeiculos();
-            atualizarPainelLateralSelecionados();
-            atualizarContadorModal();
-            sincronizarStatusVeiculosModal();
-            if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
-                persistirVeiculosSessaoAtiva();
-            }
-            if (typeof atualizarBotaoIniciar === 'function') {
-                atualizarBotaoIniciar();
-            }
-        }
-
-        function limparVeiculosSalvosMain() {
-            if (confirm('Deseja remover todos os veículos selecionados desta contagem?')) {
-                veiculosSelecionadosState = [];
-                veiculosTempModal = [];
-                renderVeiculosChips();
-                atualizarInputsVeiculos();
-                atualizarPainelLateralSelecionados();
-                atualizarContadorModal();
-                sincronizarStatusVeiculosModal();
-                if (typeof activeContagemId !== 'undefined' && activeContagemId > 0) {
-                    persistirVeiculosSessaoAtiva();
-                }
-                if (typeof atualizarBotaoIniciar === 'function') {
-                    atualizarBotaoIniciar();
-                }
-                showToastNotification('Veículos removidos.', 2000);
-            }
+            aplicarAlteracaoVeiculos();
         }
 
         function renderVeiculosChips() {
@@ -5614,16 +5479,33 @@ try {
             }
         }
 
-        // Fechar modal ao clicar fora ou com a tecla ESC
+        // Fechar modal ao clicar fora / ESC e bloquear scroll da tela de fundo enquanto modal estiver aberto
         document.addEventListener('DOMContentLoaded', function() {
             var modalV = document.getElementById('modalSelecaoVeiculos');
             if (modalV) {
                 modalV.addEventListener('click', function(e) {
-                    if (e.target === modalV) {
+                    if (e.target === modalV || e.target.parentElement === modalV) {
                         closeModalVeiculos();
                     }
                 });
+                modalV.addEventListener('wheel', function(e) {
+                    var scrollableBox = e.target.closest('#lista-veiculos-modal, #lista-veiculos-selecionados-lateral');
+                    if (!scrollableBox) {
+                        e.preventDefault();
+                        return;
+                    }
+                    var atTop = scrollableBox.scrollTop <= 0 && e.deltaY < 0;
+                    var atBottom = scrollableBox.scrollTop + scrollableBox.clientHeight >= scrollableBox.scrollHeight - 1 && e.deltaY > 0;
+                    if (atTop || atBottom) {
+                        e.preventDefault();
+                    }
+                }, { passive: false });
             }
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape' && modalV && modalV.classList.contains('active')) {
+                    closeModalVeiculos();
+                }
+            });
             if (typeof inicializarBrowserOnibusPainel === 'function') {
                 inicializarBrowserOnibusPainel();
             }
@@ -5828,6 +5710,38 @@ try {
         }
 
         const dashKpisByTable = <?php echo json_encode($dashKpisMap, JSON_UNESCAPED_UNICODE); ?>;
+        window.currentDashMetricMode = 'ocupacao';
+
+        function setDashMetricMode(mode) {
+            const isMedia = (mode === 'media_pax');
+            window.currentDashMetricMode = isMedia ? 'media_pax' : 'ocupacao';
+            try { localStorage.setItem('cb_dash_metric_mode', window.currentDashMetricMode); } catch (e) {}
+
+            const btnOcup = document.getElementById('btn-mode-ocupacao');
+            const btnMedia = document.getElementById('btn-mode-media-pax');
+            if (btnOcup) btnOcup.classList.toggle('active', !isMedia);
+            if (btnMedia) btnMedia.classList.toggle('active', isMedia);
+
+            const cardMedia = document.getElementById('card-kpi-media-pax');
+            if (cardMedia) cardMedia.style.display = isMedia ? 'block' : 'none';
+
+            document.querySelectorAll('.col-metric-ocup-header').forEach(th => {
+                th.textContent = isMedia
+                    ? (th.getAttribute('data-media-label') || 'Média Pax / Ônibus')
+                    : (th.getAttribute('data-ocup-label') || 'Ocupação (%)');
+            });
+
+            document.querySelectorAll('.col-metric-ocup-cell').forEach(td => {
+                td.textContent = isMedia ? (td.getAttribute('data-media') || '0,0') : (td.getAttribute('data-ocup') || '0%');
+                td.style.color = isMedia ? '#1d4ed8' : '';
+            });
+
+            document.querySelectorAll('.col-metric-ocup-foot').forEach(td => {
+                td.textContent = isMedia ? (td.getAttribute('data-media') || '0,0 pax/ôn.') : (td.getAttribute('data-ocup') || '—');
+                td.style.color = isMedia ? '#1e3a8a' : '#64748b';
+                td.style.background = isMedia ? '#eff6ff' : '';
+            });
+        }
 
         function updateDashKpiCards(targetId) {
             if (!dashKpisByTable) return;
@@ -5838,8 +5752,8 @@ try {
                 { id: 'kpi-total-viagens', val: data.viagens },
                 { id: 'kpi-total-embarques', val: data.embarques },
                 { id: 'kpi-total-desembarques', val: data.desembarques },
-                { id: 'kpi-media-ocupacao', val: data.ocupacao },
-                { id: 'kpi-total-passageiros', val: data.passageiros }
+                { id: 'kpi-total-passageiros', val: data.passageiros },
+                { id: 'kpi-media-pax-onibus', val: data.mediaPax || '0,0' }
             ];
 
             fields.forEach(f => {
@@ -5854,6 +5768,12 @@ try {
                     }, 120);
                 }
             });
+
+            const mediaSub = document.getElementById('kpi-media-pax-sub');
+            if (mediaSub) {
+                const qtdBus = data.qtdOnibus || 0;
+                mediaSub.innerText = 'Média em ' + qtdBus.toLocaleString('pt-BR') + ' ônibus';
+            }
 
             const subLabels = document.querySelectorAll('.kpi-sub-label');
             subLabels.forEach(el => {
@@ -6011,6 +5931,20 @@ try {
             document.body.removeChild(link);
         }
 
+        function getExportKpiMetrics() {
+            const kpiEmb = document.getElementById('kpi-total-embarques');
+            const kpiDes = document.getElementById('kpi-total-desembarques');
+            const kpiPax = document.getElementById('kpi-total-passageiros');
+            const kpiMed = document.getElementById('kpi-media-pax-onibus');
+            if (!kpiEmb || !kpiDes || !kpiPax) return null;
+            return {
+                emb: kpiEmb.innerText.trim(),
+                des: kpiDes.innerText.trim(),
+                pax: kpiPax.innerText.trim(),
+                mediaPax: (window.currentDashMetricMode === 'media_pax' && kpiMed) ? kpiMed.innerText.trim() : null
+            };
+        }
+
         function exportToDOC(tableId, filename) {
             const table = document.getElementById(tableId);
             if (!table) return;
@@ -6039,19 +5973,17 @@ try {
             });
 
             const headerTitle = filename.replace(/_/g, ' ');
-
-            // Resumo de métricas gerenciais para o documento
-            const kpiEmbDoc  = document.getElementById('kpi-total-embarques');
-            const kpiDesDoc  = document.getElementById('kpi-total-desembarques');
-            const kpiPaxDoc  = document.getElementById('kpi-total-passageiros');
-            const kpiOcupDoc = document.getElementById('kpi-media-ocupacao');
             const totalLinhas = clone.querySelectorAll('tbody tr').length;
+            const kpiResumo = getExportKpiMetrics();
 
             let resumoKpiHtml = `<p style="text-align: center; color: #475569; font-size: 10pt; margin: 0 0 15px;">
                 <strong>Gerado em:</strong> ${new Date().toLocaleString('pt-BR')} &nbsp;|&nbsp; 
                 <strong>Total Registros:</strong> ${totalLinhas}`;
-            if (kpiEmbDoc && kpiDesDoc && kpiPaxDoc) {
-                resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Embarques:</strong> ${kpiEmbDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Desembarques:</strong> ${kpiDesDoc.innerText.trim()} &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiPaxDoc.innerText.trim()}`;
+            if (kpiResumo) {
+                resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Embarques:</strong> ${kpiResumo.emb} &nbsp;|&nbsp; <strong>Desembarques:</strong> ${kpiResumo.des} &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiResumo.pax}`;
+                if (kpiResumo.mediaPax) {
+                    resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Média Pax/Ônibus:</strong> ${kpiResumo.mediaPax}`;
+                }
             }
             resumoKpiHtml += `</p>`;
 
@@ -6158,14 +6090,14 @@ try {
             });
 
             // Resumo Gerencial de Métricas para o Cabeçalho do PDF
-            const kpiEmbPdf  = document.getElementById('kpi-total-embarques');
-            const kpiDesPdf  = document.getElementById('kpi-total-desembarques');
-            const kpiPaxPdf  = document.getElementById('kpi-total-passageiros');
-            const kpiOcupPdf = document.getElementById('kpi-media-ocupacao');
+            const kpiResumo = getExportKpiMetrics();
 
             let pdfSubtitle = generatedAt + '   |   Total de registros: ' + body.length;
-            if (kpiEmbPdf && kpiDesPdf && kpiPaxPdf) {
-                pdfSubtitle += '   |   Embarques: ' + kpiEmbPdf.innerText.trim() + '   |   Desembarques: ' + kpiDesPdf.innerText.trim() + '   |   Pax: ' + kpiPaxPdf.innerText.trim();
+            if (kpiResumo) {
+                pdfSubtitle += '   |   Embarques: ' + kpiResumo.emb + '   |   Desembarques: ' + kpiResumo.des + '   |   Pax: ' + kpiResumo.pax;
+                if (kpiResumo.mediaPax) {
+                    pdfSubtitle += '   |   Média Pax/Ônibus: ' + kpiResumo.mediaPax;
+                }
             }
 
             // MÉTODO 1: jsPDF + autoTable (Vetorizado, sem limite de canvas, paginação infinita e sem cortar colunas)
@@ -6812,6 +6744,14 @@ try {
 
             // Inicializar a paginação das tabelas do dashboard
             initDashTablesPagination();
+
+            // Restaurar modo de exibição (Ocupação % ou Média Pax / Ônibus)
+            try {
+                const savedMetricMode = localStorage.getItem('cb_dash_metric_mode');
+                if (savedMetricMode === 'media_pax') {
+                    setDashMetricMode('media_pax');
+                }
+            } catch (e) {}
 
             const urlParams = new URLSearchParams(window.location.search);
             if (urlParams.has('data_inicio') || urlParams.has('data_fim') || urlParams.has('hora_inicio') || urlParams.has('hora_fim') || urlParams.has('idEmpresa') || urlParams.has('idLinha') || urlParams.has('idVeiculo') || urlParams.has('idLocal') || urlParams.has('tipoOperacao') || urlParams.has('idUsuario') || urlParams.get('tab') === 'historico') {
