@@ -86,6 +86,57 @@ if (!function_exists('calcPercentualStr')) {
     }
 }
 
+if (!function_exists('cbGetVeiculoTable')) {
+    function cbGetVeiculoTable($pdo) {
+        static $tbl = null;
+        if ($tbl !== null) return $tbl;
+        $tbl = 'veiculo';
+        try {
+            $chk = $pdo->query("SHOW TABLES LIKE 'veiculo'");
+            if (!$chk || count($chk->fetchAll()) === 0) {
+                $chk2 = $pdo->query("SHOW TABLES LIKE 'veiculos'");
+                if ($chk2 && count($chk2->fetchAll()) > 0) {
+                    $tbl = 'veiculos';
+                }
+            }
+        } catch (\Exception $e) {}
+        return $tbl;
+    }
+}
+
+if (!function_exists('cbIsModoNaoInformado')) {
+    function cbIsModoNaoInformado($idPesquisa) {
+        $idPesquisa = (int)$idPesquisa;
+        if ($idPesquisa <= 0) return false;
+        return !empty($_SESSION['cb_modo_veiculo'][$idPesquisa]) && $_SESSION['cb_modo_veiculo'][$idPesquisa] === 'nao_informado';
+    }
+}
+
+if (!function_exists('cbRenderBadgeOperacaoHtml')) {
+    function cbRenderBadgeOperacaoHtml($opStr, $temEmb = null, $temDes = null) {
+        if ($temEmb !== null && $temDes !== null) {
+            if ($temEmb && $temDes) {
+                return '<span style="display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: center;">'
+                    . '<span style="display: inline-flex; align-items: center; gap: 3px; padding: 3px 8px; border-radius: 6px; font-size: 0.76rem; font-weight: 700; background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0;">↑ Embarque</span>'
+                    . '<span style="display: inline-flex; align-items: center; gap: 3px; padding: 3px 8px; border-radius: 6px; font-size: 0.76rem; font-weight: 700; background: #ffe4e6; color: #be123c; border: 1px solid #fecdd3;">↓ Desembarque</span>'
+                    . '</span>';
+            } elseif ($temDes) {
+                $opStr = 'Desembarque';
+            } else {
+                $opStr = 'Embarque';
+            }
+        }
+        $lower = strtolower(trim((string)$opStr));
+        if (strpos($lower, 'desemb') !== false || $lower === 'volta') {
+            return '<span style="display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; background: #ffe4e6; color: #be123c; border: 1px solid #fecdd3;">↓ Desembarque</span>';
+        }
+        if (strpos($lower, 'ocup') !== false) {
+            return '<span style="display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; background: #fef3c7; color: #b45309; border: 1px solid #fde68a;">📊 Ocupação</span>';
+        }
+        return '<span style="display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0;">↑ Embarque</span>';
+    }
+}
+
 if (isset($_GET['login']) && $_GET['login'] === 'success') {
     $mensagemSucesso = "Bem-vindo ao sistema contaBuzu, " . htmlspecialchars($loggedNome) . "!";
 }
@@ -110,6 +161,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $tipoContagem   = !empty($_POST['tipoContagem']) ? trim($_POST['tipoContagem']) : 'percentual';
             $tipoOperacao   = !empty($_POST['tipoOperacao']) ? trim($_POST['tipoOperacao']) : 'embarque';
             $turno          = !empty($_POST['turno']) ? trim($_POST['turno']) : 'Matutino';
+            $opcaoVeiculo   = !empty($_POST['opcaoVeiculo']) ? trim($_POST['opcaoVeiculo']) : '';
             $veiculosSel    = !empty($_POST['veiculosSelecionados']) ? trim((string)$_POST['veiculosSelecionados']) : '';
             if (empty($veiculosSel) && $idVeiculo) {
                 $veiculosSel = (string)$idVeiculo;
@@ -167,6 +219,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
             $stmtNew->execute([$usuarioId, $idLinha, $idVeiculo, $idLocal, $viagemEnum, $condTempoEnum, $idSistema, $tipoTransporte, $tipoContagemEnum, $tipoOperacaoEnum, $turno]);
             $idPesquisa = (int)$pdo->lastInsertId();
+
+            if (!isset($_SESSION['cb_modo_veiculo']) || !is_array($_SESSION['cb_modo_veiculo'])) {
+                $_SESSION['cb_modo_veiculo'] = [];
+            }
+            $_SESSION['cb_modo_veiculo'][$idPesquisa] = ($opcaoVeiculo === 'nao_informado') ? 'nao_informado' : 'registrar';
 
             // Inserir os veículos selecionados na tabela veiculoPesquisado
             if (!empty($veicArray)) {
@@ -429,15 +486,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $veiculosSel = isset($_POST['veiculosSelecionados']) ? trim((string)$_POST['veiculosSelecionados']) : '';
 
             if ($idContagem > 0) {
-                $idsArr = array_values(array_filter(array_map('intval', explode(',', $veiculosSel))));
+                $idsArr = array_values(array_filter(array_unique(array_map('intval', explode(',', $veiculosSel)))));
 
-                // Sincronizar veículos na tabela veiculoPesquisado
-                $pdo->prepare("DELETE FROM veiculoPesquisado WHERE idPesquisa = ?")->execute([$idContagem]);
+                // Remove apenas vínculos sem contagem lançada e fora da lista selecionada
                 if (!empty($idsArr)) {
+                    $notInClause = implode(',', array_fill(0, count($idsArr), '?'));
+                    $stmtDelVP = $pdo->prepare("DELETE FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo NOT IN ($notInClause) AND NOT EXISTS (SELECT 1 FROM contagem ct WHERE ct.idVeiculoPesquisado = veiculoPesquisado.idVeiculoPesquisado)");
+                    $stmtDelVP->execute(array_merge([$idContagem], $idsArr));
+                } else {
+                    $pdo->prepare("DELETE FROM veiculoPesquisado WHERE idPesquisa = ? AND NOT EXISTS (SELECT 1 FROM contagem ct WHERE ct.idVeiculoPesquisado = veiculoPesquisado.idVeiculoPesquisado)")->execute([$idContagem]);
+                }
+
+                // Inserir veículos selecionados ainda não vinculados em veiculoPesquisado
+                if (!empty($idsArr)) {
+                    $stmtChkVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
                     $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
                     foreach ($idsArr as $vId) {
                         try {
-                            $stmtInsVP->execute([$idContagem, $vId]);
+                            $stmtChkVP->execute([$idContagem, $vId]);
+                            if (!$stmtChkVP->fetchColumn()) {
+                                $stmtInsVP->execute([$idContagem, $vId]);
+                            }
                         } catch (\Exception $exVP) {}
                     }
                 }
@@ -460,8 +529,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $veiculosDados = [];
                 if (!empty($idsArr)) {
+                    $vTable = cbGetVeiculoTable($pdo);
                     $inClause = implode(',', array_fill(0, count($idsArr), '?'));
-                    $stmtBuscaV = $pdo->prepare("SELECT idVeiculo, prefixo, placa FROM veiculo WHERE idVeiculo IN ($inClause) ORDER BY prefixo");
+                    $stmtBuscaV = $pdo->prepare("SELECT idVeiculo, prefixo, placa FROM `$vTable` WHERE idVeiculo IN ($inClause) ORDER BY prefixo");
                     $stmtBuscaV->execute($idsArr);
                     $veiculosDados = $stmtBuscaV->fetchAll();
                 }
@@ -475,6 +545,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
             }
+        }
+
+        // 4.0.1.2. Cadastrar Novo Veículo durante a Contagem (insere na tabela veiculo/veiculos)
+        elseif ($action === 'cadastrar_veiculo_contagem') {
+            $prefixoRaw = isset($_POST['prefixo']) ? trim((string)$_POST['prefixo']) : '';
+            $placaRaw   = isset($_POST['placa']) ? strtoupper(trim((string)$_POST['placa'])) : '';
+            $idEmpresaN = !empty($_POST['idEmpresa']) ? (int)$_POST['idEmpresa'] : null;
+
+            if ($prefixoRaw === '') {
+                echo json_encode(['success' => false, 'message' => 'Informe o prefixo do veículo para cadastrar.']);
+                exit;
+            }
+
+            $placaFinal = null;
+            if ($placaRaw !== '') {
+                $limpoPlaca = preg_replace('/[^A-Z0-9]/', '', $placaRaw);
+                if (strlen($limpoPlaca) === 7 && preg_match('/^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/', $limpoPlaca)) {
+                    $placaFinal = substr($limpoPlaca, 0, 3) . '-' . substr($limpoPlaca, 3, 4);
+                } else {
+                    $placaFinal = $placaRaw;
+                }
+            }
+
+            $vTable = cbGetVeiculoTable($pdo);
+            $stmtExist = $pdo->prepare("SELECT idVeiculo, prefixo, placa FROM `$vTable` WHERE LOWER(TRIM(prefixo)) = LOWER(?) AND ativo = 1 LIMIT 1");
+            $stmtExist->execute([$prefixoRaw]);
+            $veicExist = $stmtExist->fetch();
+
+            if ($veicExist) {
+                $veicRetorno = [
+                    'idVeiculo' => (int)$veicExist['idVeiculo'],
+                    'prefixo'   => (string)$veicExist['prefixo'],
+                    'placa'     => (string)($veicExist['placa'] ?? '')
+                ];
+                $msgVeic = 'Veículo já estava cadastrado e foi selecionado!';
+            } else {
+                $stmtInsV = $pdo->prepare("INSERT INTO `$vTable` (prefixo, placa, idEmpresa, ativo) VALUES (?, ?, ?, 1)");
+                $stmtInsV->execute([$prefixoRaw, $placaFinal, $idEmpresaN]);
+                $newIdVeic = (int)$pdo->lastInsertId();
+                $veicRetorno = [
+                    'idVeiculo' => $newIdVeic,
+                    'prefixo'   => $prefixoRaw,
+                    'placa'     => (string)($placaFinal ?? '')
+                ];
+                $msgVeic = 'Novo veículo cadastrado com sucesso!';
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => $msgVeic,
+                'veiculo' => $veicRetorno
+            ]);
+            exit;
         }
 
 
@@ -571,9 +694,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             }
                         }
 
+                        $isNaoInformadoSessao = cbIsModoNaoInformado($idContagem);
+
                         // Limpa o total acumulado da pesquisa para permitir novos lançamentos limpos
+                        // Quando a sessão foi iniciada como "Não informado", limpa também o veículo ativo após salvar
                         try {
-                            $stmtReset = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = 0 WHERE idPesquisa = ?");
+                            if ($isNaoInformadoSessao) {
+                                $stmtReset = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = 0, idVeiculo = NULL WHERE idPesquisa = ?");
+                            } else {
+                                $stmtReset = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = 0 WHERE idPesquisa = ?");
+                            }
                             $stmtReset->execute([$idContagem]);
                         } catch (\Exception $exReset) {
                             error_log("Erro ao zerar totalPassageiros: " . $exReset->getMessage());
@@ -597,10 +727,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($isAjax) {
                     echo json_encode([
-                        'success' => true,
-                        'message' => 'Contagem salva com sucesso! A sessão permanece aberta para continuar os lançamentos.',
-                        'total'   => 0,
-                        'logs'    => $logs
+                        'success'      => true,
+                        'message'      => 'Contagem salva com sucesso! A sessão permanece aberta para continuar os lançamentos.',
+                        'total'        => 0,
+                        'veiculoLimpo' => cbIsModoNaoInformado($idContagem),
+                        'logs'         => $logs
                     ]);
                     exit;
                 }
@@ -970,18 +1101,15 @@ try {
         }
     }
 
-    if (!function_exists('cbFormatarMediaPax')) {
-        function cbFormatarMediaPax($pax, $qtdOnibus) {
-            if ((int)$qtdOnibus <= 0) return '0,0';
-            $media = (float)$pax / (int)$qtdOnibus;
-            return number_format($media, 1, ',', '.');
+    if (!function_exists('cbFormatarMediaPct')) {
+        function cbFormatarMediaPct($pct) {
+            return number_format((float)$pct, 1, ',', '.') . '%';
         }
     }
 
     if (!function_exists('cbResumoTabelaConsolidada')) {
         function cbResumoTabelaConsolidada($rows) {
-            $count = count($rows);
-            $viag = 0; $emb = 0; $des = 0; $pax = 0; $onibus = 0; $somaOcup = 0;
+            $viag = 0; $emb = 0; $des = 0; $pax = 0; $onibus = 0; $somaOcupBus = 0;
             foreach ($rows as $r) {
                 $e = (int)$r['embarques'];
                 $d = (int)$r['desembarques'];
@@ -993,9 +1121,9 @@ try {
                 $pax += $rowPax;
                 $onibus += $rowBus;
                 $viag += isset($r['totalSessoes']) ? (int)$r['totalSessoes'] : (isset($r['totalViagens']) ? (int)$r['totalViagens'] : 1);
-                $somaOcup += cbCalcularOcupacao($r);
+                $somaOcupBus += cbCalcularOcupacao($r) * $rowBus;
             }
-            $medOcup = ($count > 0) ? round($somaOcup / $count, 1) : 0;
+            $medOcup = ($onibus > 0) ? round($somaOcupBus / $onibus, 1) : 0;
             return [
                 'viag' => $viag,
                 'emb' => $emb,
@@ -1003,7 +1131,7 @@ try {
                 'pax' => $pax,
                 'onibus' => $onibus,
                 'medOcup' => $medOcup,
-                'mediaPaxFmt' => cbFormatarMediaPax($pax, $onibus)
+                'mediaPaxFmt' => cbFormatarMediaPct($medOcup)
             ];
         }
     }
@@ -1037,6 +1165,7 @@ try {
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
                 COALESCE(NULLIF(v_vp.prefixo, 0), v_vp.placa, NULLIF(v.prefixo, 0), v.placa, 'S/ Veículo') as veiculoPrefixo,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
+                COALESCE(NULLIF(c.tipoOperacao, ''), 'Embarque') as tipoOperacao,
                 COALESCE(u.nome, u.login, CONCAT('Pesquisador #', c.idUsuario)) as pesquisadorNome,
                 COALESCE(u.cargo, 'Pesquisador') as pesquisadorCargo,
                 CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
@@ -1090,10 +1219,10 @@ try {
             $t1TotalPassageiros += $p;
             $t1SomaOcupacao += cbCalcularOcupacao($rowT1);
         }
-        $t1MediaOcupacao = ($t1TotalRegistros > 0) ? round($t1SomaOcupacao / $t1TotalRegistros) : 0;
+        $t1MediaOcupacao = ($t1TotalRegistros > 0) ? round($t1SomaOcupacao / $t1TotalRegistros, 1) : 0;
     } catch (PDOException $e) {}
 
-    // 2. Total de passageiros por linha (agrupado por Data e Linha)
+    // 2. Total de passageiros por linha (agrupado por Data, Linha, Sentido e Operação)
     $dadosTabelaTotalPorLinha = [];
     try {
         $stmtT2 = $pdo->prepare("
@@ -1103,6 +1232,7 @@ try {
                 COALESCE(NULLIF(l.numero, ''), CONCAT('Linha #', c.idLinha)) as linhaNumero,
                 COALESCE(l.descricao, l.linha, '') as linhaDescricao,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
+                CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END as operacaoTipo,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
@@ -1118,7 +1248,7 @@ try {
                 SELECT idPesquisa, MAX(dataHora) as maxDataHora FROM contagem GROUP BY idPesquisa
             ) cnt_max ON c.idPesquisa = cnt_max.idPesquisa
             WHERE $whereSql
-            GROUP BY COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y'), DATE_FORMAT(NOW(), '%d/%m/%Y')), c.idLinha, l.numero, l.descricao, l.linha, COALESCE(NULLIF(c.viagem, ''), 'Ida')
+            GROUP BY COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y'), DATE_FORMAT(NOW(), '%d/%m/%Y')), c.idLinha, l.numero, l.descricao, l.linha, COALESCE(NULLIF(c.viagem, ''), 'Ida'), CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END
             ORDER BY dataOrd DESC, embarques DESC
         ");
         $stmtT2->execute($paramsHist);
@@ -1134,6 +1264,7 @@ try {
                 COALESCE(loc.local, 'Praça Central') as nomeLocal,
                 loc.regiao as regiaoLocal,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
+                CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END as operacaoTipo,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
@@ -1146,7 +1277,7 @@ try {
             LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
             LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
             WHERE $whereSql
-            GROUP BY c.idLocal, loc.local, loc.regiao, COALESCE(NULLIF(c.viagem, ''), 'Ida')
+            GROUP BY c.idLocal, loc.local, loc.regiao, COALESCE(NULLIF(c.viagem, ''), 'Ida'), CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END
             ORDER BY embarques DESC
         ");
         $stmtT3->execute($paramsHist);
@@ -1161,6 +1292,7 @@ try {
                 COALESCE(e.idEmpresa, 1) as idEmpresa,
                 $empNomeExpr as nomeEmpresa,
                 COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
+                CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END as operacaoTipo,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
                 SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
@@ -1173,7 +1305,7 @@ try {
             LEFT JOIN `$targetEmpTable` e ON (c.idEmpresa = e.idEmpresa OR v.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa OR e.idEmpresa = 1)
             LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
             WHERE $whereSql
-            GROUP BY COALESCE(e.idEmpresa, 1), $empNomeExpr, COALESCE(NULLIF(c.viagem, ''), 'Ida')
+            GROUP BY COALESCE(e.idEmpresa, 1), $empNomeExpr, COALESCE(NULLIF(c.viagem, ''), 'Ida'), CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END
             ORDER BY embarques DESC
         ");
         $stmtT4->execute($paramsHist);
@@ -1191,6 +1323,8 @@ try {
                     COALESCE(u.cargo, 'Pesquisador') as pesquisadorCargo,
                     COUNT(DISTINCT c.idPesquisa) as totalViagens,
                     COUNT(DISTINCT COALESCE(vp.idVeiculoPesquisado, CONCAT('p_', c.idPesquisa))) as totalOnibus,
+                    MAX(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 1 ELSE 0 END) as temEmb,
+                    MAX(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 1 ELSE 0 END) as temDes,
                     SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
                         COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
                     ELSE 0 END) as embarques,
@@ -1239,7 +1373,7 @@ $t1_des = $t1TotalDesembarques;
 $t1_pax = $t1TotalPassageiros;
 $t1_onibus = $t1TotalRegistros;
 $t1_medOcup = $t1MediaOcupacao;
-$t1_mediaPaxFmt = cbFormatarMediaPax($t1_pax, $t1_onibus);
+$t1_mediaPaxFmt = cbFormatarMediaPct($t1_medOcup);
 
 $t2_resumo = cbResumoTabelaConsolidada($dadosTabelaTotalPorLinha);
 $t3_resumo = cbResumoTabelaConsolidada($dadosTabelaPorLocal);
@@ -1317,29 +1451,35 @@ try {
 
 $veiculosDisponiveis = [];
 try {
-    $stmtV = $pdo->query("SELECT * FROM veiculo WHERE ativo = 1 ORDER BY prefixo");
-    if (!$stmtV) {
-        $stmtV = $pdo->query("SELECT * FROM veiculos WHERE ativo = 1 ORDER BY prefixo");
-    }
+    $vTableInit = cbGetVeiculoTable($pdo);
+    $stmtV = $pdo->query("SELECT * FROM `$vTableInit` WHERE ativo = 1 ORDER BY prefixo");
     if ($stmtV) $veiculosDisponiveis = $stmtV->fetchAll();
 } catch (\Exception $e) {}
 
 // Veículos selecionados especificamente para a sessão ativa de contagem
+$isModoNaoInformadoSessao = ($sessaoAtiva && cbIsModoNaoInformado($sessaoAtiva['idContagem']));
 $veiculosSessao = [];
 if ($sessaoAtiva) {
     $idsVeiculosSessao = [];
-    if (!empty($sessaoAtiva['veiculosSelecionados'])) {
-        $partesIds = explode(',', (string)$sessaoAtiva['veiculosSelecionados']);
-        foreach ($partesIds as $pid) {
-            $pidInt = (int)trim($pid);
-            if ($pidInt > 0 && !in_array($pidInt, $idsVeiculosSessao)) {
-                $idsVeiculosSessao[] = $pidInt;
+    if ($isModoNaoInformadoSessao) {
+        // Quando iniciou como "Não informado", exibe apenas o veículo atualmente ativo (limpo após salvar)
+        if (!empty($sessaoAtiva['idVeiculo'])) {
+            $idsVeiculosSessao[] = (int)$sessaoAtiva['idVeiculo'];
+        }
+    } else {
+        if (!empty($sessaoAtiva['veiculosSelecionados'])) {
+            $partesIds = explode(',', (string)$sessaoAtiva['veiculosSelecionados']);
+            foreach ($partesIds as $pid) {
+                $pidInt = (int)trim($pid);
+                if ($pidInt > 0 && !in_array($pidInt, $idsVeiculosSessao)) {
+                    $idsVeiculosSessao[] = $pidInt;
+                }
             }
         }
-    }
-    // Inclui também o veículo ativo principal da sessão se não estiver na lista
-    if (!empty($sessaoAtiva['idVeiculo']) && !in_array((int)$sessaoAtiva['idVeiculo'], $idsVeiculosSessao)) {
-        $idsVeiculosSessao[] = (int)$sessaoAtiva['idVeiculo'];
+        // Inclui também o veículo ativo principal da sessão se não estiver na lista
+        if (!empty($sessaoAtiva['idVeiculo']) && !in_array((int)$sessaoAtiva['idVeiculo'], $idsVeiculosSessao)) {
+            $idsVeiculosSessao[] = (int)$sessaoAtiva['idVeiculo'];
+        }
     }
 
     if (!empty($idsVeiculosSessao)) {
@@ -1357,11 +1497,12 @@ try {
     if ($stmtLoc) $locaisDisponiveis = $stmtLoc->fetchAll();
 } catch (\Exception $e) {}
 
-$empresasDisponiveis = [];
-try {
-    $stmtEmp = $pdo->query("SELECT idEmpresa, COALESCE(NULLIF(nome, ''), NULLIF(nomeEmpresa, ''), 'Empresa') as nome FROM empresa ORDER BY nome");
-    if ($stmtEmp) $empresasDisponiveis = $stmtEmp->fetchAll();
-} catch (\Exception $e) {}
+if (empty($empresasDisponiveis)) {
+    try {
+        $stmtEmpFallback = $pdo->query("SELECT idEmpresa, COALESCE(NULLIF(nome, ''), NULLIF(nomeEmpresa, ''), 'Empresa') as nome FROM `$targetEmpTable` ORDER BY nome");
+        if ($stmtEmpFallback) $empresasDisponiveis = $stmtEmpFallback->fetchAll();
+    } catch (\Exception $e) {}
+}
 
 ?>
 <!DOCTYPE html>
@@ -2521,10 +2662,10 @@ try {
                             </div>
                         </div>
 
-                        <!-- Card 5: Média Pessoas / Ônibus (exibido quando a opção Média Pax / Ônibus está ativa) -->
+                        <!-- Card 5: Média Ocupação (%) (exibido quando ativado) -->
                         <div id="card-kpi-media-pax" style="display: none; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 16px; padding: 18px 20px;">
                             <div style="color: #1d4ed8; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
-                                <span>🚌 Média Pax / Ônibus</span>
+                                <span>🚌 Média Ocupação (%)</span>
                             </div>
                             <div id="kpi-media-pax-onibus" class="kpi-metric-val" style="color: #1e3a8a; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
                                 <?php echo $dashKpisMap['dash-t1']['mediaPax']; ?>
@@ -2605,8 +2746,7 @@ try {
                                         <th style="padding: 10px 8px; text-align: left;">Linha</th>
                                         <th style="padding: 10px 7px; text-align: left;">Veículo</th>
                                         <th style="padding: 10px 7px; text-align: center;">Viagem</th>
-                                        <th style="padding: 10px 7px; text-align: right;">Embarques</th>
-                                        <th style="padding: 10px 7px; text-align: right;">Desembarques</th>
+                                        <th style="padding: 10px 7px; text-align: center;">Embarque/Desembarque</th>
                                         <th style="padding: 10px 7px; text-align: right; color: #1d4ed8;">Total Pax</th>
                                         <th class="col-metric-ocup-header" style="padding: 10px 7px; text-align: center;">Ocupação (%)</th>
                                         <?php if ($canViewAllContagens): ?>
@@ -2616,7 +2756,7 @@ try {
                                 </thead>
                                 <tbody>
                                     <?php if (empty($dadosTabelaLinhaVeiculoDataHora)): ?>
-                                        <tr><td colspan="<?php echo $canViewAllContagens ? 12 : 11; ?>" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado para os filtros selecionados.</td></tr>
+                                        <tr><td colspan="<?php echo $canViewAllContagens ? 11 : 10; ?>" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado para os filtros selecionados.</td></tr>
                                     <?php else: ?>
                                         <?php foreach ($dadosTabelaLinhaVeiculoDataHora as $row): 
                                             $emb = (int)$row['embarques'];
@@ -2624,9 +2764,9 @@ try {
                                             $pax = max($emb, $des);
                                             if ($pax == 0 && !empty($row['ocupacaoInformada'])) $pax = (int)$row['ocupacaoInformada'];
                                             $ocup = cbCalcularOcupacao($row);
-                                            $mediaPaxRowStr = number_format($pax, 1, ',', '.') . ' pax';
+                                            $tipoOpT1 = !empty($row['tipoOperacao']) ? $row['tipoOperacao'] : (($des > 0 && $emb === 0) ? 'Desembarque' : 'Embarque');
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $pax; ?>" data-onibus="1" data-pesquisador="<?php echo htmlspecialchars($row['pesquisadorNome']); ?>" data-cargo="<?php echo htmlspecialchars(isset($row['pesquisadorCargo']) ? $row['pesquisadorCargo'] : 'Pesquisador'); ?>">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $pax; ?>" data-onibus="1" data-ocup-val="<?php echo $ocup; ?>" data-pesquisador="<?php echo htmlspecialchars($row['pesquisadorNome']); ?>" data-cargo="<?php echo htmlspecialchars(isset($row['pesquisadorCargo']) ? $row['pesquisadorCargo'] : 'Pesquisador'); ?>">
                                                 <td style="padding: 10px 7px; text-align: center; font-weight: 600; color: #475569; white-space: nowrap;">
                                                     <?php echo htmlspecialchars($row['dataFormatada']); ?>
                                                 </td>
@@ -2653,16 +2793,13 @@ try {
                                                         <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
                                                     </span>
                                                 </td>
-                                                <td style="padding: 10px 7px; text-align: right; font-weight: 700; color: #15803d; white-space: nowrap;">
-                                                    <?php echo number_format($emb, 0, ',', '.'); ?>
-                                                </td>
-                                                <td style="padding: 10px 7px; text-align: right; font-weight: 700; color: #be123c; white-space: nowrap;">
-                                                    <?php echo number_format($des, 0, ',', '.'); ?>
+                                                <td style="padding: 10px 7px; text-align: center; white-space: nowrap;">
+                                                    <?php echo cbRenderBadgeOperacaoHtml($tipoOpT1); ?>
                                                 </td>
                                                 <td style="padding: 10px 7px; text-align: right; font-weight: 800; color: #1d4ed8; white-space: nowrap; background: rgba(37,99,235,0.03);">
                                                     <?php echo number_format($pax, 0, ',', '.'); ?>
                                                 </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="1 ônibus neste registro" style="padding: 10px 7px; text-align: center; font-weight: 800; font-size: 0.88rem; color: #0f172a; white-space: nowrap;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo $ocup; ?>%" title="1 ônibus neste registro" style="padding: 10px 7px; text-align: center; font-weight: 800; font-size: 0.88rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                                 <?php if ($canViewAllContagens): ?>
@@ -2685,17 +2822,12 @@ try {
                                         <td colspan="7" class="foot-label-onibus" data-suffix="ônibus auditados" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
                                             <span>📊 TOTAL GERAL (<?php echo number_format($t1TotalRegistros, 0, ',', '.'); ?> ônibus auditados):</span>
                                         </td>
-                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
-                                            <?php echo number_format($t1TotalEmbarques, 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
-                                            <?php echo number_format($t1TotalDesembarques, 0, ',', '.'); ?>
-                                        </td>
+                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
                                         <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
                                             <?php echo number_format($t1TotalPassageiros, 0, ',', '.'); ?>
                                         </td>
-                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t1_mediaPaxFmt); ?> pax/ôn.
+                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t1_mediaPaxFmt); ?>
                                         </td>
                                         <?php if ($canViewAllContagens): ?>
                                             <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
@@ -2725,8 +2857,8 @@ try {
                                         <th style="padding: 12px 10px; text-align: center;">Data</th>
                                         <th style="padding: 12px 10px; text-align: left;">Linha</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Embarques</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
+                                        <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
+                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
                                         <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
@@ -2741,9 +2873,9 @@ try {
                                             $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
                                             $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
                                             $ocup = cbCalcularOcupacao($row);
-                                            $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
+                                            $opTipoRow = !empty($row['operacaoTipo']) ? $row['operacaoTipo'] : (($des > 0 && $emb === 0) ? 'Desembarque' : 'Embarque');
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>" data-ocup-val="<?php echo $ocup; ?>">
                                                 <td style="padding: 12px 10px; text-align: center; font-weight: 600; color: #475569;">
                                                     <?php echo htmlspecialchars($row['dataFormatada']); ?>
                                                 </td>
@@ -2755,13 +2887,13 @@ try {
                                                         <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
                                                     </span>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #15803d;">
-                                                    <?php echo number_format($emb, 0, ',', '.'); ?>
+                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
+                                                    <?php echo cbRenderBadgeOperacaoHtml($opTipoRow); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
-                                                    <?php echo number_format($des, 0, ',', '.'); ?>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; background: rgba(37,99,235,0.03);">
+                                                    <?php echo number_format($paxRow, 0, ',', '.'); ?>
                                                 </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo $ocup; ?>%" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                             </tr>
@@ -2774,14 +2906,12 @@ try {
                                         <td colspan="3" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
                                             <span>📊 TOTAL GERAL (<?php echo number_format($t2_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
                                         </td>
-                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
-                                            <?php echo number_format($t2_resumo['emb'], 0, ',', '.'); ?>
+                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
+                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
+                                            <?php echo number_format($t2_resumo['pax'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
-                                            <?php echo number_format($t2_resumo['des'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t2_resumo['mediaPaxFmt']); ?> pax/ôn.
+                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t2_resumo['mediaPaxFmt']); ?>
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -2807,8 +2937,8 @@ try {
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
                                         <th style="padding: 12px 10px; text-align: left;">LOCAL</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Embarques</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
+                                        <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
+                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
                                         <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
@@ -2823,9 +2953,9 @@ try {
                                             $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
                                             $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
                                             $ocup = cbCalcularOcupacao($row);
-                                            $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
+                                            $opTipoRow = !empty($row['operacaoTipo']) ? $row['operacaoTipo'] : (($des > 0 && $emb === 0) ? 'Desembarque' : 'Embarque');
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>" data-ocup-val="<?php echo $ocup; ?>">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
                                                     <?php echo htmlspecialchars($row['nomeLocal']); ?>
                                                 </td>
@@ -2834,13 +2964,13 @@ try {
                                                         <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
                                                     </span>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #15803d;">
-                                                    <?php echo number_format($emb, 0, ',', '.'); ?>
+                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
+                                                    <?php echo cbRenderBadgeOperacaoHtml($opTipoRow); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
-                                                    <?php echo number_format($des, 0, ',', '.'); ?>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; background: rgba(37,99,235,0.03);">
+                                                    <?php echo number_format($paxRow, 0, ',', '.'); ?>
                                                 </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo $ocup; ?>%" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                             </tr>
@@ -2853,14 +2983,12 @@ try {
                                         <td colspan="2" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
                                             <span>📊 TOTAL GERAL (<?php echo number_format($t3_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
                                         </td>
-                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
-                                            <?php echo number_format($t3_resumo['emb'], 0, ',', '.'); ?>
+                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
+                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
+                                            <?php echo number_format($t3_resumo['pax'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
-                                            <?php echo number_format($t3_resumo['des'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t3_resumo['mediaPaxFmt']); ?> pax/ôn.
+                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t3_resumo['mediaPaxFmt']); ?>
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -2886,8 +3014,8 @@ try {
                                     <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
                                         <th style="padding: 12px 10px; text-align: left;">EMPRESA</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Embarques</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
+                                        <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
+                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
                                         <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
@@ -2902,9 +3030,9 @@ try {
                                             $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
                                             $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
                                             $ocup = cbCalcularOcupacao($row);
-                                            $mediaPaxRowStr = cbFormatarMediaPax($paxRow, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
+                                            $opTipoRow = !empty($row['operacaoTipo']) ? $row['operacaoTipo'] : (($des > 0 && $emb === 0) ? 'Desembarque' : 'Embarque');
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>" data-ocup-val="<?php echo $ocup; ?>">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
                                                     <?php echo htmlspecialchars($row['nomeEmpresa']); ?>
                                                 </td>
@@ -2913,13 +3041,13 @@ try {
                                                         <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
                                                     </span>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #15803d;">
-                                                    <?php echo number_format($emb, 0, ',', '.'); ?>
+                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
+                                                    <?php echo cbRenderBadgeOperacaoHtml($opTipoRow); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
-                                                    <?php echo number_format($des, 0, ',', '.'); ?>
+                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; background: rgba(37,99,235,0.03);">
+                                                    <?php echo number_format($paxRow, 0, ',', '.'); ?>
                                                 </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo $ocup; ?>%" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
                                                     <?php echo $ocup; ?>%
                                                 </td>
                                             </tr>
@@ -2932,14 +3060,12 @@ try {
                                         <td colspan="2" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
                                             <span>📊 TOTAL GERAL (<?php echo number_format($t4_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
                                         </td>
-                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
-                                            <?php echo number_format($t4_resumo['emb'], 0, ',', '.'); ?>
+                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
+                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
+                                            <?php echo number_format($t4_resumo['pax'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
-                                            <?php echo number_format($t4_resumo['des'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t4_resumo['mediaPaxFmt']); ?> pax/ôn.
+                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t4_resumo['mediaPaxFmt']); ?>
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -2967,15 +3093,14 @@ try {
                                         <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
                                         <th style="padding: 12px 10px; text-align: left;">Função / Cargo</th>
                                         <th style="padding: 12px 10px; text-align: center;">Total Viagens</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Embarques</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Desembarques</th>
+                                        <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
                                         <th style="padding: 12px 10px; text-align: right;">Total Passageiros</th>
                                         <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Média Ocupação</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php if (empty($dadosTabelaPorPesquisador)): ?>
-                                        <tr><td colspan="7" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado.</td></tr>
+                                        <tr><td colspan="6" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado.</td></tr>
                                     <?php else: ?>
                                         <?php foreach ($dadosTabelaPorPesquisador as $row): 
                                             $emb = (int)$row['embarques'];
@@ -2984,9 +3109,10 @@ try {
                                             $viag = (int)$row['totalViagens'];
                                             $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
                                             $medOcup = cbCalcularOcupacao($row);
-                                            $mediaPaxRowStr = cbFormatarMediaPax($totPax, $qtdBusRow) . ' pax (' . $qtdBusRow . ' ôn.)';
+                                            $temEmbT5 = !empty($row['temEmb']) || $emb > 0;
+                                            $temDesT5 = !empty($row['temDes']) || $des > 0;
                                         ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $totPax; ?>" data-viag="<?php echo $viag; ?>" data-onibus="<?php echo $qtdBusRow; ?>">
+                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $totPax; ?>" data-viag="<?php echo $viag; ?>" data-onibus="<?php echo $qtdBusRow; ?>" data-ocup-val="<?php echo $medOcup; ?>">
                                                 <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
                                                     <span style="display: inline-flex; align-items: center; gap: 8px;">
                                                         <span class="cb-avatar-initial" style="width: 28px; height: 28px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.78rem; font-weight: 800;">
@@ -3003,16 +3129,13 @@ try {
                                                 <td style="padding: 12px 10px; text-align: center; font-weight: 800; color: #0f172a;">
                                                     <?php echo number_format($viag, 0, ',', '.'); ?>
                                                 </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #15803d;">
-                                                    <?php echo number_format($emb, 0, ',', '.'); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #be123c;">
-                                                    <?php echo number_format($des, 0, ',', '.'); ?>
+                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
+                                                    <?php echo cbRenderBadgeOperacaoHtml('', $temEmbT5, $temDesT5); ?>
                                                 </td>
                                                 <td style="padding: 12px 10px; text-align: right; font-weight: 800; font-size: 0.95rem; color: #7c3aed;">
                                                     <?php echo number_format($totPax, 0, ',', '.'); ?>
                                                 </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $medOcup; ?>%" data-media="<?php echo htmlspecialchars($mediaPaxRowStr); ?>" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; color: #2563eb; white-space: nowrap;">
+                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $medOcup; ?>%" data-media="<?php echo $medOcup; ?>%" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; color: #2563eb; white-space: nowrap;">
                                                     <?php echo $medOcup; ?>%
                                                 </td>
                                             </tr>
@@ -3028,17 +3151,12 @@ try {
                                         <td class="foot-val-viag" style="padding: 14px 10px; text-align: center; color: #0f172a; font-size: 0.95rem;">
                                             <?php echo number_format($t5_resumo['viag'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="foot-val-emb" style="padding: 14px 10px; text-align: right; color: #15803d; font-size: 0.95rem;">
-                                            <?php echo number_format($t5_resumo['emb'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="foot-val-des" style="padding: 14px 10px; text-align: right; color: #be123c; font-size: 0.95rem;">
-                                            <?php echo number_format($t5_resumo['des'], 0, ',', '.'); ?>
-                                        </td>
+                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
                                         <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #7c3aed; font-size: 1rem; background: #faf5ff;">
                                             <?php echo number_format($t5_resumo['pax'], 0, ',', '.'); ?>
                                         </td>
-                                        <td class="col-metric-ocup-foot" title="Média de passageiros por ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t5_resumo['mediaPaxFmt']); ?> pax/ôn.
+                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
+                                            Média: <?php echo htmlspecialchars($t5_resumo['mediaPaxFmt']); ?>
                                         </td>
                                     </tr>
                                 </tfoot>
@@ -3245,6 +3363,61 @@ try {
         </div>
     </div>
 
+    <!-- MODAL DE CADASTRO RÁPIDO DE NOVO VEÍCULO DURANTE A CONTAGEM -->
+    <div class="modal-overlay" id="modalCadastrarNovoVeiculoContagem" style="display: none; align-items: center; justify-content: center; z-index: 100000; padding: 16px;">
+        <div class="modal-card" style="max-width: 460px; width: 95vw; background: #ffffff; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); border: 1px solid #e2e8f0;">
+            <div class="modal-header" style="padding: 18px 22px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
+                <div class="modal-title" style="display: flex; align-items: center; gap: 10px; font-weight: 800; color: #0f172a;">
+                    <span style="font-size: 1.3rem;">🚌</span>
+                    <span>Cadastrar Novo Veículo</span>
+                </div>
+                <button type="button" onclick="fecharModalNovoVeiculoContagem()" style="background: none; border: none; font-size: 1.5rem; color: #94a3b8; cursor: pointer;">&times;</button>
+            </div>
+
+            <form id="formCadastrarNovoVeiculoContagem" onsubmit="salvarNovoVeiculoContagem(event)" style="padding: 20px 22px;">
+                <p style="margin: 0 0 16px; font-size: 0.86rem; color: #475569; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 10px 12px;">
+                    Veículo não cadastrado no sistema. Preencha os dados abaixo para adicioná-lo à tabela de veículos e selecionar na contagem.
+                </p>
+
+                <div style="margin-bottom: 14px;">
+                    <label for="novoVeicPrefixo" style="font-weight: 700; font-size: 0.86rem; color: #334155; display: block; margin-bottom: 6px;">
+                        Prefixo / Número de Ordem <span style="color: #dc2626;">*</span>
+                    </label>
+                    <input type="text" id="novoVeicPrefixo" required maxlength="30" placeholder="Ex: 1001" autocomplete="off" style="width: 100%; padding: 10px 14px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.95rem; font-weight: 700; box-sizing: border-box; outline: none;">
+                </div>
+
+                <div style="margin-bottom: 14px;">
+                    <label for="novoVeicPlaca" style="font-weight: 700; font-size: 0.86rem; color: #334155; display: block; margin-bottom: 6px;">
+                        Placa (Opcional)
+                    </label>
+                    <input type="text" id="novoVeicPlaca" maxlength="10" placeholder="AAA-9X99" autocomplete="off" style="width: 100%; padding: 10px 14px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.95rem; font-family: monospace; font-weight: 700; text-transform: uppercase; box-sizing: border-box; outline: none;">
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <label for="novoVeicEmpresa" style="font-weight: 700; font-size: 0.86rem; color: #334155; display: block; margin-bottom: 6px;">
+                        Empresa / Cooperativa (Opcional)
+                    </label>
+                    <select id="novoVeicEmpresa" style="width: 100%; padding: 10px 14px; border: 1.5px solid #cbd5e1; border-radius: 10px; font-size: 0.9rem; color: #0f172a; background: #ffffff; box-sizing: border-box; outline: none;">
+                        <option value="">-- Não informada --</option>
+                        <?php foreach ($empresasDisponiveis as $empItem): ?>
+                            <?php $empName = !empty($empItem['nome']) ? $empItem['nome'] : (!empty($empItem['nomeEmpresa']) ? $empItem['nomeEmpresa'] : 'Empresa #'.$empItem['idEmpresa']); ?>
+                            <option value="<?php echo (int)$empItem['idEmpresa']; ?>"><?php echo htmlspecialchars($empName); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button type="button" onclick="fecharModalNovoVeiculoContagem()" style="padding: 10px 16px; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 10px; font-weight: 700; cursor: pointer;">
+                        Cancelar
+                    </button>
+                    <button type="submit" id="btnSalvarNovoVeiculoContagem" style="padding: 10px 18px; background: #16a34a; color: #ffffff; border: none; border-radius: 10px; font-weight: 700; cursor: pointer;">
+                        Cadastrar e Usar Veículo
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- MODAL DE EXTRATO DETALHADO DO HISTÓRICO DE UMA SESSÃO -->
     <div class="modal-overlay" id="historyDetailsModal">
         <div class="modal-card" style="max-width: 1200px; width: 95vw; max-height: 90vh; overflow-y: auto;">
@@ -3441,6 +3614,7 @@ try {
 
         // Variáveis da sessão ativa para chamadas AJAX
         const activeContagemId = <?php echo ($sessaoAtiva ? (int)$sessaoAtiva['idContagem'] : 0); ?>;
+        const isModoNaoInformadoSessao = <?php echo ($sessaoAtiva && !empty($isModoNaoInformadoSessao)) ? 'true' : 'false'; ?>;
         const activeTipoContagem = '<?php echo ($sessaoAtiva && !empty($sessaoAtiva['tipoContagem'])) ? strtolower(trim($sessaoAtiva['tipoContagem'])) : 'quantidade'; ?>';
         window.frotaVeiculosDisponiveis = <?php echo json_encode(array_values(array_map(function($v) {
             return [
@@ -3499,6 +3673,9 @@ try {
                     showToastNotification(data.message || '✓ Contagem salva com sucesso!');
                     if (data.logs) renderLogs(data.logs);
                     limparPainelNumerosContagem();
+                    if (data.veiculoLimpo || isModoNaoInformadoSessao) {
+                        limparVeiculoAtivoPainel();
+                    }
                 } else {
                     alert(data.message || 'Por favor, selecione um veículo antes de salvar a contagem.');
                     const busSec = document.querySelector('.onibus-selection-container');
@@ -3549,6 +3726,20 @@ try {
                     b.style.transform = 'none';
                 }
             });
+        }
+
+        // Limpa o veículo selecionado após salvar quando a sessão foi iniciada como "Não informado"
+        function limparVeiculoAtivoPainel() {
+            const inputBusca = document.getElementById('input-busca-onibus-painel');
+            if (inputBusca) inputBusca.value = '';
+            const dropdown = document.getElementById('dropdown-sugestoes-onibus-painel');
+            if (dropdown) {
+                dropdown.style.display = 'none';
+                dropdown.innerHTML = '';
+            }
+            const sessV = document.getElementById('session-veiculo-text');
+            if (sessV) sessV.textContent = 'Não informado';
+            renderGridOnibusSessao([]);
         }
 
         // Seleção rápida de Ônibus para direcionar a contagem
@@ -4955,14 +5146,33 @@ try {
 
                 sugestoesAtuais = buscarPrefixosMaisProximos(digitos, 10);
 
+                let html = '';
+                const temExato = sugestoesAtuais.some(v => String(v.prefixo || '').replace(/\D/g, '') === digitos);
+
                 if (sugestoesAtuais.length === 0) {
-                    dropdown.innerHTML = '<div style="padding: 12px 14px; color: #94a3b8; font-size: 0.84rem; text-align: center;">Nenhum ônibus com os números "' + escapeHtml(digitos) + '" no prefixo</div>';
+                    html = '<div style="padding: 14px; text-align: center;">' +
+                        '<div style="color: #b45309; font-weight: 700; font-size: 0.88rem; margin-bottom: 10px;">' +
+                            'Veículo não cadastrado, deseja cadastrar novo veículo?' +
+                        '</div>' +
+                        '<button type="button" class="btn-trigger-cadastrar-novo-veic" style="padding: 8px 16px; background: #16a34a; color: #ffffff; border: none; border-radius: 8px; font-weight: 700; font-size: 0.84rem; cursor: pointer;">' +
+                            '+ Cadastrar novo veículo (' + escapeHtml(digitos) + ')' +
+                        '</button>' +
+                    '</div>';
+                    dropdown.innerHTML = html;
                     dropdown.style.display = 'block';
                     indiceSelecionado = -1;
+
+                    const btnCad = dropdown.querySelector('.btn-trigger-cadastrar-novo-veic');
+                    if (btnCad) {
+                        btnCad.addEventListener('mousedown', function(e) {
+                            e.preventDefault();
+                            fecharDropdown();
+                            abrirModalNovoVeiculoContagem(termo);
+                        });
+                    }
                     return;
                 }
 
-                let html = '';
                 sugestoesAtuais.forEach((v, idx) => {
                     const numFmt = formatarNumeroVeiculo(v.prefixo);
                     const isSel = (idx === 0);
@@ -4982,9 +5192,25 @@ try {
                     '</div>';
                 });
 
+                if (!temExato) {
+                    html += '<div class="btn-trigger-cadastrar-novo-veic" style="padding: 10px 14px; background: #f0fdf4; border-top: 1px solid #bbf7d0; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px;">' +
+                        '<span style="font-size: 0.8rem; font-weight: 700; color: #166534;">Veículo "' + escapeHtml(digitos) + '" não cadastrado, deseja cadastrar novo veículo?</span>' +
+                        '<span style="font-size: 0.75rem; font-weight: 800; color: #ffffff; background: #16a34a; padding: 4px 10px; border-radius: 6px; white-space: nowrap;">+ Cadastrar</span>' +
+                    '</div>';
+                }
+
                 dropdown.innerHTML = html;
                 dropdown.style.display = 'block';
                 indiceSelecionado = 0;
+
+                const btnCadFooter = dropdown.querySelector('.btn-trigger-cadastrar-novo-veic');
+                if (btnCadFooter) {
+                    btnCadFooter.addEventListener('mousedown', function(e) {
+                        e.preventDefault();
+                        fecharDropdown();
+                        abrirModalNovoVeiculoContagem(termo);
+                    });
+                }
 
                 dropdown.querySelectorAll('.item-sugestao-painel').forEach(el => {
                     el.addEventListener('mousedown', function(e) {
@@ -5051,12 +5277,121 @@ try {
 
             const maisProximos = buscarPrefixosMaisProximos(digitos, 1);
             if (!maisProximos || maisProximos.length === 0) {
-                showToastNotification('⚠️ Nenhum ônibus encontrado com os números "' + digitos + '" no prefixo.');
-                input.focus();
+                if (confirm('Veículo não cadastrado, deseja cadastrar novo veículo?')) {
+                    abrirModalNovoVeiculoContagem(termo);
+                } else {
+                    input.focus();
+                }
                 return;
             }
 
             adicionarOnibusDiretoContagem(maisProximos[0]);
+        }
+
+        function abrirModalNovoVeiculoContagem(prefixoInicial) {
+            const modal = document.getElementById('modalCadastrarNovoVeiculoContagem');
+            const inpPref = document.getElementById('novoVeicPrefixo');
+            const inpPlaca = document.getElementById('novoVeicPlaca');
+            const selEmp = document.getElementById('novoVeicEmpresa');
+            if (!modal) return;
+
+            if (inpPref) inpPref.value = String(prefixoInicial || '').trim();
+            if (inpPlaca) inpPlaca.value = '';
+            if (selEmp) selEmp.value = '';
+
+            modal.style.display = 'flex';
+            modal.classList.add('active');
+            document.documentElement.classList.add('modal-veiculos-open');
+            document.body.classList.add('modal-veiculos-open');
+
+            setTimeout(() => {
+                if (inpPref && !inpPref.value) inpPref.focus();
+                else if (inpPlaca) inpPlaca.focus();
+            }, 80);
+        }
+
+        function fecharModalNovoVeiculoContagem() {
+            const modal = document.getElementById('modalCadastrarNovoVeiculoContagem');
+            if (!modal) return;
+            modal.style.display = 'none';
+            modal.classList.remove('active');
+            document.documentElement.classList.remove('modal-veiculos-open');
+            document.body.classList.remove('modal-veiculos-open');
+        }
+
+        function salvarNovoVeiculoContagem(event) {
+            if (event) event.preventDefault();
+            const inpPref = document.getElementById('novoVeicPrefixo');
+            const inpPlaca = document.getElementById('novoVeicPlaca');
+            const selEmp = document.getElementById('novoVeicEmpresa');
+            const btn = document.getElementById('btnSalvarNovoVeiculoContagem');
+
+            const prefixo = inpPref ? inpPref.value.trim() : '';
+            const placa = inpPlaca ? inpPlaca.value.trim().toUpperCase() : '';
+            const idEmpresa = selEmp ? selEmp.value : '';
+
+            if (!prefixo) {
+                alert('Informe o prefixo do veículo.');
+                if (inpPref) inpPref.focus();
+                return;
+            }
+
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Salvando...';
+            }
+
+            const formData = new FormData();
+            formData.append('action', 'cadastrar_veiculo_contagem');
+            formData.append('prefixo', prefixo);
+            formData.append('placa', placa);
+            formData.append('idEmpresa', idEmpresa);
+            formData.append('ajax', '1');
+
+            fetch('index.php', {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Cadastrar e Usar Veículo';
+                }
+                if (data.success && data.veiculo) {
+                    const v = data.veiculo;
+                    window.frotaVeiculosDisponiveis = window.frotaVeiculosDisponiveis || [];
+                    const existeFrota = window.frotaVeiculosDisponiveis.some(item => parseInt(item.idVeiculo) === parseInt(v.idVeiculo));
+                    if (!existeFrota) {
+                        window.frotaVeiculosDisponiveis.push({
+                            idVeiculo: parseInt(v.idVeiculo),
+                            prefixo: String(v.prefixo),
+                            placa: String(v.placa || '')
+                        });
+                    }
+                    const selEditV = document.getElementById('editIdVeiculo');
+                    if (selEditV && !selEditV.querySelector('option[value="' + v.idVeiculo + '"]')) {
+                        const opt = document.createElement('option');
+                        opt.value = v.idVeiculo;
+                        opt.textContent = formatarNumeroVeiculo(v.prefixo) + (v.placa ? ' (' + v.placa + ')' : '');
+                        selEditV.appendChild(opt);
+                    }
+                    fecharModalNovoVeiculoContagem();
+                    adicionarOnibusDiretoContagem(v);
+                    showToastNotification('✓ ' + (data.message || 'Veículo cadastrado com sucesso!'), 2500);
+                } else {
+                    alert(data.message || 'Não foi possível cadastrar o veículo.');
+                }
+            })
+            .catch(err => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Cadastrar e Usar Veículo';
+                }
+                console.error('Erro ao cadastrar veículo:', err);
+                alert('Erro de comunicação ao cadastrar o veículo.');
+            });
         }
 
         // Adiciona um veículo diretamente aos registros da contagem atual
@@ -5500,9 +5835,42 @@ try {
                     }
                 }, { passive: false });
             }
+            var modalNovoVeic = document.getElementById('modalCadastrarNovoVeiculoContagem');
+            if (modalNovoVeic) {
+                modalNovoVeic.addEventListener('click', function(e) {
+                    if (e.target === modalNovoVeic) {
+                        fecharModalNovoVeiculoContagem();
+                    }
+                });
+            }
+            var inpNovoPlaca = document.getElementById('novoVeicPlaca');
+            if (inpNovoPlaca) {
+                inpNovoPlaca.addEventListener('input', function() {
+                    var raw = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    var formatted = '';
+                    for (var i = 0; i < raw.length && i < 7; i++) {
+                        var ch = raw[i];
+                        if (i < 3) {
+                            if (/[A-Z]/.test(ch)) formatted += ch;
+                        } else if (i === 3) {
+                            if (/[0-9]/.test(ch)) formatted += '-' + ch;
+                        } else if (i === 4) {
+                            if (/[A-Z0-9]/.test(ch)) formatted += ch;
+                        } else {
+                            if (/[0-9]/.test(ch)) formatted += ch;
+                        }
+                    }
+                    this.value = formatted;
+                });
+            }
             document.addEventListener('keydown', function(e) {
-                if (e.key === 'Escape' && modalV && modalV.classList.contains('active')) {
-                    closeModalVeiculos();
+                if (e.key === 'Escape') {
+                    if (modalV && modalV.classList.contains('active')) {
+                        closeModalVeiculos();
+                    }
+                    if (modalNovoVeic && modalNovoVeic.classList.contains('active')) {
+                        fecharModalNovoVeiculoContagem();
+                    }
                 }
             });
             if (typeof inicializarBrowserOnibusPainel === 'function') {
@@ -5568,13 +5936,17 @@ try {
             let totalPax = 0;
             let totalBus = 0;
             let totalViag = 0;
+            let somaOcupPctBus = 0;
 
             rows.forEach(r => {
+                const bus = parseInt(r.getAttribute('data-onibus') || '1', 10) || 1;
+                const ocupVal = parseFloat(r.getAttribute('data-ocup-val') || '0') || 0;
                 totalEmb += parseInt(r.getAttribute('data-emb') || '0', 10) || 0;
                 totalDes += parseInt(r.getAttribute('data-des') || '0', 10) || 0;
                 totalPax += parseInt(r.getAttribute('data-pax') || '0', 10) || 0;
-                totalBus += parseInt(r.getAttribute('data-onibus') || '1', 10) || 0;
+                totalBus += bus;
                 totalViag += parseInt(r.getAttribute('data-viag') || '0', 10) || 0;
+                somaOcupPctBus += (ocupVal * bus);
             });
 
             const labelCell = tfoot.querySelector('.foot-label-onibus');
@@ -5597,9 +5969,9 @@ try {
 
             const ocupFootCell = tfoot.querySelector('.col-metric-ocup-foot');
             if (ocupFootCell) {
-                const mediaVal = totalBus > 0 ? (totalPax / totalBus) : 0;
+                const mediaVal = totalBus > 0 ? (somaOcupPctBus / totalBus) : 0;
                 const mediaFmt = mediaVal.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-                ocupFootCell.textContent = `Média: ${mediaFmt} pax/ôn.`;
+                ocupFootCell.textContent = `Média: ${mediaFmt}%`;
             }
         }
 
@@ -5769,7 +6141,7 @@ try {
                 { id: 'kpi-total-embarques', val: data.embarques },
                 { id: 'kpi-total-desembarques', val: data.desembarques },
                 { id: 'kpi-total-passageiros', val: data.passageiros },
-                { id: 'kpi-media-pax-onibus', val: data.mediaPax || '0,0' }
+                { id: 'kpi-media-pax-onibus', val: data.mediaPax || '0,0%' }
             ];
 
             fields.forEach(f => {
@@ -6057,8 +6429,7 @@ try {
                 'Linha',
                 'Veículo',
                 'Viagem',
-                'Embarques',
-                'Desembarques',
+                'Embarque/Desembarque',
                 'Total Pax',
                 ocupHeaderLabel || 'Ocupação (%)',
                 'Pesquisador',
@@ -6075,21 +6446,20 @@ try {
 
             allFilterRows.forEach(row => {
                 const cols = row.querySelectorAll('td');
-                if (cols.length < 11) return;
+                if (cols.length < 10) return;
 
-                const dataVal = extractCleanCellText(cols[0], false);
-                const horaVal = extractCleanCellText(cols[1], false);
-                const empVal  = extractCleanCellText(cols[2], false);
-                const locVal  = extractCleanCellText(cols[3], false);
-                const linVal  = extractCleanCellText(cols[4], false);
-                const veicVal = extractCleanCellText(cols[5], false);
-                const viagVal = extractCleanCellText(cols[6], false);
-                const embVal  = extractCleanCellText(cols[7], false);
-                const desVal  = extractCleanCellText(cols[8], false);
-                const paxVal  = extractCleanCellText(cols[9], false);
-                const ocupVal = extractCleanCellText(cols[10], false);
-                const pesqVal = cols[11] ? extractCleanCellText(cols[11], false) : (row.getAttribute('data-pesquisador') || '');
-                const cargoVal = row.getAttribute('data-cargo') || 'Pesquisador';
+                const dataVal   = extractCleanCellText(cols[0], false);
+                const horaVal   = extractCleanCellText(cols[1], false);
+                const empVal    = extractCleanCellText(cols[2], false);
+                const locVal    = extractCleanCellText(cols[3], false);
+                const linVal    = extractCleanCellText(cols[4], false);
+                const veicVal   = extractCleanCellText(cols[5], false);
+                const viagVal   = extractCleanCellText(cols[6], false);
+                const embDesVal = extractCleanCellText(cols[7], false);
+                const paxVal    = extractCleanCellText(cols[8], false);
+                const ocupVal   = extractCleanCellText(cols[9], false);
+                const pesqVal   = cols[10] ? extractCleanCellText(cols[10], false) : (row.getAttribute('data-pesquisador') || '');
+                const cargoVal  = row.getAttribute('data-cargo') || 'Pesquisador';
 
                 csv.push(toCsvLine([
                     dataVal,
@@ -6099,8 +6469,7 @@ try {
                     linVal,
                     veicVal,
                     viagVal,
-                    embVal,
-                    desVal,
+                    embDesVal,
                     paxVal,
                     ocupVal,
                     pesqVal,
@@ -6111,8 +6480,6 @@ try {
             const tfoot = table.querySelector('tfoot');
             if (tfoot && allFilterRows.length > 0) {
                 const lblEl  = tfoot.querySelector('.foot-label-onibus');
-                const embEl  = tfoot.querySelector('.foot-val-emb');
-                const desEl  = tfoot.querySelector('.foot-val-des');
                 const paxEl  = tfoot.querySelector('.foot-val-pax');
                 const ocupEl = tfoot.querySelector('.col-metric-ocup-foot');
 
@@ -6124,8 +6491,7 @@ try {
                     '',
                     '',
                     '',
-                    embEl ? extractCleanCellText(embEl, false) : '0',
-                    desEl ? extractCleanCellText(desEl, false) : '0',
+                    '-',
                     paxEl ? extractCleanCellText(paxEl, false) : '0',
                     ocupEl ? extractCleanCellText(ocupEl, false) : '',
                     '',
@@ -6153,7 +6519,7 @@ try {
                         emb: sanitizeTextForPDF(mapData.embarques),
                         des: sanitizeTextForPDF(mapData.desembarques),
                         pax: sanitizeTextForPDF(mapData.passageiros),
-                        mediaPax: mapData.mediaPax ? sanitizeTextForPDF(mapData.mediaPax + ' pax/on.') : null
+                        mediaPax: mapData.mediaPax ? sanitizeTextForPDF(mapData.mediaPax) : null
                     };
                 }
             }
@@ -6278,8 +6644,7 @@ try {
                 { label: 'LINHA', align: 'left', color: [71, 85, 105] },
                 { label: 'VEÍCULO', align: 'left', color: [71, 85, 105] },
                 { label: 'VIAGEM', align: 'center', color: [71, 85, 105] },
-                { label: 'EMBARQUES', align: 'right', color: [71, 85, 105] },
-                { label: 'DESEMBARQUES', align: 'right', color: [71, 85, 105] },
+                { label: 'EMBARQUE/DESEMBARQUE', align: 'center', color: [71, 85, 105] },
                 { label: 'TOTAL PAX', align: 'right', color: [29, 78, 216] },
                 { label: ocupHeaderLabel || 'OCUPAÇÃO (%)', align: 'center', color: [71, 85, 105] },
                 { label: 'PESQUISADOR', align: 'left', color: [71, 85, 105] },
@@ -6312,12 +6677,12 @@ try {
             } else {
                 allFilterRows.forEach(tr => {
                     const tds = tr.querySelectorAll('td');
-                    if (tds.length < 11) return;
+                    if (tds.length < 10) return;
 
                     const rowIdx = body.length;
                     const rowData = [];
 
-                    for (let colIdx = 0; colIdx <= 10; colIdx++) {
+                    for (let colIdx = 0; colIdx <= 9; colIdx++) {
                         const td = tds[colIdx];
                         const txt = extractCleanCellText(td, true);
                         const halign = columnAlignments[colIdx] || 'left';
@@ -6359,7 +6724,7 @@ try {
                         });
                     }
 
-                    const pesqVal = sanitizeTextForPDF(tds[11] ? extractCleanCellText(tds[11], true) : (tr.getAttribute('data-pesquisador') || ''));
+                    const pesqVal = sanitizeTextForPDF(tds[10] ? extractCleanCellText(tds[10], true) : (tr.getAttribute('data-pesquisador') || ''));
                     const cargoVal = sanitizeTextForPDF(tr.getAttribute('data-cargo') || 'Pesquisador');
 
                     rowData.push({
@@ -6390,8 +6755,6 @@ try {
             const tfoot = table.querySelector('tfoot');
             if (tfoot && allFilterRows.length > 0) {
                 const lblEl  = tfoot.querySelector('.foot-label-onibus');
-                const embEl  = tfoot.querySelector('.foot-val-emb');
-                const desEl  = tfoot.querySelector('.foot-val-des');
                 const paxEl  = tfoot.querySelector('.foot-val-pax');
                 const ocupEl = tfoot.querySelector('.col-metric-ocup-foot');
 
@@ -6402,12 +6765,8 @@ try {
                         styles: { halign: 'right', textColor: [15, 23, 42], fillColor: [248, 250, 252], fontStyle: 'bold' }
                     },
                     {
-                        content: embEl ? extractCleanCellText(embEl, true) : '0',
-                        styles: { halign: 'right', textColor: [21, 128, 61], fillColor: [248, 250, 252], fontStyle: 'bold' }
-                    },
-                    {
-                        content: desEl ? extractCleanCellText(desEl, true) : '0',
-                        styles: { halign: 'right', textColor: [190, 18, 60], fillColor: [248, 250, 252], fontStyle: 'bold' }
+                        content: '-',
+                        styles: { halign: 'center', textColor: [100, 116, 139], fillColor: [248, 250, 252], fontStyle: 'bold' }
                     },
                     {
                         content: paxEl ? extractCleanCellText(paxEl, true) : '0',
@@ -6470,10 +6829,10 @@ try {
                     const inlineAlign = (th.style && th.style.textAlign) ? th.style.textAlign : '';
                     const computedAlign = inlineAlign || (window.getComputedStyle ? window.getComputedStyle(th).textAlign : '');
                     let align = 'left';
-                    if (computedAlign === 'right' || /embarque|desembarque|passageiro|total pax/i.test(txt)) {
-                        align = 'right';
-                    } else if (computedAlign === 'center' || /data|hora|viagem|ocup|m[eé]dia|total viagens/i.test(txt)) {
+                    if (computedAlign === 'center' || /data|hora|viagem|embarque\/desembarque|ocup|m[eé]dia|total viagens/i.test(txt)) {
                         align = 'center';
+                    } else if (computedAlign === 'right' || /passageiro|total pax/i.test(txt)) {
+                        align = 'right';
                     }
                     columnAlignments[idx] = align;
 
