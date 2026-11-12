@@ -577,7 +577,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $veicRetorno = [
                     'idVeiculo' => (int)$veicExist['idVeiculo'],
                     'prefixo'   => (string)$veicExist['prefixo'],
-                    'placa'     => (string)($veicExist['placa'] ?? '')
+                    'placa'     => isset($veicExist['placa']) ? (string)$veicExist['placa'] : ''
                 ];
                 $msgVeic = 'Veículo já estava cadastrado e foi selecionado!';
             } else {
@@ -587,7 +587,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $veicRetorno = [
                     'idVeiculo' => $newIdVeic,
                     'prefixo'   => $prefixoRaw,
-                    'placa'     => (string)($placaFinal ?? '')
+                    'placa'     => $placaFinal !== null ? (string)$placaFinal : ''
                 ];
                 $msgVeic = 'Novo veículo cadastrado com sucesso!';
             }
@@ -1588,15 +1588,6 @@ if (empty($empresasDisponiveis)) {
                 </div>
             </div>
 
-            <!-- Barra Indicadora da Aba Ativa no Mobile -->
-            <div class="cb-mobile-active-tab-pill cb-mobile-only" onclick="toggleMobileDrawer()">
-                <div class="cb-pill-left">
-                    <span style="width: 8px; height: 8px; border-radius: 50%; background: #0054A6; display: inline-block;"></span>
-                    <span id="cb-mobile-current-tab-name">Painel de Contagem</span>
-                </div>
-                <span class="cb-pill-action">Trocar aba ☰</span>
-            </div>
-
             <!-- Navegação de Abas do Usuário -->
             <div class="tabs-navigation" style="margin: 20px 24px 0;">
                 <button type="button" class="tab-btn active" id="btn-tab-contador" onclick="switchUserTab('tab-contador', this)">
@@ -1677,13 +1668,20 @@ if (empty($empresasDisponiveis)) {
                             <input type="hidden" name="sentido" id="input_sentido" value="">
 
                             <!-- Resumo Compacto de Dados no Mobile (Permite ir direto às Seleções Obrigatórias) -->
-                            <div class="cb-mobile-dados-toggle cb-mobile-only" onclick="toggleMobileDadosCard()">
-                                <div class="cb-dados-summary">
+                            <div class="cb-mobile-dados-toggle cb-mobile-only">
+                                <div class="cb-dados-summary" onclick="toggleMobileDadosCard()" style="flex: 1; cursor: pointer;">
                                     <span>👤 <?php echo htmlspecialchars($loggedNome); ?></span>
-                                    <span style="color: #94a3b8;">•</span>
-                                    <span>☀️ <span id="cb-mobile-turno-summary"><?php echo htmlspecialchars($turnoAtual); ?></span></span>
+                                    <span id="cb-mobile-dados-arrow" style="color: #64748b; font-size: 0.78rem; margin-left: 2px;">▾</span>
                                 </div>
-                                <span class="cb-dados-action" id="cb-mobile-dados-action-label">Editar Turno ▾</span>
+                                <div style="display: inline-flex; align-items: center; gap: 4px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 3px 8px; position: relative;">
+                                    <span style="font-size: 0.82rem; pointer-events: none;">☀️</span>
+                                    <select id="select_iniciar_turno_mobile" onchange="syncMobileTurnoSelect(this.value)" style="appearance: none; -webkit-appearance: none; -moz-appearance: none; background: transparent; border: none; outline: none; font-weight: 800; font-size: 0.8rem; color: #0054A6; padding-right: 14px; cursor: pointer;">
+                                        <option value="Matutino" <?php echo ($turnoAtual === 'Matutino') ? 'selected' : ''; ?>>Matutino</option>
+                                        <option value="Vespertino" <?php echo ($turnoAtual === 'Vespertino') ? 'selected' : ''; ?>>Vespertino</option>
+                                        <option value="Noturno" <?php echo ($turnoAtual === 'Noturno') ? 'selected' : ''; ?>>Noturno</option>
+                                    </select>
+                                    <span style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); color: #0054A6; font-size: 0.75rem; pointer-events: none;">▾</span>
+                                </div>
                             </div>
 
                             <div class="panel-layout-grid">
@@ -2623,33 +2621,7 @@ if (empty($empresasDisponiveis)) {
                             </div>
                         </div>
 
-                        <!-- Card 2: Embarques -->
-                        <div style="background: #dcfce7; border: 1px solid #bbf7d0; border-radius: 16px; padding: 18px 20px;">
-                            <div style="color: #15803d; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
-                                <span>↑ Total Embarques</span>
-                            </div>
-                            <div id="kpi-total-embarques" class="kpi-metric-val" style="color: #15803d; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
-                                <?php echo $dashKpisMap['dash-t1']['embarques']; ?>
-                            </div>
-                            <div class="kpi-sub-label" style="color: #166534; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
-                                <?php echo $dashKpisMap['dash-t1']['contextLabel']; ?>
-                            </div>
-                        </div>
-
-                        <!-- Card 3: Desembarques -->
-                        <div style="background: #ffe4e6; border: 1px solid #fecdd3; border-radius: 16px; padding: 18px 20px;">
-                            <div style="color: #be123c; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
-                                <span>↓ Total Desembarques</span>
-                            </div>
-                            <div id="kpi-total-desembarques" class="kpi-metric-val" style="color: #be123c; font-size: 1.85rem; font-weight: 800; margin: 8px 0 2px; transition: all 0.25s ease;">
-                                <?php echo $dashKpisMap['dash-t1']['desembarques']; ?>
-                            </div>
-                            <div class="kpi-sub-label" style="color: #9f1239; font-size: 0.78rem; font-weight: 600; opacity: 0.85;">
-                                <?php echo $dashKpisMap['dash-t1']['contextLabel']; ?>
-                            </div>
-                        </div>
-
-                        <!-- Card 4: Passageiros Totais -->
+                        <!-- Card 2: Passageiros Totais -->
                         <div style="background: #faf5ff; border: 1px solid #f3e8ff; border-radius: 16px; padding: 18px 20px;">
                             <div style="color: #7c3aed; font-weight: 700; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
                                 <span>👥 Passageiros Totais</span>
@@ -2678,33 +2650,33 @@ if (empty($empresasDisponiveis)) {
                     </div>
 
                     <!-- BARRA DE NAVEGAÇÃO DE TABELAS, OPÇÃO DE MÉDIA E BOTÃO COMPACTO DE EXPORTAÇÃO GERAL -->
-                    <div class="dash-tables-header-bar" style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
-                        <div class="dash-tables-nav" style="display: flex; gap: 8px; flex-wrap: wrap; background: #ffffff; padding: 8px 12px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.02); align-items: center;">
-                            <button type="button" class="dash-nav-btn active" id="btn-dash-t1" onclick="switchDashTable('dash-t1', this)" style="background: #2563eb; color: #ffffff; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: none; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(37,99,235,0.25); white-space: nowrap;">
-                                📊 1. Geral
+                    <div class="dash-tables-header-bar" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; width: 100%; max-width: 100%; box-sizing: border-box;">
+                        <div class="dash-tables-nav" style="display: flex; gap: 6px; flex-wrap: wrap; background: #ffffff; padding: 7px 10px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.02); align-items: center; max-width: 100%; box-sizing: border-box;">
+                            <button type="button" class="dash-nav-btn active" id="btn-dash-t1" onclick="switchDashTable('dash-t1', this)" style="background: #2563eb; color: #ffffff; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: none; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(37,99,235,0.25); white-space: nowrap;">
+                                <span class="cb-desktop-label">📊 1. Geral</span><span class="cb-mobile-label">📊 Geral</span>
                             </button>
-                            <button type="button" class="dash-nav-btn" id="btn-dash-t2" onclick="switchDashTable('dash-t2', this)" style="background: #f1f5f9; color: #475569; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
-                                🚍 2. Total por Linha
+                            <button type="button" class="dash-nav-btn" id="btn-dash-t2" onclick="switchDashTable('dash-t2', this)" style="background: #f1f5f9; color: #475569; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
+                                <span class="cb-desktop-label">🚍 2. Total por Linha</span><span class="cb-mobile-label">🚍 Linha</span>
                             </button>
-                            <button type="button" class="dash-nav-btn" id="btn-dash-t3" onclick="switchDashTable('dash-t3', this)" style="background: #f1f5f9; color: #475569; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
-                                📍 3. Por Local
+                            <button type="button" class="dash-nav-btn" id="btn-dash-t3" onclick="switchDashTable('dash-t3', this)" style="background: #f1f5f9; color: #475569; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
+                                <span class="cb-desktop-label">📍 3. Por Local</span><span class="cb-mobile-label">📍 Local</span>
                             </button>
-                            <button type="button" class="dash-nav-btn" id="btn-dash-t4" onclick="switchDashTable('dash-t4', this)" style="background: #f1f5f9; color: #475569; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
-                                🏢 4. Por Empresa / Cooperativa
+                            <button type="button" class="dash-nav-btn" id="btn-dash-t4" onclick="switchDashTable('dash-t4', this)" style="background: #f1f5f9; color: #475569; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
+                                <span class="cb-desktop-label">🏢 4. Por Empresa / Cooperativa</span><span class="cb-mobile-label">🏢 Empresa</span>
                             </button>
                             <?php if ($canViewAllContagens): ?>
-                            <button type="button" class="dash-nav-btn" id="btn-dash-t5" onclick="switchDashTable('dash-t5', this)" style="background: #f1f5f9; color: #475569; padding: 8px 14px; border-radius: 8px; font-weight: 700; font-size: 0.83rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
-                                👥 5. Por Pesquisador / Usuário
+                            <button type="button" class="dash-nav-btn" id="btn-dash-t5" onclick="switchDashTable('dash-t5', this)" style="background: #f1f5f9; color: #475569; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
+                                <span class="cb-desktop-label">👥 5. Por Pesquisador / Usuário</span><span class="cb-mobile-label">👥 Usuário</span>
                             </button>
                             <?php endif; ?>
                         </div>
 
-                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                        <div class="dash-export-actions-wrap" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 100%; box-sizing: border-box;">
                             <!-- BOTÃO COMPACTO DE EXPORTAR RELATÓRIO GERAL (CONSOLIDADO) -->
-                            <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block;">
-                                <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 0.82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório">
+                            <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block; max-width: 100%;">
+                                <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 7px 12px; border-radius: 10px; font-weight: 700; font-size: 0.8rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                    <span>Exportar Relatório</span>
+                                    <span class="cb-desktop-label">Exportar Relatório</span><span class="cb-mobile-label">Exportar</span>
                                     <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
                                 </button>
                                 <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 220px; z-index: 100; padding: 6px 0;">
@@ -3906,10 +3878,21 @@ if (empty($empresasDisponiveis)) {
 
         function toggleMobileDadosCard() {
             const col = document.getElementById('cb-dados-card-col');
-            const lbl = document.getElementById('cb-mobile-dados-action-label');
+            const arrow = document.getElementById('cb-mobile-dados-arrow');
             if (!col) return;
             const isCollapsed = col.classList.toggle('cb-mobile-collapsed');
-            if (lbl) lbl.textContent = isCollapsed ? 'Editar Turno ▾' : 'Ocultar Dados ▴';
+            if (arrow) arrow.textContent = isCollapsed ? '▾' : '▴';
+        }
+
+        function syncMobileTurnoSelect(val) {
+            const selTurnoInit = document.getElementById('select_iniciar_turno');
+            if (selTurnoInit && selTurnoInit.value !== val) {
+                selTurnoInit.value = val;
+            }
+            const selTurnoMobile = document.getElementById('select_iniciar_turno_mobile');
+            if (selTurnoMobile && selTurnoMobile.value !== val) {
+                selTurnoMobile.value = val;
+            }
         }
 
         function toggleMobileSessionInfo() {
@@ -4289,13 +4272,15 @@ if (empty($empresasDisponiveis)) {
                             <div class="session-info-item"><label>Local de Parada</label><span>${escapeHtml(c.nomeLocal || 'Local')}</span></div>
                             <div class="session-info-item"><label>Sentido (Viagem)</label><span style="color: #0054A6; font-weight: 700;">${(c.sentido && c.sentido.toLowerCase() === 'volta') ? '⬅️ Volta' : '➡️ Ida'}</span></div>
                             <div class="session-info-item">
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <label style="margin: 0;">Turno</label>
-                                    <button type="button" onclick="quickEditTurnoHistorico(${c.idContagem}, '${escapeHtml(c.turno || 'Matutino')}')" style="background: none; border: none; color: #000000; cursor: pointer; font-size: 0.76rem; font-weight: 700; padding: 0; text-decoration: underline;" title="Clique para editar o turno desta contagem">
-                                        Editar
-                                    </button>
+                                <label>Turno</label>
+                                <div style="display: inline-flex; align-items: center; position: relative; margin-top: 2px;">
+                                    <select id="hist-turno-val-${c.idContagem}" onchange="salvarTurnoHistorico(${c.idContagem}, this.value)" style="appearance: none; -webkit-appearance: none; -moz-appearance: none; background: #ffffff; border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 4px 24px 4px 10px; font-weight: 700; font-size: 0.85rem; color: #000000; cursor: pointer; outline: none;">
+                                        <option value="Matutino" ${(c.turno || 'Matutino') === 'Matutino' ? 'selected' : ''}>Matutino</option>
+                                        <option value="Vespertino" ${c.turno === 'Vespertino' ? 'selected' : ''}>Vespertino</option>
+                                        <option value="Noturno" ${c.turno === 'Noturno' ? 'selected' : ''}>Noturno</option>
+                                    </select>
+                                    <span style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: #0f172a; font-size: 0.78rem; pointer-events: none;">▾</span>
                                 </div>
-                                <span id="hist-turno-val-${c.idContagem}" style="font-weight: 700; color: #000000;">${escapeHtml(c.turno || 'Matutino')}</span>
                             </div>
                             <div class="session-info-item"><label>Início / Fim</label><span>${c.inicioFmt}<br><small style="color:#64748b;">Fim: ${c.fimFmt || 'Em andamento'}</small></span></div>
                         </div>
@@ -4398,8 +4383,11 @@ if (empty($empresasDisponiveis)) {
 
         function salvarTurnoHistorico(idContagem, novoTurno) {
             const container = document.getElementById('hist-turno-val-' + idContagem);
-            if (container) {
+            const isSelect = container && container.tagName === 'SELECT';
+            if (container && !isSelect) {
                 container.innerHTML = `<span style="color: #2563eb; font-size: 0.8rem;">Salvando...</span>`;
+            } else if (isSelect) {
+                container.style.borderColor = '#2563eb';
             }
 
             const formData = new FormData();
@@ -4416,20 +4404,27 @@ if (empty($empresasDisponiveis)) {
             .then(res => res.json())
             .then(data => {
                 if (data.success) {
-                    if (container) {
+                    if (container && !isSelect) {
                         container.innerHTML = `<span style="color: #16a34a; font-weight: 800;">✓ ${escapeHtml(novoTurno)}</span>`;
                         setTimeout(() => {
                             if (container) container.textContent = novoTurno;
                         }, 1200);
+                    } else if (isSelect) {
+                        container.style.borderColor = '#16a34a';
+                        setTimeout(() => {
+                            if (container) container.style.borderColor = '#cbd5e1';
+                        }, 1200);
                     }
                 } else {
                     alert(data.message || 'Erro ao alterar turno.');
-                    if (container) container.textContent = novoTurno;
+                    if (container && !isSelect) container.textContent = novoTurno;
+                    if (isSelect) container.style.borderColor = '#cbd5e1';
                 }
             })
             .catch(err => {
                 alert('Erro de comunicação ao salvar o turno.');
-                if (container) container.textContent = novoTurno;
+                if (container && !isSelect) container.textContent = novoTurno;
+                if (isSelect) container.style.borderColor = '#cbd5e1';
             });
         }
 
@@ -6138,8 +6133,6 @@ if (empty($empresasDisponiveis)) {
 
             const fields = [
                 { id: 'kpi-total-viagens', val: data.viagens },
-                { id: 'kpi-total-embarques', val: data.embarques },
-                { id: 'kpi-total-desembarques', val: data.desembarques },
                 { id: 'kpi-total-passageiros', val: data.passageiros },
                 { id: 'kpi-media-pax-onibus', val: data.mediaPax || '0,0%' }
             ];
@@ -6516,22 +6509,16 @@ if (empty($empresasDisponiveis)) {
                 if (mapData) {
                     return {
                         viag: sanitizeTextForPDF(mapData.viagens),
-                        emb: sanitizeTextForPDF(mapData.embarques),
-                        des: sanitizeTextForPDF(mapData.desembarques),
                         pax: sanitizeTextForPDF(mapData.passageiros),
                         mediaPax: mapData.mediaPax ? sanitizeTextForPDF(mapData.mediaPax) : null
                     };
                 }
             }
             const kpiViag = document.getElementById('kpi-total-viagens');
-            const kpiEmb = document.getElementById('kpi-total-embarques');
-            const kpiDes = document.getElementById('kpi-total-desembarques');
             const kpiPax = document.getElementById('kpi-total-passageiros');
-            if (!kpiEmb || !kpiDes || !kpiPax) return null;
+            if (!kpiPax) return null;
             return {
                 viag: kpiViag ? sanitizeTextForPDF(kpiViag.innerText) : null,
-                emb: sanitizeTextForPDF(kpiEmb.innerText),
-                des: sanitizeTextForPDF(kpiDes.innerText),
                 pax: sanitizeTextForPDF(kpiPax.innerText),
                 mediaPax: null
             };
@@ -6577,7 +6564,7 @@ if (empty($empresasDisponiveis)) {
                     <strong>Gerado em:</strong> ${generatedAt} &nbsp;|&nbsp; 
                     <strong>Total Registros:</strong> ${allFilterRows.length}`;
                 if (kpiResumo) {
-                    resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Embarques:</strong> ${kpiResumo.emb} &nbsp;|&nbsp; <strong>Desembarques:</strong> ${kpiResumo.des} &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiResumo.pax}`;
+                    resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Passageiros:</strong> ${kpiResumo.pax}`;
                     if (kpiResumo.mediaPax) {
                         resumoKpiHtml += ` &nbsp;|&nbsp; <strong>Média:</strong> ${kpiResumo.mediaPax}`;
                     }
@@ -6787,7 +6774,7 @@ if (empty($empresasDisponiveis)) {
             const kpiResumo = getExportKpiMetrics('tbl-t1');
             let pdfSubtitle = generatedAt + '   |   Total de registros na tabela: ' + allFilterRows.length;
             if (kpiResumo) {
-                pdfSubtitle += '   |   Embarques: ' + kpiResumo.emb + '   |   Desembarques: ' + kpiResumo.des + '   |   Total Pax: ' + kpiResumo.pax;
+                pdfSubtitle += '   |   Total Pax: ' + kpiResumo.pax;
                 if (kpiResumo.mediaPax) {
                     pdfSubtitle += '   |   Média: ' + kpiResumo.mediaPax;
                 }
@@ -6944,7 +6931,7 @@ if (empty($empresasDisponiveis)) {
             const kpiResumo = getExportKpiMetrics(tableId);
             let pdfSubtitle = generatedAt + '   |   Total de registros na tabela: ' + body.length;
             if (kpiResumo) {
-                pdfSubtitle += '   |   Embarques: ' + kpiResumo.emb + '   |   Desembarques: ' + kpiResumo.des + '   |   Total Pax: ' + kpiResumo.pax;
+                pdfSubtitle += '   |   Total Pax: ' + kpiResumo.pax;
                 if (kpiResumo.mediaPax) {
                     pdfSubtitle += '   |   Média: ' + kpiResumo.mediaPax;
                 }
@@ -7827,8 +7814,8 @@ if (empty($empresasDisponiveis)) {
             const selTurnoInit = document.getElementById('select_iniciar_turno');
             if (selTurnoInit) {
                 selTurnoInit.addEventListener('change', function() {
-                    const summaryTurno = document.getElementById('cb-mobile-turno-summary');
-                    if (summaryTurno) summaryTurno.textContent = this.value;
+                    const selTurnoMobile = document.getElementById('select_iniciar_turno_mobile');
+                    if (selTurnoMobile) selTurnoMobile.value = this.value;
                 });
             }
 
@@ -7947,13 +7934,6 @@ if (empty($empresasDisponiveis)) {
                 <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
             </svg>
             <span>Dashboard</span>
-        </button>
-
-        <button type="button" class="cb-bottom-nav-btn" onclick="toggleMobileDrawer()">
-            <svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-            </svg>
-            <span>Menu</span>
         </button>
     </nav>
 </body>

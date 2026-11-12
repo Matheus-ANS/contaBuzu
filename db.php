@@ -148,6 +148,16 @@ try {
                 if (!in_array('ativo', $colsLinha)) {
                     $pdo->exec("ALTER TABLE linha ADD COLUMN ativo TINYINT(1) NOT NULL DEFAULT 1");
                 }
+                if (in_array('linha', $colsLinha)) {
+                    try {
+                        $pdo->exec("ALTER TABLE linha MODIFY COLUMN linha VARCHAR(255) NULL DEFAULT ''");
+                    } catch (\Exception $exL) {}
+                }
+                if (in_array('descrição', $colsLinha)) {
+                    try {
+                        $pdo->exec("ALTER TABLE linha MODIFY COLUMN `descrição` VARCHAR(255) NULL DEFAULT ''");
+                    } catch (\Exception $exD) {}
+                }
             }
         }
     } catch (\PDOException $ex) {

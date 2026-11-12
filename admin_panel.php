@@ -1363,15 +1363,6 @@ foreach ($sistemas as $s) {
                 </div>
             </div>
 
-            <!-- Barra Indicadora da Aba Ativa no Mobile (Admin) -->
-            <div class="cb-mobile-active-tab-pill cb-mobile-only" onclick="toggleAdminMobileDrawer()" style="margin: 0 0 16px 0;">
-                <div class="cb-pill-left">
-                    <span style="width: 8px; height: 8px; border-radius: 50%; background: #0054A6; display: inline-block;"></span>
-                    <span>Seção: <strong id="cb-admin-current-tab-name">Linhas</strong></span>
-                </div>
-                <span class="cb-pill-action">Trocar seção ☰</span>
-            </div>
-
             <!-- Título e Subtítulo Principal -->
             <div style="margin-bottom: 28px;">
                 <h1 style="font-size: 1.75rem; font-weight: 800; color: #0f172a; margin-bottom: 6px; letter-spacing: -0.5px;">Painel Administrativo</h1>
