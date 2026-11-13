@@ -225,6 +225,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $_SESSION['cb_modo_veiculo'][$idPesquisa] = ($opcaoVeiculo === 'nao_informado') ? 'nao_informado' : 'registrar';
 
+            if (!isset($_SESSION['cb_contagem_informada']) || !is_array($_SESSION['cb_contagem_informada'])) {
+                $_SESSION['cb_contagem_informada'] = [];
+            }
+            $_SESSION['cb_contagem_informada'][$idPesquisa] = false;
+
             // Inserir os veículos selecionados na tabela veiculoPesquisado
             if (!empty($veicArray)) {
                 $stmtVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
@@ -274,6 +279,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $novoTotal = (int)$contagemAtiva['totalPassageiros'] + $qtd;
                     }
 
+                    // Registra na sessão que o usuário escolheu explicitamente um número/percentual (inclusive 0)
+                    if (!isset($_SESSION['cb_contagem_informada']) || !is_array($_SESSION['cb_contagem_informada'])) {
+                        $_SESSION['cb_contagem_informada'] = [];
+                    }
+                    $_SESSION['cb_contagem_informada'][$idContagem] = true;
+
                     // Se foi especificado veículo alvo, atualiza idVeiculo ativo da pesquisa
                     $veicIdContar = ($idVeiculoAlvo > 0) ? $idVeiculoAlvo : (int)$contagemAtiva['idVeiculo'];
                     if ($idVeiculoAlvo > 0 && $idVeiculoAlvo != (int)$contagemAtiva['idVeiculo']) {
@@ -282,7 +293,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     // Localizar ou registrar idVeiculoPesquisado
-                    $idVP = null;
                     if ($veicIdContar > 0) {
                         $stmtVP = $pdo->prepare("SELECT idVeiculoPesquisado FROM veiculoPesquisado WHERE idPesquisa = ? AND idVeiculo = ? LIMIT 1");
                         $stmtVP->execute([$idContagem, $veicIdContar]);
@@ -291,20 +301,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             try {
                                 $stmtInsVP = $pdo->prepare("INSERT INTO veiculoPesquisado (idPesquisa, idVeiculo) VALUES (?, ?)");
                                 $stmtInsVP->execute([$idContagem, $veicIdContar]);
-                                $idVP = $pdo->lastInsertId();
                             } catch (\Exception $exInsVP) {}
                         }
                     }
-                    // Registrar na tabela contagem apenas se houver veículo selecionado
-                    if ($qtd > 0 && $idVP) {
-                        try {
-                            $stmtContIns = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, quantidade, idUsuario, tipo, dataHora) VALUES (?, ?, ?, ?, 'incremento', NOW())");
-                            $stmtContIns->execute([$idContagem, $idVP, $qtd, $usuarioId]);
-                        } catch (\Exception $exCont) {}
-                    }
 
                     if ($isAjax) {
-                        // Busca registros da sessão (apenas salvamentos e correções) com identificação do veículo
+                        // Busca registros da sessão (salvamentos e correções) com identificação do veículo
                         $stmtLogs = $pdo->prepare("
                             SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada,
                                    v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
@@ -312,7 +314,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
                             LEFT JOIN pesquisa p ON c.idPesquisa = p.idPesquisa
                             LEFT JOIN veiculo v ON COALESCE(vp.idVeiculo, p.idVeiculo) = v.idVeiculo
-                            WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
+                            WHERE c.idPesquisa = ? 
                             ORDER BY c.idContagem DESC LIMIT 10
                         ");
                         $stmtLogs->execute([$idContagem]);
@@ -365,7 +367,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         // Registra a correção na tabela contagem
                         if ($idVP) {
-                            $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, ?, 'correcao', ?, ?, NOW())");
+                            $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, quantidade, justificativa, dataHora) VALUES (?, ?, ?, ?, ?, NOW())");
                             $stmtReg->execute([$idContagem, $idVP, $usuarioId, $qtdNegativa, $justificativa]);
                         }
 
@@ -382,7 +384,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
                                 LEFT JOIN pesquisa p ON c.idPesquisa = p.idPesquisa
                                 LEFT JOIN veiculo v ON COALESCE(vp.idVeiculo, p.idVeiculo) = v.idVeiculo
-                                WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
+                                WHERE c.idPesquisa = ? 
                                 ORDER BY c.idContagem DESC LIMIT 10
                             ");
                             $stmtLogs->execute([$idContagem]);
@@ -487,6 +489,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($idContagem > 0) {
                 $idsArr = array_values(array_filter(array_unique(array_map('intval', explode(',', $veiculosSel)))));
+
+                if (cbIsModoNaoInformado($idContagem) && count($idsArr) > 1) {
+                    if ($isAjax) {
+                        header('Content-Type: application/json; charset=utf-8');
+                        echo json_encode([
+                            'success' => false,
+                            'message' => 'Apenas um veículo pode ser registrado por vez. Apague ou salve uma contagem com o veículo já registrado.'
+                        ]);
+                        exit;
+                    }
+                    header("Location: ?idContagem=" . $idContagem);
+                    exit;
+                }
 
                 // Remove apenas vínculos sem contagem lançada e fora da lista selecionada
                 if (!empty($idsArr)) {
@@ -659,6 +674,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cData = $stmtInfo->fetch();
 
                 if ($cData) {
+                    $idVeicPost = !empty($_POST['idVeiculo']) ? (int)$_POST['idVeiculo'] : 0;
+                    if (empty($cData['idVeiculo']) && $idVeicPost > 0) {
+                        $cData['idVeiculo'] = $idVeicPost;
+                    }
+
+                    $contagemInformada = !empty($_SESSION['cb_contagem_informada'][$idContagem]) || ((float)$cData['totalPassageiros'] > 0);
+                    if (!$contagemInformada) {
+                        if ($isAjax) {
+                            echo json_encode([
+                                'success' => false,
+                                'missingNumber' => true,
+                                'message' => 'Por favor, selecione um número antes de salvar a contagem.'
+                            ]);
+                            exit;
+                        }
+                    }
+
                     if (empty($cData['idVeiculo'])) {
                         if ($isAjax) {
                             echo json_encode([
@@ -687,7 +719,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         // Registra salvamento na tabela contagem apenas quando o veículo estiver selecionado
                         if ($idVP) {
                             try {
-                                $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, tipo, quantidade, justificativa, dataHora) VALUES (?, ?, ?, 'salvamento', ?, ?, NOW())");
+                                $stmtReg = $pdo->prepare("INSERT INTO contagem (idPesquisa, idVeiculoPesquisado, idUsuario, quantidade, justificativa, dataHora) VALUES (?, ?, ?, ?, ?, NOW())");
                                 $stmtReg->execute([$idContagem, $idVP, $usuarioId, $totalVal, $msgSalvamento]);
                             } catch (\Exception $exReg) {
                                 error_log("Erro ao registrar salvamento: " . $exReg->getMessage());
@@ -699,13 +731,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         try {
                             $stmtReset = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = 0, idVeiculo = NULL WHERE idPesquisa = ?");
                             $stmtReset->execute([$idContagem]);
+                            if (!isset($_SESSION['cb_contagem_informada']) || !is_array($_SESSION['cb_contagem_informada'])) {
+                                $_SESSION['cb_contagem_informada'] = [];
+                            }
+                            $_SESSION['cb_contagem_informada'][$idContagem] = false;
                         } catch (\Exception $exReset) {
                             error_log("Erro ao zerar totalPassageiros e idVeiculo: " . $exReset->getMessage());
                         }
                     }
                 }
 
-                // Busca registros da sessão (apenas salvamentos e correções) com veículo
+                $isNaoInfSalvar = cbIsModoNaoInformado($idContagem);
+                $veiculosRestantes = [];
+                if ($isNaoInfSalvar) {
+                    // Modo Não Informado: busca apenas os veículos restantes que ainda NÃO foram contados
+                    try {
+                        $vTable = cbGetVeiculoTable($pdo);
+                        $stmtRestantes = $pdo->prepare("
+                            SELECT v.idVeiculo, v.prefixo, v.placa 
+                            FROM veiculoPesquisado vp
+                            JOIN `$vTable` v ON vp.idVeiculo = v.idVeiculo
+                            WHERE vp.idPesquisa = ? 
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM contagem ct 
+                                  WHERE ct.idVeiculoPesquisado = vp.idVeiculoPesquisado 
+                                    AND ct.quantidade >= 0
+                              )
+                            ORDER BY v.prefixo
+                        ");
+                        $stmtRestantes->execute([$idContagem]);
+                        $veiculosRestantes = $stmtRestantes->fetchAll();
+                    } catch (\Exception $exRestantes) {
+                        error_log("Erro ao buscar veículos restantes: " . $exRestantes->getMessage());
+                    }
+                } else {
+                    // Modo Veículos Informados: mantém todos os veículos vinculados à sessão na grade (apenas desmarca o ativo)
+                    try {
+                        $vTable = cbGetVeiculoTable($pdo);
+                        $stmtRestantes = $pdo->prepare("
+                            SELECT v.idVeiculo, v.prefixo, v.placa 
+                            FROM veiculoPesquisado vp
+                            JOIN `$vTable` v ON vp.idVeiculo = v.idVeiculo
+                            WHERE vp.idPesquisa = ?
+                            ORDER BY v.prefixo
+                        ");
+                        $stmtRestantes->execute([$idContagem]);
+                        $veiculosRestantes = $stmtRestantes->fetchAll();
+                    } catch (\Exception $exRestantes) {
+                        error_log("Erro ao buscar veículos da sessão: " . $exRestantes->getMessage());
+                    }
+                }
+
+                // Busca registros da sessão (salvamentos e correções) com veículo
                 $stmtLogs = $pdo->prepare("
                     SELECT c.*, c.idContagem as idRegistro, DATE_FORMAT(c.dataHora, '%H:%i:%s') as horaFormatada,
                            v.prefixo as veiculoPrefixo, v.placa as veiculoPlaca
@@ -713,7 +790,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
                     LEFT JOIN pesquisa p ON c.idPesquisa = p.idPesquisa
                     LEFT JOIN veiculo v ON COALESCE(vp.idVeiculo, p.idVeiculo) = v.idVeiculo
-                    WHERE c.idPesquisa = ? AND c.tipo != 'incremento' 
+                    WHERE c.idPesquisa = ? 
                     ORDER BY c.idContagem DESC LIMIT 10
                 ");
                 $stmtLogs->execute([$idContagem]);
@@ -725,6 +802,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'message'      => 'Contagem salva com sucesso! A sessão permanece aberta para continuar os lançamentos.',
                         'total'        => 0,
                         'veiculoLimpo' => true,
+                        'limparGrade'  => $isNaoInfSalvar,
+                        'veiculos'     => $veiculosRestantes,
                         'logs'         => $logs
                     ]);
                     exit;
@@ -832,17 +911,44 @@ try {
     $sessaoAtiva = $stmtSessao->fetch();
 
     if ($sessaoAtiva) {
-        $stmtVPs = $pdo->prepare("SELECT idVeiculo FROM veiculoPesquisado WHERE idPesquisa = ?");
-        $stmtVPs->execute([$sessaoAtiva['idPesquisa']]);
-        $idsVeicsFromVP = $stmtVPs->fetchAll(PDO::FETCH_COLUMN);
-        if ($sessaoAtiva['idVeiculo'] && !in_array($sessaoAtiva['idVeiculo'], $idsVeicsFromVP)) {
-            $idsVeicsFromVP[] = (int)$sessaoAtiva['idVeiculo'];
+        if (cbIsModoNaoInformado($sessaoAtiva['idPesquisa'])) {
+            $stmtVPs = $pdo->prepare("
+                SELECT vp.idVeiculo 
+                FROM veiculoPesquisado vp
+                WHERE vp.idPesquisa = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM contagem ct 
+                      WHERE ct.idVeiculoPesquisado = vp.idVeiculoPesquisado 
+                        AND ct.quantidade >= 0
+                  )
+            ");
+            $stmtVPs->execute([$sessaoAtiva['idPesquisa']]);
+            $idsVeicsFromVP = $stmtVPs->fetchAll(PDO::FETCH_COLUMN);
+            if ($sessaoAtiva['idVeiculo'] && !in_array($sessaoAtiva['idVeiculo'], $idsVeicsFromVP)) {
+                $stmtJaContado = $pdo->prepare("
+                    SELECT 1 FROM contagem ct
+                    JOIN veiculoPesquisado vp ON ct.idVeiculoPesquisado = vp.idVeiculoPesquisado
+                    WHERE vp.idPesquisa = ? AND vp.idVeiculo = ? AND ct.quantidade >= 0
+                    LIMIT 1
+                ");
+                $stmtJaContado->execute([$sessaoAtiva['idPesquisa'], $sessaoAtiva['idVeiculo']]);
+                if (!$stmtJaContado->fetchColumn()) {
+                    $idsVeicsFromVP[] = (int)$sessaoAtiva['idVeiculo'];
+                }
+            }
+        } else {
+            $stmtVPs = $pdo->prepare("SELECT idVeiculo FROM veiculoPesquisado WHERE idPesquisa = ?");
+            $stmtVPs->execute([$sessaoAtiva['idPesquisa']]);
+            $idsVeicsFromVP = $stmtVPs->fetchAll(PDO::FETCH_COLUMN);
+            if ($sessaoAtiva['idVeiculo'] && !in_array($sessaoAtiva['idVeiculo'], $idsVeicsFromVP)) {
+                $idsVeicsFromVP[] = (int)$sessaoAtiva['idVeiculo'];
+            }
         }
         $sessaoAtiva['veiculosSelecionados'] = implode(',', $idsVeicsFromVP);
     }
 } catch (PDOException $e) {}
 
-// Histórico de lançamentos da sessão ativa (apenas salvamentos e correções)
+// Histórico de lançamentos da sessão ativa (salvamentos e correções)
 $registrosSessao = [];
 if ($sessaoAtiva) {
     try {
@@ -853,7 +959,7 @@ if ($sessaoAtiva) {
             LEFT JOIN veiculoPesquisado vp ON c.idVeiculoPesquisado = vp.idVeiculoPesquisado
             LEFT JOIN pesquisa p ON c.idPesquisa = p.idPesquisa
             LEFT JOIN veiculo v ON COALESCE(vp.idVeiculo, p.idVeiculo) = v.idVeiculo
-            WHERE c.idPesquisa = ? AND c.tipo != 'incremento'
+            WHERE c.idPesquisa = ?
             ORDER BY c.idContagem DESC LIMIT 15
         ");
         $stmtLogs->execute([$sessaoAtiva['idContagem']]);
@@ -962,7 +1068,9 @@ try {
         $paramsHist[]   = $filtroLocal;
     }
     if ($filtroEmpresa > 0) {
-        $whereClauses[] = "(c.idEmpresa = ? OR v.idEmpresa = ? OR l.idEmpresa = ?)";
+        $vTableFilter = cbGetVeiculoTable($pdo);
+        $whereClauses[] = "(c.idEmpresa = ? OR v.idEmpresa = ? OR l.idEmpresa = ? OR EXISTS (SELECT 1 FROM veiculoPesquisado vp_e JOIN `$vTableFilter` v_e ON vp_e.idVeiculo = v_e.idVeiculo WHERE vp_e.idPesquisa = c.idPesquisa AND v_e.idEmpresa = ?))";
+        $paramsHist[]   = $filtroEmpresa;
         $paramsHist[]   = $filtroEmpresa;
         $paramsHist[]   = $filtroEmpresa;
         $paramsHist[]   = $filtroEmpresa;
@@ -989,15 +1097,14 @@ try {
         SELECT 
             p_sub.idPesquisa,
             COUNT(DISTINCT COALESCE(vp.idVeiculoPesquisado, CONCAT('p_', p_sub.idPesquisa))) as qtdVeiculos,
-            SUM(COALESCE(NULLIF(cnt.salvo, 0), cnt.incr, p_sub.totalPassageiros, 0)) as qtdTotal
+            SUM(COALESCE(NULLIF(cnt.salvo, 0), p_sub.totalPassageiros, 0)) as qtdTotal
         FROM pesquisa p_sub
         LEFT JOIN veiculoPesquisado vp ON p_sub.idPesquisa = vp.idPesquisa
         LEFT JOIN (
             SELECT 
                 idPesquisa,
                 idVeiculoPesquisado,
-                MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
-                SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
+                MAX(CASE WHEN quantidade >= 0 THEN quantidade ELSE 0 END) as salvo
             FROM contagem
             GROUP BY idPesquisa, idVeiculoPesquisado
         ) cnt ON (
@@ -1062,11 +1169,11 @@ try {
     }
 
     if ($canViewAllContagens && $filtroUsuario <= 0) {
-        $stmtStatsCorr = $pdo->query("SELECT COUNT(*) FROM contagem WHERE tipo = 'correcao'");
+        $stmtStatsCorr = $pdo->query("SELECT COUNT(*) FROM contagem WHERE quantidade < 0");
         $totalCorrecoesUsuario = (int)$stmtStatsCorr->fetchColumn();
     } else {
         $targetUserCorr = ($filtroUsuario > 0) ? $filtroUsuario : $usuarioId;
-        $stmtStatsCorr = $pdo->prepare("SELECT COUNT(*) FROM contagem WHERE idUsuario = ? AND tipo = 'correcao'");
+        $stmtStatsCorr = $pdo->prepare("SELECT COUNT(*) FROM contagem WHERE idUsuario = ? AND quantidade < 0");
         $stmtStatsCorr->execute([$targetUserCorr]);
         $totalCorrecoesUsuario = (int)$stmtStatsCorr->fetchColumn();
     }
@@ -1163,16 +1270,16 @@ try {
                 COALESCE(u.nome, u.login, CONCAT('Pesquisador #', c.idUsuario)) as pesquisadorNome,
                 COALESCE(u.cargo, 'Pesquisador') as pesquisadorCargo,
                 CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
-                    COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                    COALESCE(NULLIF(cnt_agg.salvo, 0), c.totalPassageiros, 0)
                 ELSE 0 END as embarques,
                 CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 
-                    COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                    COALESCE(NULLIF(cnt_agg.salvo, 0), c.totalPassageiros, 0)
                 ELSE 0 END as desembarques,
                 CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN 
-                    COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                    COALESCE(NULLIF(cnt_agg.salvo, 0), c.totalPassageiros, 0)
                 ELSE 0 END as ocupacaoInformada,
                 CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN 
-                    COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
+                    COALESCE(NULLIF(cnt_agg.salvo, 0), c.totalPassageiros, 0)
                 ELSE NULL END as mediaPercentual,
                 1 as totalRegistros
             FROM pesquisa c
@@ -1187,8 +1294,7 @@ try {
                 SELECT 
                     idPesquisa,
                     idVeiculoPesquisado,
-                    MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
-                    SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr,
+                    MAX(CASE WHEN quantidade >= 0 THEN quantidade ELSE 0 END) as salvo,
                     MAX(dataHora) as dataHoraMax
                 FROM contagem
                 GROUP BY idPesquisa, idVeiculoPesquisado
@@ -1216,151 +1322,12 @@ try {
         $t1MediaOcupacao = ($t1TotalRegistros > 0) ? round($t1SomaOcupacao / $t1TotalRegistros, 1) : 0;
     } catch (PDOException $e) {}
 
-    // 2. Total de passageiros por linha (agrupado por Data, Linha, Sentido e Operação)
-    $dadosTabelaTotalPorLinha = [];
-    try {
-        $stmtT2 = $pdo->prepare("
-            SELECT 
-                COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y'), DATE_FORMAT(NOW(), '%d/%m/%Y')) as dataFormatada,
-                c.idLinha,
-                COALESCE(NULLIF(l.numero, ''), CONCAT('Linha #', c.idLinha)) as linhaNumero,
-                COALESCE(l.descricao, l.linha, '') as linhaDescricao,
-                COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
-                CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END as operacaoTipo,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
-                COUNT(c.idPesquisa) as totalSessoes,
-                SUM(GREATEST(COALESCE(calc_vp.qtdVeiculos, 0), 1)) as totalOnibus,
-                MAX(DATE(COALESCE(c.dataInicio, cnt_max.maxDataHora, NOW()))) as dataOrd
-            FROM pesquisa c
-            LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-            LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
-            LEFT JOIN (
-                SELECT idPesquisa, MAX(dataHora) as maxDataHora FROM contagem GROUP BY idPesquisa
-            ) cnt_max ON c.idPesquisa = cnt_max.idPesquisa
-            WHERE $whereSql
-            GROUP BY COALESCE(DATE_FORMAT(c.dataInicio, '%d/%m/%Y'), DATE_FORMAT(cnt_max.maxDataHora, '%d/%m/%Y'), DATE_FORMAT(NOW(), '%d/%m/%Y')), c.idLinha, l.numero, l.descricao, l.linha, COALESCE(NULLIF(c.viagem, ''), 'Ida'), CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END
-            ORDER BY dataOrd DESC, embarques DESC
-        ");
-        $stmtT2->execute($paramsHist);
-        $dadosTabelaTotalPorLinha = $stmtT2->fetchAll();
-    } catch (PDOException $e) {}
-
-    // 3. Embarques / Desembarques / Ocupação por Local
-    $dadosTabelaPorLocal = [];
-    try {
-        $stmtT3 = $pdo->prepare("
-            SELECT 
-                c.idLocal,
-                COALESCE(loc.local, 'Praça Central') as nomeLocal,
-                loc.regiao as regiaoLocal,
-                COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
-                CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END as operacaoTipo,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
-                COUNT(c.idPesquisa) as totalSessoes,
-                SUM(GREATEST(COALESCE(calc_vp.qtdVeiculos, 0), 1)) as totalOnibus
-            FROM pesquisa c
-            LEFT JOIN locais loc ON c.idLocal = loc.idLocal
-            LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-            LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
-            WHERE $whereSql
-            GROUP BY c.idLocal, loc.local, loc.regiao, COALESCE(NULLIF(c.viagem, ''), 'Ida'), CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END
-            ORDER BY embarques DESC
-        ");
-        $stmtT3->execute($paramsHist);
-        $dadosTabelaPorLocal = $stmtT3->fetchAll();
-    } catch (PDOException $e) {}
-
-    // 4. Embarques / Desembarques / Ocupação por Empresa
-    $dadosTabelaPorEmpresa = [];
-    try {
-        $stmtT4 = $pdo->prepare("
-            SELECT 
-                COALESCE(e.idEmpresa, 1) as idEmpresa,
-                $empNomeExpr as nomeEmpresa,
-                COALESCE(NULLIF(c.viagem, ''), 'Ida') as sentido,
-                CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END as operacaoTipo,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as embarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as desembarques,
-                SUM(CASE WHEN LOWER(c.tipoOperacao) = 'ocupação' OR LOWER(c.tipoOperacao) = 'ocupacao' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE 0 END) as ocupacaoInformada,
-                AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN COALESCE(NULLIF(calc_vp.qtdTotal, 0), c.totalPassageiros, 0) ELSE NULL END) as mediaPercentual,
-                COUNT(DISTINCT c.idPesquisa) as totalSessoes,
-                SUM(GREATEST(COALESCE(calc_vp.qtdVeiculos, 0), 1)) as totalOnibus
-            FROM pesquisa c
-            LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-            LEFT JOIN linha l ON c.idLinha = l.idLinha
-            LEFT JOIN `$targetEmpTable` e ON (c.idEmpresa = e.idEmpresa OR v.idEmpresa = e.idEmpresa OR l.idEmpresa = e.idEmpresa OR e.idEmpresa = 1)
-            LEFT JOIN ($subqueryCalcVp) calc_vp ON c.idPesquisa = calc_vp.idPesquisa
-            WHERE $whereSql
-            GROUP BY COALESCE(e.idEmpresa, 1), $empNomeExpr, COALESCE(NULLIF(c.viagem, ''), 'Ida'), CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 'Desembarque' WHEN LOWER(c.tipoOperacao) IN ('ocupação', 'ocupacao') THEN 'Ocupação' ELSE 'Embarque' END
-            ORDER BY embarques DESC
-        ");
-        $stmtT4->execute($paramsHist);
-        $dadosTabelaPorEmpresa = $stmtT4->fetchAll();
-    } catch (PDOException $e) {}
-
-    // 5. Total de passageiros por Pesquisador / Usuário (para Gerente e Administrador)
-    $dadosTabelaPorPesquisador = [];
-    if ($canViewAllContagens) {
-        try {
-            $stmtT5 = $pdo->prepare("
-                SELECT 
-                    c.idUsuario,
-                    COALESCE(u.nome, CONCAT('Pesquisador #', c.idUsuario)) as pesquisadorNome,
-                    COALESCE(u.cargo, 'Pesquisador') as pesquisadorCargo,
-                    COUNT(DISTINCT c.idPesquisa) as totalViagens,
-                    COUNT(DISTINCT COALESCE(vp.idVeiculoPesquisado, CONCAT('p_', c.idPesquisa))) as totalOnibus,
-                    MAX(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 1 ELSE 0 END) as temEmb,
-                    MAX(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 1 ELSE 0 END) as temDes,
-                    SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('embarque', 'ida') THEN 
-                        COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
-                    ELSE 0 END) as embarques,
-                    SUM(CASE WHEN LOWER(c.tipoOperacao) IN ('desembarque', 'volta') THEN 
-                        COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
-                    ELSE 0 END) as desembarques,
-                    SUM(COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)) as totalPassageiros,
-                    AVG(CASE WHEN LOWER(c.tipoContagem) LIKE '%perc%' THEN 
-                        COALESCE(NULLIF(cnt_agg.salvo, 0), cnt_agg.incr, c.totalPassageiros, 0)
-                    ELSE NULL END) as mediaPercentual
-                FROM pesquisa c
-                LEFT JOIN usuarios u ON c.idUsuario = u.idusuarios
-                LEFT JOIN linha l ON c.idLinha = l.idLinha
-                LEFT JOIN veiculo v ON c.idVeiculo = v.idVeiculo
-                LEFT JOIN veiculoPesquisado vp ON c.idPesquisa = vp.idPesquisa
-                LEFT JOIN (
-                    SELECT 
-                        idPesquisa,
-                        idVeiculoPesquisado,
-                        MAX(CASE WHEN tipo = 'salvamento' THEN quantidade ELSE 0 END) as salvo,
-                        SUM(CASE WHEN tipo = 'incremento' THEN quantidade ELSE 0 END) as incr
-                    FROM contagem
-                    GROUP BY idPesquisa, idVeiculoPesquisado
-                ) cnt_agg ON (
-                    (vp.idVeiculoPesquisado IS NOT NULL AND cnt_agg.idVeiculoPesquisado = vp.idVeiculoPesquisado)
-                    OR (vp.idVeiculoPesquisado IS NULL AND cnt_agg.idPesquisa = c.idPesquisa)
-                )
-                WHERE $whereSql $vpExtraRowFilter
-                GROUP BY c.idUsuario, u.nome, u.cargo
-                ORDER BY totalPassageiros DESC, totalViagens DESC
-            ");
-            $stmtT5->execute($paramsHist);
-            $dadosTabelaPorPesquisador = $stmtT5->fetchAll();
-        } catch (\PDOException $e) {}
-    }
-
 } catch (PDOException $e) {}
 
 $mediaOcupacaoVal = ($qtdPercentContagens > 0) ? round($somaOcupacaoPercent / $qtdPercentContagens, 1) : 0;
 $mediaOcupacaoFmt = number_format($mediaOcupacaoVal, 1, ',', '.') . '%';
 
-// --- RESUMO CONSOLIDADO DE MÉTRICAS POR TABELA DO DASHBOARD PARA OS CARDS DE KPI E RODAPÉS ---
+// --- RESUMO CONSOLIDADO DE MÉTRICAS DA TABELA GERAL DO DASHBOARD PARA OS CARDS DE KPI E RODAPÉ ---
 $t1_viag = count($dadosTabelaLinhaVeiculoDataHora);
 $t1_emb = $t1TotalEmbarques;
 $t1_des = $t1TotalDesembarques;
@@ -1368,11 +1335,6 @@ $t1_pax = $t1TotalPassageiros;
 $t1_onibus = $t1TotalRegistros;
 $t1_medOcup = $t1MediaOcupacao;
 $t1_mediaPaxFmt = cbFormatarMediaPct($t1_medOcup);
-
-$t2_resumo = cbResumoTabelaConsolidada($dadosTabelaTotalPorLinha);
-$t3_resumo = cbResumoTabelaConsolidada($dadosTabelaPorLocal);
-$t4_resumo = cbResumoTabelaConsolidada($dadosTabelaPorEmpresa);
-$t5_resumo = cbResumoTabelaConsolidada($dadosTabelaPorPesquisador);
 
 $dashKpisMap = [
     'dash-all' => [
@@ -1394,46 +1356,6 @@ $dashKpisMap = [
         'mediaPax' => $t1_mediaPaxFmt,
         'qtdOnibus' => $t1_onibus,
         'contextLabel' => 'Geral'
-    ],
-    'dash-t2' => [
-        'viagens' => number_format($t2_resumo['viag'], 0, ',', '.'),
-        'embarques' => number_format($t2_resumo['emb'], 0, ',', '.'),
-        'desembarques' => number_format($t2_resumo['des'], 0, ',', '.'),
-        'ocupacao' => number_format($t2_resumo['medOcup'], 1, ',', '.') . '%',
-        'passageiros' => number_format($t2_resumo['pax'], 0, ',', '.'),
-        'mediaPax' => $t2_resumo['mediaPaxFmt'],
-        'qtdOnibus' => $t2_resumo['onibus'],
-        'contextLabel' => 'Total por Linha'
-    ],
-    'dash-t3' => [
-        'viagens' => number_format($t3_resumo['viag'], 0, ',', '.'),
-        'embarques' => number_format($t3_resumo['emb'], 0, ',', '.'),
-        'desembarques' => number_format($t3_resumo['des'], 0, ',', '.'),
-        'ocupacao' => number_format($t3_resumo['medOcup'], 1, ',', '.') . '%',
-        'passageiros' => number_format($t3_resumo['pax'], 0, ',', '.'),
-        'mediaPax' => $t3_resumo['mediaPaxFmt'],
-        'qtdOnibus' => $t3_resumo['onibus'],
-        'contextLabel' => 'Por Local'
-    ],
-    'dash-t4' => [
-        'viagens' => number_format($t4_resumo['viag'], 0, ',', '.'),
-        'embarques' => number_format($t4_resumo['emb'], 0, ',', '.'),
-        'desembarques' => number_format($t4_resumo['des'], 0, ',', '.'),
-        'ocupacao' => number_format($t4_resumo['medOcup'], 1, ',', '.') . '%',
-        'passageiros' => number_format($t4_resumo['pax'], 0, ',', '.'),
-        'mediaPax' => $t4_resumo['mediaPaxFmt'],
-        'qtdOnibus' => $t4_resumo['onibus'],
-        'contextLabel' => 'Por Empresa / Cooperativa'
-    ],
-    'dash-t5' => [
-        'viagens' => number_format($t5_resumo['viag'], 0, ',', '.'),
-        'embarques' => number_format($t5_resumo['emb'], 0, ',', '.'),
-        'desembarques' => number_format($t5_resumo['des'], 0, ',', '.'),
-        'ocupacao' => number_format($t5_resumo['medOcup'], 1, ',', '.') . '%',
-        'passageiros' => number_format($t5_resumo['pax'], 0, ',', '.'),
-        'mediaPax' => $t5_resumo['mediaPaxFmt'],
-        'qtdOnibus' => $t5_resumo['onibus'],
-        'contextLabel' => 'Por Pesquisador / Usuário'
     ]
 ];
 // Buscar opções para o formulário de início de contagem
@@ -1452,26 +1374,37 @@ try {
 
 // Veículos selecionados especificamente para a sessão ativa de contagem
 $isModoNaoInformadoSessao = ($sessaoAtiva && cbIsModoNaoInformado($sessaoAtiva['idContagem']));
+$contagemInformadaSessao = ($sessaoAtiva && (!empty($_SESSION['cb_contagem_informada'][(int)$sessaoAtiva['idContagem']]) || (int)$sessaoAtiva['totalPassageiros'] > 0));
 $veiculosSessao = [];
 if ($sessaoAtiva) {
     $idsVeiculosSessao = [];
-    if ($isModoNaoInformadoSessao) {
-        // Quando iniciou como "Não informado", exibe apenas o veículo atualmente ativo (limpo após salvar)
-        if (!empty($sessaoAtiva['idVeiculo'])) {
-            $idsVeiculosSessao[] = (int)$sessaoAtiva['idVeiculo'];
-        }
-    } else {
-        if (!empty($sessaoAtiva['veiculosSelecionados'])) {
-            $partesIds = explode(',', (string)$sessaoAtiva['veiculosSelecionados']);
-            foreach ($partesIds as $pid) {
-                $pidInt = (int)trim($pid);
-                if ($pidInt > 0 && !in_array($pidInt, $idsVeiculosSessao)) {
-                    $idsVeiculosSessao[] = $pidInt;
-                }
+    if (!empty($sessaoAtiva['veiculosSelecionados'])) {
+        $partesIds = explode(',', (string)$sessaoAtiva['veiculosSelecionados']);
+        foreach ($partesIds as $pid) {
+            $pidInt = (int)trim($pid);
+            if ($pidInt > 0 && !in_array($pidInt, $idsVeiculosSessao)) {
+                $idsVeiculosSessao[] = $pidInt;
             }
         }
-        // Inclui também o veículo ativo principal da sessão se não estiver na lista
-        if (!empty($sessaoAtiva['idVeiculo']) && !in_array((int)$sessaoAtiva['idVeiculo'], $idsVeiculosSessao)) {
+    }
+    // Inclui também o veículo ativo principal da sessão se não estiver na lista
+    if (!empty($sessaoAtiva['idVeiculo']) && !in_array((int)$sessaoAtiva['idVeiculo'], $idsVeiculosSessao)) {
+        $incluirAtivo = true;
+        if ($isModoNaoInformadoSessao) {
+            try {
+                $stmtJaContadoSess = $pdo->prepare("
+                    SELECT 1 FROM contagem ct
+                    JOIN veiculoPesquisado vp ON ct.idVeiculoPesquisado = vp.idVeiculoPesquisado
+                    WHERE vp.idPesquisa = ? AND vp.idVeiculo = ? AND ct.quantidade >= 0
+                    LIMIT 1
+                ");
+                $stmtJaContadoSess->execute([$sessaoAtiva['idPesquisa'], $sessaoAtiva['idVeiculo']]);
+                if ($stmtJaContadoSess->fetchColumn()) {
+                    $incluirAtivo = false;
+                }
+            } catch (\Exception $e) {}
+        }
+        if ($incluirAtivo) {
             $idsVeiculosSessao[] = (int)$sessaoAtiva['idVeiculo'];
         }
     }
@@ -2169,9 +2102,9 @@ if (empty($empresasDisponiveis)) {
                                 <?php if ($tipoCont === 'percentual' || stripos($tipoCont, 'perc') !== false): ?>
                                     <div class="counter-display-card" style="background: linear-gradient(135deg, #4c1d95 0%, #7e22ce 100%); padding: 24px; text-align: center; border-radius: 16px; margin-bottom: 20px;">
                                         <div class="counter-label" style="color: #e9d5ff; font-weight: 600; font-size: 0.95rem;">Nível de Ocupação (% Estimada)</div>
-                                        <div class="counter-number" id="counterTotalPercent" style="color: #ffffff; font-size: 3.5rem; font-weight: 800; text-shadow: 0 4px 12px rgba(0,0,0,0.3); margin: 6px 0;"><?php echo calcPercentualStr($sessaoAtiva['totalPassageiros']); ?></div>
+                                        <div class="counter-number" id="counterTotalPercent" style="color: #ffffff; font-size: 3.5rem; font-weight: 800; text-shadow: 0 4px 12px rgba(0,0,0,0.3); margin: 6px 0;"><?php echo $contagemInformadaSessao ? calcPercentualStr($sessaoAtiva['totalPassageiros']) : '%'; ?></div>
                                         <div style="color: #d8b4fe; font-size: 0.95rem; font-weight: 600;">
-                                            Total acumulado: <span id="counterTotalNum" style="color: #ffffff; font-weight: 800;"><?php echo (int)$sessaoAtiva['totalPassageiros']; ?></span> passageiros
+                                            Total acumulado: <span id="counterTotalNum" style="color: #ffffff; font-weight: 800;"><?php echo $contagemInformadaSessao ? (int)$sessaoAtiva['totalPassageiros'] : '—'; ?></span> passageiros
                                         </div>
                                     </div>
 
@@ -2191,7 +2124,7 @@ if (empty($empresasDisponiveis)) {
                                         ?>
                                         <?php foreach ($opcoesPct as $op): ?>
                                             <?php 
-                                                $isAtivoPct = ($totAtual === $op['qtd']);
+                                                $isAtivoPct = ($contagemInformadaSessao && $totAtual === $op['qtd']);
                                             ?>
                                             <button type="button" 
                                                     class="btn-count-percent <?php echo $isAtivoPct ? 'active-percent' : ''; ?>" 
@@ -2209,7 +2142,7 @@ if (empty($empresasDisponiveis)) {
                                     <!-- BOTOEIRA NUMÉRICA PADRÃO -->
                                     <div class="counter-display-card">
                                         <div class="counter-label">Total de Passageiros Embarcados</div>
-                                        <div class="counter-number" id="counterTotal"><?php echo (int)$sessaoAtiva['totalPassageiros']; ?></div>
+                                        <div class="counter-number" id="counterTotal"><?php echo $contagemInformadaSessao ? (int)$sessaoAtiva['totalPassageiros'] : '—'; ?></div>
                                     </div>
 
                                     <div class="counter-btn-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px;">
@@ -2277,13 +2210,12 @@ if (empty($empresasDisponiveis)) {
                                     <div id="grid-onibus-registrados" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; max-height: 240px; overflow-y: auto; padding: 6px; background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 12px;">
                                         <?php 
                                             $qtdVeiculosSessao = count($veiculosSessao);
-                                            $temMultiplosVeiculos = ($qtdVeiculosSessao > 1);
-                                            $idVeicAtivoInicial = ($qtdVeiculosSessao === 1) ? (int)$veiculosSessao[0]['idVeiculo'] : 0;
+                                            $idVeicAtivoInicial = !empty($sessaoAtiva['idVeiculo']) ? (int)$sessaoAtiva['idVeiculo'] : 0;
                                         ?>
                                         <?php if ($qtdVeiculosSessao > 0): ?>
                                             <?php foreach ($veiculosSessao as $v): ?>
                                                 <?php 
-                                                    $isVeicAtivo = (!$temMultiplosVeiculos && $qtdVeiculosSessao === 1 && (int)$v['idVeiculo'] === $idVeicAtivoInicial);
+                                                    $isVeicAtivo = ($idVeicAtivoInicial > 0 && (int)$v['idVeiculo'] === $idVeicAtivoInicial);
                                                     $numFmt = htmlspecialchars(formatarNumeroVeiculo($v['prefixo']));
                                                     $pref = htmlspecialchars($v['prefixo']);
                                                     $plc = !empty($v['placa']) ? htmlspecialchars($v['placa']) : '';
@@ -2389,20 +2321,20 @@ if (empty($empresasDisponiveis)) {
                                                                 <span style="color: #94a3b8; font-size: 0.82rem;">Não informado</span>
                                                             <?php endif; ?>
                                                         </td>
-                                                        <td style="padding: 12px; font-weight: 800; font-size: 1.05rem; color: <?php echo $reg['tipo'] === 'salvamento' ? '#2563eb' : ($reg['quantidade'] > 0 ? '#16a34a' : '#dc2626'); ?>;">
+                                                        <td style="padding: 12px; font-weight: 800; font-size: 1.05rem; color: <?php echo (float)$reg['quantidade'] >= 0 ? '#2563eb' : '#dc2626'; ?>;">
                                                             <?php 
-                                                                if ($reg['tipo'] === 'salvamento') {
+                                                                if ((float)$reg['quantidade'] >= 0) {
                                                                     echo (isset($tipoCont) && stripos($tipoCont, 'perc') !== false) 
                                                                         ? calcPercentualStr($reg['quantidade']) . ' (' . (int)$reg['quantidade'] . ' pas.)' 
                                                                         : (int)$reg['quantidade'] . ' pas.';
                                                                 } else {
-                                                                    echo (($reg['quantidade'] > 0 ? '+' : '') . (int)$reg['quantidade']);
+                                                                    echo (int)$reg['quantidade'];
                                                                 }
                                                             ?>
                                                         </td>
                                                         <td style="padding: 12px; color: #334155;">
                                                             <?php 
-                                                                if ($reg['tipo'] === 'salvamento' || (!empty($reg['justificativa']) && strpos($reg['justificativa'], 'Operação Salva.') === 0)) {
+                                                                if ((float)$reg['quantidade'] >= 0 || (!empty($reg['justificativa']) && strpos($reg['justificativa'], 'Operação Salva.') === 0)) {
                                                                     echo '<span style="color: #15803d; font-weight: 600;">✓ Contagem salva</span>';
                                                                 } elseif (!empty($reg['justificativa'])) {
                                                                     echo htmlspecialchars($reg['justificativa']);
@@ -2643,54 +2575,6 @@ if (empty($empresasDisponiveis)) {
 
                     </div>
 
-                    <!-- BARRA DE NAVEGAÇÃO DE TABELAS, OPÇÃO DE MÉDIA E BOTÃO COMPACTO DE EXPORTAÇÃO GERAL -->
-                    <div class="dash-tables-header-bar" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; width: 100%; max-width: 100%; box-sizing: border-box;">
-                        <div class="dash-tables-nav" style="display: flex; gap: 6px; flex-wrap: wrap; background: #ffffff; padding: 7px 10px; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 2px 6px rgba(0,0,0,0.02); align-items: center; max-width: 100%; box-sizing: border-box;">
-                            <button type="button" class="dash-nav-btn active" id="btn-dash-t1" onclick="switchDashTable('dash-t1', this)" style="background: #2563eb; color: #ffffff; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: none; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 2px 6px rgba(37,99,235,0.25); white-space: nowrap;">
-                                <span class="cb-desktop-label">📊 1. Geral</span><span class="cb-mobile-label">📊 Geral</span>
-                            </button>
-                            <button type="button" class="dash-nav-btn" id="btn-dash-t2" onclick="switchDashTable('dash-t2', this)" style="background: #f1f5f9; color: #475569; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
-                                <span class="cb-desktop-label">🚍 2. Total por Linha</span><span class="cb-mobile-label">🚍 Linha</span>
-                            </button>
-                            <button type="button" class="dash-nav-btn" id="btn-dash-t3" onclick="switchDashTable('dash-t3', this)" style="background: #f1f5f9; color: #475569; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
-                                <span class="cb-desktop-label">📍 3. Por Local</span><span class="cb-mobile-label">📍 Local</span>
-                            </button>
-                            <button type="button" class="dash-nav-btn" id="btn-dash-t4" onclick="switchDashTable('dash-t4', this)" style="background: #f1f5f9; color: #475569; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
-                                <span class="cb-desktop-label">🏢 4. Por Empresa / Cooperativa</span><span class="cb-mobile-label">🏢 Empresa</span>
-                            </button>
-                            <?php if ($canViewAllContagens): ?>
-                            <button type="button" class="dash-nav-btn" id="btn-dash-t5" onclick="switchDashTable('dash-t5', this)" style="background: #f1f5f9; color: #475569; padding: 7px 12px; border-radius: 8px; font-weight: 700; font-size: 0.82rem; border: 1px solid #cbd5e1; cursor: pointer; transition: all 0.2s ease; white-space: nowrap;">
-                                <span class="cb-desktop-label">👥 5. Por Pesquisador / Usuário</span><span class="cb-mobile-label">👥 Usuário</span>
-                            </button>
-                            <?php endif; ?>
-                        </div>
-
-                        <div class="dash-export-actions-wrap" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 100%; box-sizing: border-box;">
-                            <!-- BOTÃO COMPACTO DE EXPORTAR RELATÓRIO GERAL (CONSOLIDADO) -->
-                            <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block; max-width: 100%;">
-                                <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 7px 12px; border-radius: 10px; font-weight: 700; font-size: 0.8rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                                    <span class="cb-desktop-label">Exportar Relatório</span><span class="cb-mobile-label">Exportar</span>
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                                </button>
-                                <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 220px; z-index: 100; padding: 6px 0;">
-                                    <div style="padding: 6px 14px 4px; font-size: 0.72rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f1f5f9; margin-bottom: 4px;">
-                                        Relatório de Contagens
-                                    </div>
-                                    <a href="javascript:void(0)" onclick="exportTable('all', 'pdf', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
-                                        📄 Exportar para PDF
-                                    </a>
-                                    <a href="javascript:void(0)" onclick="exportTable('all', 'csv', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
-                                        📊 Exportar para CSV
-                                    </a>
-                                    <a href="javascript:void(0)" onclick="exportTable('all', 'doc', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
-                                        📝 Exportar para DOC
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
                     <!-- TABELA 1: GERAL -->
                     <div id="container-dash-t1" class="dash-table-card panel-card" style="margin-bottom: 24px;">
                         <div class="panel-card-header" style="background: #ffffff; padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
@@ -2699,6 +2583,30 @@ if (empty($empresasDisponiveis)) {
                                     <span>📊 Geral — Auditoria Detalhada de Contagens</span>
                                 </h3>
                                 <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Detalhamento operacional por data, horário, empresa, local, linha e veículo com totais para repasse</p>
+                            </div>
+                            <div class="dash-export-actions-wrap" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 100%; box-sizing: border-box;">
+                                <!-- BOTÃO COMPACTO DE EXPORTAR RELATÓRIO GERAL (CONSOLIDADO) -->
+                                <div class="export-dropdown-wrapper gerente-export-report-wrapper" style="position: relative; display: inline-block; max-width: 100%;">
+                                    <button type="button" onclick="toggleExportMenu('export-menu-geral', event)" style="background: #0f172a; color: #ffffff; border: none; padding: 7px 12px; border-radius: 10px; font-weight: 700; font-size: 0.8rem; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(15,23,42,0.2); transition: all 0.15s ease; white-space: nowrap;" onmouseover="this.style.background='#1e293b'" onmouseout="this.style.background='#0f172a'" title="Exportar Relatório">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                        <span class="cb-desktop-label">Exportar Relatório</span><span class="cb-mobile-label">Exportar</span>
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                                    </button>
+                                    <div id="export-menu-geral" class="export-menu-box" style="display: none; position: absolute; right: 0; top: 112%; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.12); min-width: 220px; z-index: 100; padding: 6px 0;">
+                                        <div style="padding: 6px 14px 4px; font-size: 0.72rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #f1f5f9; margin-bottom: 4px;">
+                                            Relatório de Contagens
+                                        </div>
+                                        <a href="javascript:void(0)" onclick="exportTable('all', 'pdf', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #be123c; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                            📄 Exportar para PDF
+                                        </a>
+                                        <a href="javascript:void(0)" onclick="exportTable('all', 'csv', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #15803d; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                            📊 Exportar para CSV
+                                        </a>
+                                        <a href="javascript:void(0)" onclick="exportTable('all', 'doc', 'Relatorio_Contagens_contaBuzu')" style="display: flex; align-items: center; gap: 8px; padding: 9px 14px; font-size: 0.83rem; color: #1d4ed8; font-weight: 700; text-decoration: none; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
+                                            📝 Exportar para DOC
+                                        </a>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
@@ -2805,333 +2713,6 @@ if (empty($empresasDisponiveis)) {
                         </div>
                         <div id="tbl-t1-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
                     </div>
-
-                    <!-- TABELA 2: TOTAL DE PASSAGEIROS POR LINHA -->
-                    <div id="container-dash-t2" class="dash-table-card panel-card" style="margin-bottom: 24px; display: none;">
-                        <div class="panel-card-header" style="background: #ffffff; padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                            <div>
-                                <h3 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                                    <span>🚍 Total de passageiros por linha</span>
-                                </h3>
-                                <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de embarques, desembarques e taxa de ocupação por linha</p>
-                            </div>
-                        </div>
-                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
-                            <table class="apps-table dash-fullfit-table" id="tbl-t2" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
-                                <thead>
-                                    <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
-                                        <th style="padding: 12px 10px; text-align: center;">Data</th>
-                                        <th style="padding: 12px 10px; text-align: left;">Linha</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Viagem</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
-                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Passageiros</th>
-                                        <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (empty($dadosTabelaTotalPorLinha)): ?>
-                                        <tr><td colspan="6" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado.</td></tr>
-                                    <?php else: ?>
-                                        <?php foreach ($dadosTabelaTotalPorLinha as $row): 
-                                            $emb = (int)$row['embarques'];
-                                            $des = (int)$row['desembarques'];
-                                            $ocupInf = isset($row['ocupacaoInformada']) ? (int)$row['ocupacaoInformada'] : 0;
-                                            $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
-                                            $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
-                                            $ocup = cbCalcularOcupacao($row);
-                                            $opTipoRow = !empty($row['operacaoTipo']) ? $row['operacaoTipo'] : (($des > 0 && $emb === 0) ? 'Desembarque' : 'Embarque');
-                                        ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>" data-ocup-val="<?php echo $ocup; ?>">
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 600; color: #475569;">
-                                                    <?php echo htmlspecialchars($row['dataFormatada']); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
-                                                    <?php echo htmlspecialchars($row['linhaNumero']); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center;">
-                                                    <span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; <?php echo (strtolower($row['sentido']) === 'volta') ? 'background: #fef3c7; color: #b45309; border: 1px solid #fde68a;' : 'background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;'; ?>">
-                                                        <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
-                                                    </span>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
-                                                    <?php echo cbRenderBadgeOperacaoHtml($opTipoRow); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; background: rgba(37,99,235,0.03);">
-                                                    <?php echo number_format($paxRow, 0, ',', '.'); ?>
-                                                </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo $ocup; ?>%" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
-                                                    <?php echo $ocup; ?>%
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                                <?php if (!empty($dadosTabelaTotalPorLinha)): ?>
-                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
-                                    <tr>
-                                        <td colspan="3" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            <span>📊 TOTAL GERAL (<?php echo number_format($t2_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
-                                        </td>
-                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
-                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
-                                            <?php echo number_format($t2_resumo['pax'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t2_resumo['mediaPaxFmt']); ?>
-                                        </td>
-                                    </tr>
-                                </tfoot>
-                                <?php endif; ?>
-                            </table>
-                        </div>
-                        <div id="tbl-t2-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
-                    </div>
-
-                    <!-- TABELA 3: EMBARQUES/ DESEMBARQUES / OCUPAÇÃO POR LOCAL -->
-                    <div id="container-dash-t3" class="dash-table-card panel-card" style="margin-bottom: 24px; display: none;">
-                        <div class="panel-card-header" style="background: #ffffff; padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                            <div>
-                                <h3 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                                    <span>📍 Embarques/ desembarques / Ocupação por LOCAL</span>
-                                </h3>
-                                <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Fluxo de passageiros e ocupação agrupados por ponto ou estação</p>
-                            </div>
-                        </div>
-                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
-                            <table class="apps-table dash-fullfit-table" id="tbl-t3" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
-                                <thead>
-                                    <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
-                                        <th style="padding: 12px 10px; text-align: left;">LOCAL</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Viagem</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
-                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Passageiros</th>
-                                        <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (empty($dadosTabelaPorLocal)): ?>
-                                        <tr><td colspan="5" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado.</td></tr>
-                                    <?php else: ?>
-                                        <?php foreach ($dadosTabelaPorLocal as $row): 
-                                            $emb = (int)$row['embarques'];
-                                            $des = (int)$row['desembarques'];
-                                            $ocupInf = isset($row['ocupacaoInformada']) ? (int)$row['ocupacaoInformada'] : 0;
-                                            $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
-                                            $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
-                                            $ocup = cbCalcularOcupacao($row);
-                                            $opTipoRow = !empty($row['operacaoTipo']) ? $row['operacaoTipo'] : (($des > 0 && $emb === 0) ? 'Desembarque' : 'Embarque');
-                                        ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>" data-ocup-val="<?php echo $ocup; ?>">
-                                                <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
-                                                    <?php echo htmlspecialchars($row['nomeLocal']); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center;">
-                                                    <span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; <?php echo (strtolower($row['sentido']) === 'volta') ? 'background: #fef3c7; color: #b45309; border: 1px solid #fde68a;' : 'background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;'; ?>">
-                                                        <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
-                                                    </span>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
-                                                    <?php echo cbRenderBadgeOperacaoHtml($opTipoRow); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; background: rgba(37,99,235,0.03);">
-                                                    <?php echo number_format($paxRow, 0, ',', '.'); ?>
-                                                </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo $ocup; ?>%" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
-                                                    <?php echo $ocup; ?>%
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                                <?php if (!empty($dadosTabelaPorLocal)): ?>
-                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
-                                    <tr>
-                                        <td colspan="2" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            <span>📊 TOTAL GERAL (<?php echo number_format($t3_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
-                                        </td>
-                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
-                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
-                                            <?php echo number_format($t3_resumo['pax'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t3_resumo['mediaPaxFmt']); ?>
-                                        </td>
-                                    </tr>
-                                </tfoot>
-                                <?php endif; ?>
-                            </table>
-                        </div>
-                        <div id="tbl-t3-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
-                    </div>
-
-                    <!-- TABELA 4: EMBARQUES/ DESEMBARQUES / OCUPAÇÃO POR EMPRESA/COOPERATIVA -->
-                    <div id="container-dash-t4" class="dash-table-card panel-card" style="margin-bottom: 24px; display: none;">
-                        <div class="panel-card-header" style="background: #ffffff; padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                            <div>
-                                <h3 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                                    <span>🏢 Embarques/ desembarques / Ocupação por EMPRESA/COOPERATIVA</span>
-                                </h3>
-                                <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de movimentação por operadora ou empresa de transporte</p>
-                            </div>
-                        </div>
-                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
-                            <table class="apps-table dash-fullfit-table" id="tbl-t4" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
-                                <thead>
-                                    <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
-                                        <th style="padding: 12px 10px; text-align: left;">EMPRESA</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Viagem</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
-                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Passageiros</th>
-                                        <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (empty($dadosTabelaPorEmpresa)): ?>
-                                        <tr><td colspan="5" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado.</td></tr>
-                                    <?php else: ?>
-                                        <?php foreach ($dadosTabelaPorEmpresa as $row): 
-                                            $emb = (int)$row['embarques'];
-                                            $des = (int)$row['desembarques'];
-                                            $ocupInf = isset($row['ocupacaoInformada']) ? (int)$row['ocupacaoInformada'] : 0;
-                                            $paxRow = ($emb + $des > 0) ? ($emb + $des) : $ocupInf;
-                                            $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
-                                            $ocup = cbCalcularOcupacao($row);
-                                            $opTipoRow = !empty($row['operacaoTipo']) ? $row['operacaoTipo'] : (($des > 0 && $emb === 0) ? 'Desembarque' : 'Embarque');
-                                        ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $paxRow; ?>" data-onibus="<?php echo $qtdBusRow; ?>" data-ocup-val="<?php echo $ocup; ?>">
-                                                <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
-                                                    <?php echo htmlspecialchars($row['nomeEmpresa']); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center;">
-                                                    <span style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; <?php echo (strtolower($row['sentido']) === 'volta') ? 'background: #fef3c7; color: #b45309; border: 1px solid #fde68a;' : 'background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;'; ?>">
-                                                        <?php echo (strtolower($row['sentido']) === 'volta') ? '🔄 Volta' : '➡️ Ida'; ?>
-                                                    </span>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
-                                                    <?php echo cbRenderBadgeOperacaoHtml($opTipoRow); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; color: #1d4ed8; background: rgba(37,99,235,0.03);">
-                                                    <?php echo number_format($paxRow, 0, ',', '.'); ?>
-                                                </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $ocup; ?>%" data-media="<?php echo $ocup; ?>%" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; font-size: 0.95rem; color: #0f172a; white-space: nowrap;">
-                                                    <?php echo $ocup; ?>%
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                                <?php if (!empty($dadosTabelaPorEmpresa)): ?>
-                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
-                                    <tr>
-                                        <td colspan="2" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            <span>📊 TOTAL GERAL (<?php echo number_format($t4_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
-                                        </td>
-                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
-                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #1d4ed8; font-size: 1rem; background: #eff6ff;">
-                                            <?php echo number_format($t4_resumo['pax'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t4_resumo['mediaPaxFmt']); ?>
-                                        </td>
-                                    </tr>
-                                </tfoot>
-                                <?php endif; ?>
-                            </table>
-                        </div>
-                        <div id="tbl-t4-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
-                    </div>
-
-                    <?php if ($canViewAllContagens): ?>
-                    <!-- TABELA 5: TOTAL DE PASSAGEIROS POR PESQUISADOR / USUÁRIO -->
-                    <div id="container-dash-t5" class="dash-table-card panel-card" style="margin-bottom: 24px; display: none;">
-                        <div class="panel-card-header" style="background: #ffffff; padding: 16px 20px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                            <div>
-                                <h3 style="margin: 0; font-size: 1.05rem; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                                    <span>👥 Total de passageiros por pesquisador / usuário</span>
-                                </h3>
-                                <p style="margin: 2px 0 0; font-size: 0.8rem; color: #64748b;">Consolidado de viagens, embarques, desembarques e passageiros registrados por cada pesquisador</p>
-                            </div>
-                        </div>
-                        <div class="dash-table-scroll-wrap" style="overflow-x: visible; padding: 10px 12px 16px;">
-                            <table class="apps-table dash-fullfit-table" id="tbl-t5" style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
-                                <thead>
-                                    <tr style="border-bottom: 2px solid #e2e8f0; color: #475569; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.5px;">
-                                        <th style="padding: 12px 10px; text-align: left;">Pesquisador</th>
-                                        <th style="padding: 12px 10px; text-align: left;">Função / Cargo</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Total Viagens</th>
-                                        <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
-                                        <th style="padding: 12px 10px; text-align: right;">Total Passageiros</th>
-                                        <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Média Ocupação</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (empty($dadosTabelaPorPesquisador)): ?>
-                                        <tr><td colspan="6" style="text-align: center; padding: 30px; color: #94a3b8;">Nenhum registro localizado.</td></tr>
-                                    <?php else: ?>
-                                        <?php foreach ($dadosTabelaPorPesquisador as $row): 
-                                            $emb = (int)$row['embarques'];
-                                            $des = (int)$row['desembarques'];
-                                            $totPax = (int)$row['totalPassageiros'];
-                                            $viag = (int)$row['totalViagens'];
-                                            $qtdBusRow = isset($row['totalOnibus']) ? max(1, (int)$row['totalOnibus']) : 1;
-                                            $medOcup = cbCalcularOcupacao($row);
-                                            $temEmbT5 = !empty($row['temEmb']) || $emb > 0;
-                                            $temDesT5 = !empty($row['temDes']) || $des > 0;
-                                        ?>
-                                            <tr style="border-bottom: 1px solid #f1f5f9;" data-emb="<?php echo $emb; ?>" data-des="<?php echo $des; ?>" data-pax="<?php echo $totPax; ?>" data-viag="<?php echo $viag; ?>" data-onibus="<?php echo $qtdBusRow; ?>" data-ocup-val="<?php echo $medOcup; ?>">
-                                                <td style="padding: 12px 10px; font-weight: 700; color: #0f172a;">
-                                                    <span style="display: inline-flex; align-items: center; gap: 8px;">
-                                                        <span class="cb-avatar-initial" style="width: 28px; height: 28px; border-radius: 50%; background: #e0e7ff; color: #3730a3; display: inline-flex; align-items: center; justify-content: center; font-size: 0.78rem; font-weight: 800;">
-                                                            <?php echo strtoupper(substr($row['pesquisadorNome'], 0, 1)); ?>
-                                                        </span>
-                                                        <?php echo htmlspecialchars($row['pesquisadorNome']); ?>
-                                                    </span>
-                                                </td>
-                                                <td style="padding: 12px 10px; font-weight: 600; color: #475569;">
-                                                    <span style="background: #f1f5f9; padding: 3px 8px; border-radius: 6px; font-size: 0.78rem; border: 1px solid #e2e8f0;">
-                                                        <?php echo htmlspecialchars($row['pesquisadorCargo']); ?>
-                                                    </span>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center; font-weight: 800; color: #0f172a;">
-                                                    <?php echo number_format($viag, 0, ',', '.'); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: center; white-space: nowrap;">
-                                                    <?php echo cbRenderBadgeOperacaoHtml('', $temEmbT5, $temDesT5); ?>
-                                                </td>
-                                                <td style="padding: 12px 10px; text-align: right; font-weight: 800; font-size: 0.95rem; color: #7c3aed;">
-                                                    <?php echo number_format($totPax, 0, ',', '.'); ?>
-                                                </td>
-                                                <td class="col-metric-ocup-cell" data-ocup="<?php echo $medOcup; ?>%" data-media="<?php echo $medOcup; ?>%" title="Média em <?php echo $qtdBusRow; ?> ônibus" style="padding: 12px 10px; text-align: center; font-weight: 800; color: #2563eb; white-space: nowrap;">
-                                                    <?php echo $medOcup; ?>%
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                                <?php if (!empty($dadosTabelaPorPesquisador)): ?>
-                                <tfoot style="border-top: 2px solid #cbd5e1; background: #f8fafc; font-weight: 800; font-size: 0.88rem;">
-                                    <tr>
-                                        <td colspan="2" class="foot-label-onibus" data-suffix="ônibus" style="padding: 14px 12px; text-align: right; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            <span>📊 TOTAL GERAL (<?php echo number_format($t5_resumo['onibus'], 0, ',', '.'); ?> ônibus):</span>
-                                        </td>
-                                        <td class="foot-val-viag" style="padding: 14px 10px; text-align: center; color: #0f172a; font-size: 0.95rem;">
-                                            <?php echo number_format($t5_resumo['viag'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td style="padding: 14px 10px; text-align: center; color: #64748b;">—</td>
-                                        <td class="foot-val-pax" style="padding: 14px 10px; text-align: right; color: #7c3aed; font-size: 1rem; background: #faf5ff;">
-                                            <?php echo number_format($t5_resumo['pax'], 0, ',', '.'); ?>
-                                        </td>
-                                        <td class="col-metric-ocup-foot" title="Média de ocupação (%) nos ônibus exibidos" style="padding: 14px 10px; text-align: center; color: #1e3a8a; background: #eff6ff; font-size: 0.86rem; font-weight: 800; white-space: nowrap;">
-                                            Média: <?php echo htmlspecialchars($t5_resumo['mediaPaxFmt']); ?>
-                                        </td>
-                                    </tr>
-                                </tfoot>
-                                <?php endif; ?>
-                            </table>
-                        </div>
-                        <div id="tbl-t5-pagination" class="dash-pagination-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px 20px; border-top: 1px solid #e2e8f0; background: #ffffff; border-radius: 0 0 12px 12px;"></div>
-                    </div>
-                    <?php endif; ?>
 
                 </div>
 
@@ -3475,20 +3056,20 @@ if (empty($empresasDisponiveis)) {
                                             <span style="color: #94a3b8; font-size: 0.84rem;">Não informado</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td style="padding: 14px 16px; font-weight: 800; font-size: 1.1rem; color: <?php echo $reg['tipo'] === 'salvamento' ? '#2563eb' : ($reg['quantidade'] > 0 ? '#16a34a' : '#dc2626'); ?>;">
+                                    <td style="padding: 14px 16px; font-weight: 800; font-size: 1.1rem; color: <?php echo (float)$reg['quantidade'] >= 0 ? '#2563eb' : '#dc2626'; ?>;">
                                         <?php 
-                                            if ($reg['tipo'] === 'salvamento') {
+                                            if ((float)$reg['quantidade'] >= 0) {
                                                 echo (isset($tipoCont) && stripos($tipoCont, 'perc') !== false) 
                                                     ? calcPercentualStr($reg['quantidade']) . ' (' . (int)$reg['quantidade'] . ' pas.)' 
                                                     : (int)$reg['quantidade'] . ' pas.';
                                             } else {
-                                                echo (($reg['quantidade'] > 0 ? '+' : '') . (int)$reg['quantidade']);
+                                                echo (int)$reg['quantidade'];
                                             }
                                         ?>
                                     </td>
                                     <td style="padding: 14px 16px; color: #1e293b; line-height: 1.5; font-size: 0.92rem;">
                                         <?php 
-                                            if ($reg['tipo'] === 'salvamento' || (!empty($reg['justificativa']) && strpos($reg['justificativa'], 'Operação Salva.') === 0)) {
+                                            if ((float)$reg['quantidade'] >= 0 || (!empty($reg['justificativa']) && strpos($reg['justificativa'], 'Operação Salva.') === 0)) {
                                                 echo '<span style="color: #15803d; font-weight: 600;">✓ Contagem salva</span>';
                                             } elseif (!empty($reg['justificativa'])) {
                                                 echo htmlspecialchars($reg['justificativa']);
@@ -3582,6 +3163,7 @@ if (empty($empresasDisponiveis)) {
         const activeContagemId = <?php echo ($sessaoAtiva ? (int)$sessaoAtiva['idContagem'] : 0); ?>;
         const isModoNaoInformadoSessao = <?php echo ($sessaoAtiva && !empty($isModoNaoInformadoSessao)) ? 'true' : 'false'; ?>;
         const activeTipoContagem = '<?php echo ($sessaoAtiva && !empty($sessaoAtiva['tipoContagem'])) ? strtolower(trim($sessaoAtiva['tipoContagem'])) : 'quantidade'; ?>';
+        let contagemNumeroSelecionado = <?php echo ($sessaoAtiva && !empty($contagemInformadaSessao)) ? 'true' : 'false'; ?>;
         window.frotaVeiculosDisponiveis = <?php echo json_encode(array_values(array_map(function($v) {
             return [
                 'idVeiculo' => (int)$v['idVeiculo'],
@@ -3595,11 +3177,21 @@ if (empty($empresasDisponiveis)) {
         function salvarContagemAtiva() {
             if (!activeContagemId) return;
 
-            // Validação: caso tenha mais de 1 veículo registrado e nenhum esteja ativo
+            // Validação: obriga escolher um número/percentual (inclusive 0) antes de salvar
+            if (!contagemNumeroSelecionado) {
+                alert('Por favor, selecione um número antes de salvar a contagem.');
+                const containerNum = document.querySelector('.percent-btn-grid') || document.querySelector('.counter-btn-grid') || document.querySelector('.counter-display-card');
+                if (containerNum) {
+                    containerNum.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                return;
+            }
+
+            // Validação: caso exista(m) veículo(s) na grade e nenhum esteja marcado como ativo
             const totalVeiculos = document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus').length;
             const onibusAtivo = document.querySelector('#grid-onibus-registrados .btn-opcao-onibus.onibus-ativo');
-            if (totalVeiculos > 1 && !onibusAtivo) {
-                alert('Atenção: Há mais de um veículo registrado para esta contagem. Por favor, clique no veículo desejado antes de salvar a contagem.');
+            if (totalVeiculos > 0 && !onibusAtivo) {
+                alert('Atenção: Por favor, clique no veículo desejado na lista antes de salvar a contagem.');
                 const containerVeic = document.querySelector('.onibus-selection-container') || document.getElementById('grid-onibus-registrados');
                 if (containerVeic) {
                     containerVeic.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -3638,13 +3230,24 @@ if (empty($empresasDisponiveis)) {
                 if (data.success) {
                     showToastNotification(data.message || '✓ Contagem salva com sucesso!');
                     if (data.logs) renderLogs(data.logs);
+                    contagemNumeroSelecionado = false;
                     limparPainelNumerosContagem();
                     limparVeiculoAtivoPainel();
+                    if (data.limparGrade && Array.isArray(data.veiculos)) {
+                        renderGridOnibusSessao(data.veiculos);
+                    }
                 } else {
                     alert(data.message || 'Por favor, selecione um veículo antes de salvar a contagem.');
-                    const busSec = document.querySelector('.onibus-selection-container');
-                    if (busSec) {
-                        busSec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    if (data.missingNumber) {
+                        const numSec = document.querySelector('.percent-btn-grid') || document.querySelector('.counter-btn-grid') || document.querySelector('.counter-display-card');
+                        if (numSec) {
+                            numSec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                    } else {
+                        const busSec = document.querySelector('.onibus-selection-container');
+                        if (busSec) {
+                            busSec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
                     }
                 }
             })
@@ -3657,38 +3260,38 @@ if (empty($empresasDisponiveis)) {
             });
         }
 
-        // Limpa o painel que mostra os números após salvar a contagem
+        // Limpa o painel que mostra os números após salvar a contagem e desmarca todos os botões
         function limparPainelNumerosContagem() {
             const counterEl = document.getElementById('counterTotal');
             const percentEl = document.getElementById('counterTotalPercent');
             const numEl = document.getElementById('counterTotalNum');
 
             if (counterEl) {
-                counterEl.textContent = '0';
+                counterEl.textContent = '—';
                 counterEl.classList.add('bounce');
                 setTimeout(function() { counterEl.classList.remove('bounce'); }, 200);
             }
             if (percentEl) {
-                percentEl.textContent = '0%';
+                percentEl.textContent = '%';
                 percentEl.classList.add('bounce');
                 setTimeout(function() { percentEl.classList.remove('bounce'); }, 200);
             }
             if (numEl) {
-                numEl.textContent = '0';
+                numEl.textContent = '—';
             }
 
-            // Desmarca botões de porcentagem ativos e seleciona 0%
+            // Desmarca todos os botões de porcentagem ativos (inclusive 0%)
             document.querySelectorAll('.btn-count-percent').forEach(function(b) {
-                const qtd = parseInt(b.getAttribute('data-qtd') || '0', 10);
-                if (qtd === 0) {
-                    b.classList.add('active-percent');
-                    b.style.boxShadow = '0 6px 16px rgba(0,0,0,0.15)';
-                    b.style.transform = 'translateY(-2px) scale(1.03)';
-                } else {
-                    b.classList.remove('active-percent');
-                    b.style.boxShadow = 'none';
-                    b.style.transform = 'none';
-                }
+                b.classList.remove('active-percent');
+                b.style.boxShadow = 'none';
+                b.style.transform = 'none';
+                if (typeof b.blur === 'function') b.blur();
+            });
+
+            // Remove seleção/foco residual dos botões numéricos (+1, +5, +10, 0)
+            document.querySelectorAll('.btn-count').forEach(function(b) {
+                b.classList.remove('active', 'active-percent', 'active-count');
+                if (typeof b.blur === 'function') b.blur();
             });
         }
 
@@ -4191,6 +3794,8 @@ if (empty($empresasDisponiveis)) {
         function sendIncrement(qtd, modo, btnEl) {
             if (!activeContagemId) return;
 
+            contagemNumeroSelecionado = true;
+
             const counterEl = document.getElementById('counterTotal');
             const percentEl = document.getElementById('counterTotalPercent');
             const numEl = document.getElementById('counterTotalNum');
@@ -4235,6 +3840,7 @@ if (empty($empresasDisponiveis)) {
             .then(res => res.json())
             .then(data => {
                 if (data.success) {
+                    contagemNumeroSelecionado = true;
                     if (counterEl) counterEl.textContent = data.total;
                     if (percentEl) percentEl.textContent = getPercentualLabel(data.total);
                     if (numEl) numEl.textContent = data.total;
@@ -4247,6 +3853,7 @@ if (empty($empresasDisponiveis)) {
         // Zera a contagem quando o tipo de contagem é Quantidade
         function zerarContagemQuantidade(btnEl) {
             if (!activeContagemId) return;
+            if (btnEl && typeof btnEl.blur === 'function') btnEl.blur();
             sendIncrement(0, 'substituir', btnEl);
             if (typeof showToastNotification === 'function') {
                 showToastNotification('✓ Quantidade zerada (0 passageiros).', 2000);
@@ -4326,14 +3933,10 @@ if (empty($empresasDisponiveis)) {
                         html += `<tr><td colspan="4" style="padding: 20px; text-align: center; color: #94a3b8;">Nenhum lançamento registrado nesta sessão.</td></tr>`;
                     } else {
                         regs.forEach(r => {
-                            const isInc = (r.tipo === 'incremento');
-                            const isSalvo = (r.tipo === 'salvamento');
+                            const isSalvo = (parseFloat(r.quantidade) >= 0);
                             let badgeClass = 'badge-corr';
                             let badgeText = '- Correção';
-                            if (isInc) {
-                                badgeClass = 'badge-inc';
-                                badgeText = '+ Entrada';
-                            } else if (isSalvo) {
+                            if (isSalvo) {
                                 badgeClass = 'badge-salvo';
                                 badgeText = '💾 Salvo';
                             }
@@ -4491,15 +4094,11 @@ if (empty($empresasDisponiveis)) {
             let htmlExpand = '';
 
             logs.forEach(reg => {
-                const isInc = (reg.tipo === 'incremento');
-                const isSalvo = (reg.tipo === 'salvamento');
+                const isSalvo = (parseFloat(reg.quantidade) >= 0);
 
                 let badgeClass = 'badge-corr';
                 let badgeText = '- Correção';
-                if (isInc) {
-                    badgeClass = 'badge-inc';
-                    badgeText = '+ Entrada';
-                } else if (isSalvo) {
+                if (isSalvo) {
                     badgeClass = 'badge-salvo';
                     badgeText = '💾 Salvo';
                 }
@@ -5275,6 +4874,16 @@ if (empty($empresasDisponiveis)) {
             };
         }
 
+        function verificarBloqueioVeiculoNaoInformado() {
+            if (isModoNaoInformadoSessao && document.querySelectorAll('#grid-onibus-registrados .btn-opcao-onibus').length >= 1) {
+                const input = document.getElementById('input-busca-onibus-painel');
+                if (input) input.value = '';
+                alert('⚠️ Já existe um veículo registrado. Você deve apagar ou salvar uma contagem com o veículo já registrado antes de registrar outro.');
+                return true;
+            }
+            return false;
+        }
+
         // Executa a busca e adição do veículo digitado no input ao pressionar Enter
         function executarAdicionarOnibusPainel() {
             const input = document.getElementById('input-busca-onibus-painel');
@@ -5289,6 +4898,9 @@ if (empty($empresasDisponiveis)) {
 
             const maisProximos = buscarPrefixosMaisProximos(digitos, 1);
             if (!maisProximos || maisProximos.length === 0) {
+                if (verificarBloqueioVeiculoNaoInformado()) {
+                    return;
+                }
                 if (confirm('Veículo não cadastrado, deseja cadastrar novo veículo?')) {
                     abrirModalNovoVeiculoContagem(termo);
                 } else {
@@ -5301,6 +4913,9 @@ if (empty($empresasDisponiveis)) {
         }
 
         function abrirModalNovoVeiculoContagem(prefixoInicial) {
+            if (verificarBloqueioVeiculoNaoInformado()) {
+                return;
+            }
             const modal = document.getElementById('modalCadastrarNovoVeiculoContagem');
             const inpPref = document.getElementById('novoVeicPrefixo');
             const inpPlaca = document.getElementById('novoVeicPlaca');
@@ -5429,6 +5044,11 @@ if (empty($empresasDisponiveis)) {
             if (jaRegistrado) {
                 selecionarOnibusContagem(novoId, candidato.prefixo);
                 showToastNotification('✓ Ônibus ' + formatarNumeroVeiculo(candidato.prefixo) + ' selecionado para a contagem!', 2000);
+                return;
+            }
+
+            if (isModoNaoInformadoSessao && idsAtuais.length >= 1) {
+                alert('⚠️ Já existe um veículo registrado. Você deve apagar ou salvar uma contagem com o veículo já registrado antes de registrar outro.');
                 return;
             }
 
@@ -5893,11 +5513,7 @@ if (empty($empresasDisponiveis)) {
 
         // --- MOTOR DE PAGINAÇÃO DAS TABELAS DO DASHBOARD ---
         const dashPaginationState = {
-            'tbl-t1': { currentPage: 1, pageSize: 10, query: '' },
-            'tbl-t2': { currentPage: 1, pageSize: 10, query: '' },
-            'tbl-t3': { currentPage: 1, pageSize: 10, query: '' },
-            'tbl-t4': { currentPage: 1, pageSize: 10, query: '' },
-            'tbl-t5': { currentPage: 1, pageSize: 10, query: '' }
+            'tbl-t1': { currentPage: 1, pageSize: 10, query: '' }
         };
 
         function filterTableRows(tableId, query) {
@@ -6134,7 +5750,7 @@ if (empty($empresasDisponiveis)) {
         }
 
         function initDashTablesPagination() {
-            ['tbl-t1', 'tbl-t2', 'tbl-t3', 'tbl-t4', 'tbl-t5'].forEach(tableId => {
+            ['tbl-t1'].forEach(tableId => {
                 if (document.getElementById(tableId)) {
                     renderDashTablePagination(tableId);
                 }
@@ -6400,7 +6016,7 @@ if (empty($empresasDisponiveis)) {
 
         function getDashTablesListForExport(tableId) {
             if (!tableId || tableId === 'all' || /^tbl-t[1-5]$/.test(String(tableId))) {
-                return ['tbl-t1', 'tbl-t2', 'tbl-t3', 'tbl-t4', 'tbl-t5'].filter(id => !!document.getElementById(id));
+                return ['tbl-t1'].filter(id => !!document.getElementById(id));
             }
             return document.getElementById(tableId) ? [tableId] : [];
         }

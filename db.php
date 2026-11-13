@@ -308,7 +308,6 @@ try {
             idPesquisa INT NOT NULL,
             idVeiculoPesquisado INT NULL,
             idUsuario INT NOT NULL,
-            tipo VARCHAR(50) NOT NULL DEFAULT 'incremento',
             quantidade FLOAT NOT NULL DEFAULT 0,
             justificativa TEXT NULL,
             dataHora DATETIME NOT NULL,
@@ -321,9 +320,6 @@ try {
             $colsC = $stmtCont->fetchAll(PDO::FETCH_COLUMN);
             if (!in_array('justificativa', $colsC)) {
                 $pdo->exec("ALTER TABLE contagem ADD COLUMN justificativa TEXT NULL");
-            }
-            if (!in_array('tipo', $colsC)) {
-                $pdo->exec("ALTER TABLE contagem ADD COLUMN tipo VARCHAR(50) NOT NULL DEFAULT 'incremento'");
             }
             if (!in_array('dataHora', $colsC)) {
                 $pdo->exec("ALTER TABLE contagem ADD COLUMN dataHora DATETIME NULL");
