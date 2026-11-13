@@ -694,19 +694,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             }
                         }
 
-                        $isNaoInformadoSessao = cbIsModoNaoInformado($idContagem);
-
-                        // Limpa o total acumulado da pesquisa para permitir novos lançamentos limpos
-                        // Quando a sessão foi iniciada como "Não informado", limpa também o veículo ativo após salvar
+                        // Limpa o total acumulado da pesquisa e remove o veículo ativo para permitir novos lançamentos limpos
+                        // Regra: limpar veículo sempre após salvar, não importa se foi escolhido 'não informado' ou 'registrar'
                         try {
-                            if ($isNaoInformadoSessao) {
-                                $stmtReset = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = 0, idVeiculo = NULL WHERE idPesquisa = ?");
-                            } else {
-                                $stmtReset = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = 0 WHERE idPesquisa = ?");
-                            }
+                            $stmtReset = $pdo->prepare("UPDATE pesquisa SET totalPassageiros = 0, idVeiculo = NULL WHERE idPesquisa = ?");
                             $stmtReset->execute([$idContagem]);
                         } catch (\Exception $exReset) {
-                            error_log("Erro ao zerar totalPassageiros: " . $exReset->getMessage());
+                            error_log("Erro ao zerar totalPassageiros e idVeiculo: " . $exReset->getMessage());
                         }
                     }
                 }
@@ -730,7 +724,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'success'      => true,
                         'message'      => 'Contagem salva com sucesso! A sessão permanece aberta para continuar os lançamentos.',
                         'total'        => 0,
-                        'veiculoLimpo' => cbIsModoNaoInformado($idContagem),
+                        'veiculoLimpo' => true,
                         'logs'         => $logs
                     ]);
                     exit;
@@ -2719,7 +2713,7 @@ if (empty($empresasDisponiveis)) {
                                         <th style="padding: 10px 7px; text-align: left;">Veículo</th>
                                         <th style="padding: 10px 7px; text-align: center;">Viagem</th>
                                         <th style="padding: 10px 7px; text-align: center;">Embarque/Desembarque</th>
-                                        <th style="padding: 10px 7px; text-align: right; color: #1d4ed8;">Total Pax</th>
+                                        <th style="padding: 10px 7px; text-align: right; color: #1d4ed8;">Passageiros</th>
                                         <th class="col-metric-ocup-header" style="padding: 10px 7px; text-align: center;">Ocupação (%)</th>
                                         <?php if ($canViewAllContagens): ?>
                                             <th style="padding: 10px 8px; text-align: left;">Pesquisador</th>
@@ -2830,7 +2824,7 @@ if (empty($empresasDisponiveis)) {
                                         <th style="padding: 12px 10px; text-align: left;">Linha</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
-                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
+                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Passageiros</th>
                                         <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
@@ -2910,7 +2904,7 @@ if (empty($empresasDisponiveis)) {
                                         <th style="padding: 12px 10px; text-align: left;">LOCAL</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
-                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
+                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Passageiros</th>
                                         <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
@@ -2987,7 +2981,7 @@ if (empty($empresasDisponiveis)) {
                                         <th style="padding: 12px 10px; text-align: left;">EMPRESA</th>
                                         <th style="padding: 12px 10px; text-align: center;">Viagem</th>
                                         <th style="padding: 12px 10px; text-align: center;">Embarque/Desembarque</th>
-                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Total Pax</th>
+                                        <th style="padding: 12px 10px; text-align: right; color: #1d4ed8;">Passageiros</th>
                                         <th class="col-metric-ocup-header" style="padding: 12px 10px; text-align: center;">Ocupação (%)</th>
                                     </tr>
                                 </thead>
@@ -3241,7 +3235,7 @@ if (empty($empresasDisponiveis)) {
                         Escolha um veículo acima para salvar automaticamente na fila
                     </div>
                     <button type="button" onclick="closeModalVeiculos()" style="padding: 9px 18px; background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; border-radius: 8px; font-weight: 700; cursor: pointer; transition: all 0.2s;" onmouseover="this.style.background='#e2e8f0';" onmouseout="this.style.background='#f1f5f9';">
-                        Cancelar
+                        Sair
                     </button>
                 </div>
             </div>
@@ -3645,9 +3639,7 @@ if (empty($empresasDisponiveis)) {
                     showToastNotification(data.message || '✓ Contagem salva com sucesso!');
                     if (data.logs) renderLogs(data.logs);
                     limparPainelNumerosContagem();
-                    if (data.veiculoLimpo || isModoNaoInformadoSessao) {
-                        limparVeiculoAtivoPainel();
-                    }
+                    limparVeiculoAtivoPainel();
                 } else {
                     alert(data.message || 'Por favor, selecione um veículo antes de salvar a contagem.');
                     const busSec = document.querySelector('.onibus-selection-container');
@@ -3700,7 +3692,7 @@ if (empty($empresasDisponiveis)) {
             });
         }
 
-        // Limpa o veículo selecionado após salvar quando a sessão foi iniciada como "Não informado"
+        // Limpa o veículo selecionado após salvar contagem (limpar veículo sempre)
         function limparVeiculoAtivoPainel() {
             const inputBusca = document.getElementById('input-busca-onibus-painel');
             if (inputBusca) inputBusca.value = '';
@@ -3710,8 +3702,33 @@ if (empty($empresasDisponiveis)) {
                 dropdown.innerHTML = '';
             }
             const sessV = document.getElementById('session-veiculo-text');
-            if (sessV) sessV.textContent = 'Não informado';
-            renderGridOnibusSessao([]);
+            if (sessV) sessV.textContent = 'Nenhum ativo';
+            const editVeic = document.getElementById('editIdVeiculo');
+            if (editVeic) editVeic.value = '';
+
+            // Desmarca qualquer botão de ônibus ativo na grade
+            document.querySelectorAll('.btn-opcao-onibus').forEach(btn => {
+                btn.classList.remove('onibus-ativo');
+                btn.style.border = '2px solid #cbd5e1';
+                btn.style.background = '#ffffff';
+                const badge = btn.querySelector('.badge-onibus-status');
+                if (badge) badge.style.display = 'none';
+                const prefSpan = btn.querySelector('span');
+                if (prefSpan) prefSpan.style.color = '#0f172a';
+            });
+
+            const destaqueBox = document.getElementById('destaque-selecao-ativa');
+            const badgeV = document.getElementById('badge-veiculo-ativo-mini');
+            if (destaqueBox) {
+                destaqueBox.style.background = '#fff7ed';
+                destaqueBox.style.borderColor = '#fed7aa';
+                const spanLabel = destaqueBox.querySelector('span');
+                if (spanLabel) spanLabel.style.color = '#c2410c';
+            }
+            if (badgeV) {
+                badgeV.textContent = 'Nenhum veículo selecionado';
+                badgeV.style.color = '#ea580c';
+            }
         }
 
         // Seleção rápida de Ônibus para direcionar a contagem
@@ -4915,7 +4932,7 @@ if (empty($empresasDisponiveis)) {
             veiculoCandidatoSelecionado = null;
             var info = document.getElementById('info-veiculo-escolhido');
             if (info) {
-                info.innerHTML = '✓ <strong style="color: #15803d;">' + escapeHtml(numFmt) + '</strong> salvo! Continue escolhendo ou clique em Cancelar para sair.';
+                info.innerHTML = '✓ <strong style="color: #15803d;">' + escapeHtml(numFmt) + '</strong> salvo! Continue escolhendo ou clique em Sair para fechar.';
             }
         }
 
@@ -6423,7 +6440,7 @@ if (empty($empresasDisponiveis)) {
                 'Veículo',
                 'Viagem',
                 'Embarque/Desembarque',
-                'Total Pax',
+                'Passageiros',
                 ocupHeaderLabel || 'Ocupação (%)',
                 'Pesquisador',
                 'Função / Cargo'
@@ -6632,7 +6649,7 @@ if (empty($empresasDisponiveis)) {
                 { label: 'VEÍCULO', align: 'left', color: [71, 85, 105] },
                 { label: 'VIAGEM', align: 'center', color: [71, 85, 105] },
                 { label: 'EMBARQUE/DESEMBARQUE', align: 'center', color: [71, 85, 105] },
-                { label: 'TOTAL PAX', align: 'right', color: [29, 78, 216] },
+                { label: 'PASSAGEIROS', align: 'right', color: [29, 78, 216] },
                 { label: ocupHeaderLabel || 'OCUPAÇÃO (%)', align: 'center', color: [71, 85, 105] },
                 { label: 'PESQUISADOR', align: 'left', color: [71, 85, 105] },
                 { label: 'FUNÇÃO / CARGO', align: 'left', color: [71, 85, 105] }
@@ -6774,7 +6791,7 @@ if (empty($empresasDisponiveis)) {
             const kpiResumo = getExportKpiMetrics('tbl-t1');
             let pdfSubtitle = generatedAt + '   |   Total de registros na tabela: ' + allFilterRows.length;
             if (kpiResumo) {
-                pdfSubtitle += '   |   Total Pax: ' + kpiResumo.pax;
+                pdfSubtitle += '   |   Passageiros: ' + kpiResumo.pax;
                 if (kpiResumo.mediaPax) {
                     pdfSubtitle += '   |   Média: ' + kpiResumo.mediaPax;
                 }
@@ -6931,7 +6948,7 @@ if (empty($empresasDisponiveis)) {
             const kpiResumo = getExportKpiMetrics(tableId);
             let pdfSubtitle = generatedAt + '   |   Total de registros na tabela: ' + body.length;
             if (kpiResumo) {
-                pdfSubtitle += '   |   Total Pax: ' + kpiResumo.pax;
+                pdfSubtitle += '   |   Passageiros: ' + kpiResumo.pax;
                 if (kpiResumo.mediaPax) {
                     pdfSubtitle += '   |   Média: ' + kpiResumo.mediaPax;
                 }
